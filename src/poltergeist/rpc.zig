@@ -535,15 +535,21 @@ pub const Method = enum {
     /// closed to plugins: it is about the asking terminal's own write.
     file_guard,
 
-    /// The five requests a host makes to read and edit a file of a working
+    /// The six requests a host makes to read and edit a file of a working
     /// directory (task 2573, `files/Tickets.zig`): a ticket for a file, the
-    /// path a read may go to, a proposed edit, its commit, and the ticket's
-    /// end.
+    /// path a read may go to, what is in a directory, a proposed edit, its
+    /// commit, and the ticket's end.
     ///
     /// **For a host, not an agent**: no tool, no call, closed to plugins --
-    /// what they answer is a capability to read files.
+    /// what they answer is a capability to read files. `files_list` (task
+    /// 2668) is the sixth and was the missing one: it was planned as
+    /// `files_list(token, rel_dir)` in `2145/PLAN.md` §2.5 and never written,
+    /// so a host drawing a tree had nothing to ask. It goes through the
+    /// ticket exactly as a read does, so it is not a wider door than the
+    /// five beside it.
     files_open,
     files_resolve,
+    files_list,
     files_propose,
     files_commit,
     files_close,
@@ -957,6 +963,8 @@ pub const Request = union(Method) {
     file_guard: struct { path: []const u8 },
     files_open: struct { workdir_id: []const u8, path: []const u8, scope: files.Access.Scope = .file },
     files_resolve: struct { token: []const u8, rel: []const u8 = "" },
+    /// One level of a directory, relative to the ticket's file (task 2668).
+    files_list: struct { token: []const u8, rel: []const u8 = "" },
     files_propose: struct { token: []const u8, full_text: []const u8, base_version: []const u8 },
     files_commit: struct { proposal_id: []const u8, choices: []const files.Merge.Choice = &.{}, restore_gone: bool = false },
     files_close: struct { token: []const u8 },
@@ -1272,6 +1280,7 @@ pub fn callableByPlugin(method: Method) bool {
         .file_guard,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -1475,6 +1484,7 @@ pub fn offeredAsTool(method: Method) bool {
         // Asked by the host for the files of a preview (task 2573); no agent has them.
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -1526,6 +1536,7 @@ pub fn requiresSupervisor(method: Method) bool {
         // Asked by the host for the files of a preview (task 2573); no agent has them.
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -1843,6 +1854,7 @@ pub fn targetsTerminal(method: Method) bool {
         .resource_overview,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -1979,6 +1991,7 @@ pub fn target(req: Request) ?Bus.Id {
         .resource_overview,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -2085,6 +2098,7 @@ pub fn selfPermitted(req: Request) bool {
         .resource_overview,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -2382,6 +2396,7 @@ pub fn promptReach(method: Method) enum {
         .resource_overview,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -3025,6 +3040,7 @@ test "only what changes the arrangement needs the supervisor" {
             .resource_overview,
             .files_open,
             .files_resolve,
+            .files_list,
             .files_propose,
             .files_commit,
             .files_close,
@@ -9047,6 +9063,7 @@ pub fn isAgentCall(method: Method) bool {
         .file_guard,
         .files_open,
         .files_resolve,
+        .files_list,
         .files_propose,
         .files_commit,
         .files_close,
@@ -9165,7 +9182,7 @@ pub fn heardByAgent(who: Bus.Caller, method: Method) ?Bus.Id {
     return who.terminalId();
 }
 
-/// One of the five `files_*` requests, answered -- and `null` for anything
+/// One of the six `files_*` requests, answered -- and `null` for anything
 /// else, so a caller that is not one of them is told so rather than
 /// answered with somebody else's shape.
 ///
@@ -9187,6 +9204,7 @@ fn filesArm(
             break :blk .{ .json = try host.filesTickets().open(alloc, wd, p.path, p.scope) };
         },
         .files_resolve => |p| .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
+        .files_list => |p| .{ .json = try host.filesTickets().list(alloc, p.token, p.rel) },
         .files_propose => |p| .{ .json = try host.filesTickets().propose(alloc, p.token, p.full_text, p.base_version) },
         .files_commit => |p| .{ .json = try host.filesTickets().commit(alloc, p.proposal_id, p.choices, p.restore_gone) },
         .files_close => |p| .{ .json = try host.filesTickets().close(alloc, p.token) },
@@ -9194,7 +9212,7 @@ fn filesArm(
     };
 }
 
-/// The answer a **host** gets to one of the five `files_*` requests, as the
+/// The answer a **host** gets to one of the six `files_*` requests, as the
 /// JSON a host reads -- or `null` when `req` is not one of them.
 ///
 /// **A host does not come through `dispatch`** (task 2628, #2140 M1/W1).
@@ -9331,22 +9349,22 @@ fn dispatchOne(
             return .{ .me = info };
         },
 
-        // **The five files requests live in one place** (`filesAnswer`),
+        // **The six files requests live in one place** (`filesAnswer`),
         // because a host reaches them through a door of its own and not
         // through this dispatch: two copies of "which path may be read"
         // would be two answers, and the hosts are the only callers there
         // are (task 2628).
         //
         // ⚠️ **The prong above and `filesArm`'s own arm are the same list of
-        // five written twice**, and that cannot be helped here: this switch
+        // six written twice**, and that cannot be helped here: this switch
         // is exhaustive over `Method` with no `else`, which is what makes a
         // new request fail to compile until somebody decides about it, so a
         // `filesArm` reached from here has to be asked with the request in
         // hand. What can be helped is what happens when the two drift: this
-        // answers a named refusal rather than `unreachable`, so a sixth name
-        // added to the prong is a caller told "that is not a files request"
-        // instead of the whole process panicking on the app thread.
-        .files_open, .files_resolve, .files_propose, .files_commit, .files_close => {
+        // answers a named refusal rather than `unreachable`, so a seventh
+        // name added to the prong is a caller told "that is not a files
+        // request" instead of the whole process panicking on the app thread.
+        .files_open, .files_resolve, .files_list, .files_propose, .files_commit, .files_close => {
             return (try filesArm(alloc, host, req)) orelse
                 hostFailure("NotAFilesRequest", "that call is not one of the files requests");
         },
@@ -21017,13 +21035,13 @@ test "2628 M1/W1: a host reaches the files requests through its own door, and th
         \\{"method":"files_resolve","params":{"token":"00000000000000000000000000000000"}}
     )).object.get("refused") != null);
 
-    // **A request that is not one of the five gets nothing at all**: a host
+    // **A request that is not one of the six gets nothing at all**: a host
     // handed a `me` answer would read a terminal's name as a file's.
     try testing.expect((try filesAnswer(r.arena.allocator(), r.fake.host(), .me)) == null);
 
-    // And the five are still refused everywhere an agent or a plugin could
+    // And the six are still refused everywhere an agent or a plugin could
     // reach them -- the door does not widen anything.
-    for ([_]Method{ .files_open, .files_resolve, .files_propose, .files_commit, .files_close }) |m| {
+    for ([_]Method{ .files_open, .files_resolve, .files_list, .files_propose, .files_commit, .files_close }) |m| {
         try testing.expect(!callableByPlugin(m));
         try testing.expect(!offeredAsTool(m));
         try testing.expect(!isAgentCall(m));
@@ -21031,7 +21049,7 @@ test "2628 M1/W1: a host reaches the files requests through its own door, and th
 }
 
 test "2573 C7: the files requests are a host's: no tool, no call, no plugin, no standing" {
-    for ([_]Method{ .files_open, .files_resolve, .files_propose, .files_commit, .files_close }) |m| {
+    for ([_]Method{ .files_open, .files_resolve, .files_list, .files_propose, .files_commit, .files_close }) |m| {
         try testing.expect(!offeredAsTool(m));
         try testing.expect(!isAgentCall(m));
         try testing.expect(!callableByPlugin(m));

@@ -175,6 +175,10 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .token = try requireString(aa, params, "token"),
             .rel = (try optionalString(aa, params, "rel")) orelse "",
         } },
+        .files_list => .{ .files_list = .{
+            .token = try requireString(aa, params, "token"),
+            .rel = (try optionalString(aa, params, "rel")) orelse "",
+        } },
         .files_propose => .{ .files_propose = .{
             .token = try requireString(aa, params, "token"),
             .full_text = try requireString(aa, params, "full_text"),

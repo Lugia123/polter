@@ -4131,13 +4131,13 @@ pub fn controlPage(self: *App, req: []const u8, cap: usize) []const u8 {
     return self.page_out.items;
 }
 
-/// The answer to one of the five `files_*` requests, from a door a **host**
+/// The answer to one of the six `files_*` requests, from a door a **host**
 /// uses rather than an agent (task 2628, #2140 M1/W1).
 ///
 /// `req` is one JSON request, the same text `wire.parseRequestLeaky` reads
 /// off the socket, and the answer is the same JSON the socket would have
 /// carried -- so a host and the tool surface cannot disagree about what a
-/// ticket does. `null` when `req` is not one of the five; the five are
+/// ticket does. `null` when `req` is not one of the six; the six are
 /// refused to every agent, every tool and every plugin on purpose
 /// (`rpc.callableByPlugin`, `offeredAsTool`, `isAgentCall`), and a host has
 /// no terminal id to be judged by, which is why this does not go through
@@ -4162,7 +4162,7 @@ pub fn filesAnswer(
         // its side and it should hear about it rather than get silence.
         //
         // ⚠️ **`@as` and not a bare `return`**: this function answers `null`
-        // for "not one of the five", so an allocated answer and a `null` are
+        // for "not one of the six", so an allocated answer and a `null` are
         // the same error union's two payloads and Zig will not widen `[]u8`
         // into `?[]const u8` on its own.
         else => return @as(?[]const u8, try std.fmt.allocPrint(

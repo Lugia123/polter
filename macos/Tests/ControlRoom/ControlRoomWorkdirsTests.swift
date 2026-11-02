@@ -393,3 +393,147 @@ struct ControlRoomWorkdirsTreeTests {
         #expect(tree.isSelected("f1"), "and what is open in the pane beside it did not move")
     }
 }
+
+// MARK: - What is in a directory
+
+/// One level of a directory: the request, the reading of the answer, and the
+/// memory of what has been asked for (task 2668).
+///
+/// **Held here rather than through the page** for `Tree`'s reason: the page
+/// is a `sources.out` file, so a rule written in it could only be checked on
+/// a running application. Everything below is a value.
+struct ControlRoomWorkdirsLevelsTests {
+    typealias Workdirs = ControlRoomWorkdirs
+    typealias Level = ControlRoomWorkdirs.Level
+    typealias Levels = ControlRoomWorkdirs.Levels
+
+    private func answer(_ entries: String, more: Int = 0) -> String {
+        #"{"entries":[\#(entries)],"more":\#(more)}"#
+    }
+
+    private func row(_ name: String, dir: Bool) -> String {
+        #"{"name":"\#(name)","is_dir":\#(dir)}"#
+    }
+
+    // MARK: The request
+
+    @Test func theRequestAsksForOneLevelOfTheTicketsDirectory() {
+        #expect(Workdirs.listingRequest(token: "ab", rel: "")
+            == #"{"method":"files_list","params":{"token":"ab","rel":""}}"#)
+    }
+
+    /// A name with a quote or a backslash in it builds a request that is
+    /// still JSON, on `ControlRoomPageRequest.quoted`'s reason: the core
+    /// would otherwise answer a parse failure about text this host wrote.
+    @Test func aNameInTheRequestIsQuotedRatherThanPasted() {
+        let request = Workdirs.listingRequest(token: "t", rel: "a\"b\\c")
+        #expect(request.contains(#""rel":"a\"b\\c""#))
+        #expect((try? JSONSerialization.jsonObject(with: Data(request.utf8))) != nil)
+    }
+
+    // MARK: Reading the answer
+
+    @Test func aLevelReadsInTheCoresOrderAndWithItsCount() throws {
+        let level = try Workdirs.readListing(
+            answer([row("src", dir: true), row("a.tsx", dir: false), row("b.zig", dir: false)].joined(separator: ","),
+                   more: 7)
+        ).get()
+        #expect(level.entries.map(\.name) == ["src", "a.tsx", "b.zig"])
+        #expect(level.entries.map(\.is_dir) == [true, false, false])
+        #expect(level.more == 7)
+    }
+
+    /// An empty directory is an answer, and not a failure: the page draws a
+    /// directory with nothing in it, which is not the same thing as a
+    /// directory it could not read.
+    @Test func anEmptyLevelIsAnAnswerAndNotAFailure() throws {
+        let level = try Workdirs.readListing(answer("")).get()
+        #expect(level.entries.isEmpty)
+        #expect(level.more == 0)
+    }
+
+    /// **The files door refuses in its own shape**, which is not the page
+    /// door's `{"error":…}`: a code, a reason and the core's own sentence.
+    /// Folding this into `notJSON` would throw the sentence away, and folding
+    /// it into `refused` would lose which of the two doors answered.
+    @Test func theFilesDoorsRefusalKeepsTheCoresSentence() {
+        let text = #"{"refused":"access","reason":"outside","why":"it is not in this working directory"}"#
+        #expect(Workdirs.readListing(text)
+            == .failure(.refusedFile(code: "access", why: "it is not in this working directory")))
+        // The door's own bad-request answer has no sentence, and is still
+        // read as a refusal rather than as a broken document.
+        #expect(Workdirs.readListing(#"{"refused":"bad_request","why":"BadParams"}"#)
+            == .failure(.refusedFile(code: "bad_request", why: "BadParams")))
+        #expect(Workdirs.readListing(#"{"refused":"no_ticket"}"#)
+            == .failure(.refusedFile(code: "no_ticket", why: nil)))
+        // And it is not the page door's refusal, nor a parse failure.
+        #expect(Workdirs.readListing(text) != .failure(.notJSON))
+        #expect(Workdirs.readListing(text) != .failure(.refused("access")))
+    }
+
+    @Test func anAnswerThatIsNotALevelIsNotJSON() {
+        #expect(Workdirs.readListing("not json at all") == .failure(.notJSON))
+        // A well-formed document of the wrong shape, too.
+        #expect(Workdirs.readListing(#"{"entries":[]}"#) == .failure(.notJSON))
+    }
+
+    // MARK: What has been asked for
+
+    /// **A directory nobody has asked about is not a directory whose level
+    /// is empty**, and the two must be told apart: the first must be asked
+    /// about, the second must not be asked about again on every redraw.
+    @Test func askedAboutAndEmptyAreTwoDifferentStates() {
+        var levels = Levels()
+        #expect(!levels.hasAsked("/w/src"))
+        levels.keep(Level(entries: [], more: 0), at: "/w/src")
+        #expect(levels.hasAsked("/w/src"))
+        #expect(levels.level("/w/src")?.entries.isEmpty == true)
+    }
+
+    /// **A refusal is remembered, and is not an empty level.** A page that
+    /// stored it as one would draw "this directory is empty" where the core
+    /// said "this directory may not be read", and would go on saying it.
+    @Test func aRefusalIsNotStoredAsAnEmptyLevel() {
+        var levels = Levels()
+        levels.keepRefusal(.refusedFile(code: "access", why: "too wide"), at: "/w")
+        #expect(levels.hasAsked("/w"), "it was asked about, so it is not asked again")
+        #expect(levels.level("/w") == nil, "and it is not an empty directory")
+        #expect(levels.refusal("/w") == .refusedFile(code: "access", why: "too wide"))
+
+        // The other way round: a level read later replaces the refusal.
+        levels.keep(Level(entries: [], more: 0), at: "/w")
+        #expect(levels.refusal("/w") == nil)
+        #expect(levels.level("/w") != nil)
+    }
+
+    /// A directory that is gone and comes back is asked about afresh rather
+    /// than showing what was in it before, which is what `forget` is for.
+    @Test func forgetDropsEveryLevelAndEveryRefusal() {
+        var levels = Levels()
+        levels.keep(Level(entries: [.init(name: "a", is_dir: false)], more: 0), at: "/w")
+        levels.keepRefusal(.notJSON, at: "/w/sub")
+        levels.toggle("/w")
+        levels.forget()
+        #expect(!levels.hasAsked("/w"))
+        #expect(levels.refusal("/w/sub") == nil)
+        #expect(levels.isOpen("/w"), "a directory that comes back comes back open")
+    }
+
+    // MARK: Which directories under a root are shut
+
+    @Test func aDirectoryNobodyHasTouchedIsOpenAndOneClickShutsIt() {
+        var levels = Levels()
+        #expect(levels.isOpen("/w/src"))
+        levels.toggle("/w/src")
+        #expect(!levels.isOpen("/w/src"))
+        levels.toggle("/w/src")
+        #expect(levels.isOpen("/w/src"))
+    }
+
+    /// The shut set is by path, and two directories are two of them.
+    @Test func shuttingOneDirectoryLeavesItsNeighbourAlone() {
+        var levels = Levels()
+        levels.toggle("/w/src")
+        #expect(levels.isOpen("/w/docs"))
+    }
+}

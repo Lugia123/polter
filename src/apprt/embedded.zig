@@ -2226,7 +2226,7 @@ pub const CAPI = struct {
     /// second call with the same request so a host may ask for the size
     /// first.
     ///
-    /// **Zero bytes for a request that is not one of the five.** A host
+    /// **Zero bytes for a request that is not one of the six.** A host
     /// that asks for something else is told nothing rather than answered
     /// with somebody else's shape.
     ///
@@ -2253,7 +2253,7 @@ pub const CAPI = struct {
 
     /// What a files request that could not be answered at all says. Named
     /// rather than empty, because "out of memory" and "that is not one of
-    /// the five" are different things and a host reads neither as a file.
+    /// the six" are different things and a host reads neither as a file.
     const files_fallback =
         \\{"refused":"unavailable","why":"the core could not answer"}
     ;

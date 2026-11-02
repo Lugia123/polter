@@ -108,6 +108,18 @@ enum ControlRoomWorkdirs {
         /// and a page that reported it as a parse failure would send
         /// whoever read the message looking in the wrong place.
         case refused(String)
+        /// The core refused a **files** request, in that door's own shape:
+        /// `{"refused":"access","reason":"outside","why":"it is not in this
+        /// working directory, or there is nothing at that path"}`.
+        ///
+        /// ⚠️ **A second case and not the one above.** The page door answers
+        /// `{"error":"NoSuchGroup"}` -- one name and nothing else -- while
+        /// this door answers a code, a reason and a sentence, and the
+        /// sentence is the core's own (`Access.Refusal.say`). Folding the
+        /// two together would either drop the sentence, which is the half a
+        /// person reads, or invent one here, which would be a second answer
+        /// about why a directory may not be listed.
+        case refusedFile(code: String, why: String?)
     }
 
     /// The directory a ticket for `path` is minted from: **the longest
@@ -275,6 +287,175 @@ extension ControlRoomWorkdirs {
         /// written down there).
         mutating func keep(only ids: [String]) {
             shut.formIntersection(ids)
+        }
+    }
+}
+
+// MARK: - What is in a directory
+
+extension ControlRoomWorkdirs {
+    /// One level of one directory, as the core's `files_list` answers it
+    /// (task 2668).
+    ///
+    /// **The order and the exclusions are the core's**, and this type is the
+    /// reading of them: `entries` arrives directories-first and by name, with
+    /// the build output already gone (`files/Listing.zig`). Nothing here
+    /// sorts, filters or reorders -- `tools/control-room-hosts-do-not-decide.py`
+    /// refuses a host that does, and the reason is that a second order worked
+    /// out here is a second answer about what the tree looks like.
+    ///
+    /// ⚠️ **`is_dir` and not the core's `kind`.** The five `files_*` requests
+    /// beside this one answer `{"kind":"directory"}` for a path; a listing
+    /// answers `is_dir`, a `Bool`, because a kind is a word to compare and a
+    /// row that has to draw an icon needs one fact. The gate refuses a host
+    /// that reads a `kind` anywhere, on the ground that there is nothing a
+    /// kind is for in a host except comparing it.
+    struct Level: Decodable, Equatable {
+        var entries: [Row]
+        /// How many entries were past the core's own limit and are not here
+        /// (`Listing.max_entries`); the design draws 「还有 N 个」 for it. 0
+        /// when the whole level came.
+        var more: UInt64
+
+        struct Row: Decodable, Equatable {
+            /// The name only. The directory it is in is the one this level
+            /// was asked about, so a row carries no path of its own.
+            var name: String
+            /// A directory, or a link that leads to one: which icon, and
+            /// whether the row opens.
+            var is_dir: Bool
+        }
+    }
+
+    /// `files_list` for the directory the ticket `token` was made for, or
+    /// for the directory `rel` names under it. **Empty `rel` is the ticket's
+    /// own path**, which is one level of the directory the ticket is on.
+    ///
+    /// The `rel` is quoted rather than pasted, on `ControlRoomPageRequest`'s
+    /// reason: a name with a quote in it would otherwise build a request that
+    /// is not JSON, and the core would answer a parse failure about a request
+    /// this host wrote.
+    static func listingRequest(token: String, rel: String = "") -> String {
+        "{\"method\":\"files_list\",\"params\":{"
+            + "\"token\":\(ControlRoomPageRequest.quoted(token)),"
+            + "\"rel\":\(ControlRoomPageRequest.quoted(rel))}}"
+    }
+
+    /// The level, or what could not be read of it.
+    ///
+    /// ⚠️ **Three outcomes, the same three `read(_:)` has**, and for the same
+    /// reason: the core answers a refusal **inside the same shape**
+    /// (`{"refused":"access","reason":"outside","why":…}` from `Tickets`, and
+    /// `{"refused":"bad_request",…}` from the door), so a reader that folded
+    /// those into "not JSON" would call a well-formed refusal a parse failure
+    /// and throw away the core's own word for what was wrong.
+    ///
+    /// The refusal's `why` is kept as well as its name: `refused` is what a
+    /// caller branches on and `why` is the sentence a person reads, and the
+    /// two are the core's own (`Access.Refusal.say`, `Tickets.Refusal`).
+    static func readListing(_ text: String) -> Result<Level, Failure> {
+        guard let data = text.data(using: .utf8) else { return .failure(.notJSON) }
+        if let v = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            if let error = v["error"] as? String { return .failure(.refused(error)) }
+            if let refused = v["refused"] as? String {
+                return .failure(.refusedFile(code: refused, why: v["why"] as? String))
+            }
+        }
+        do {
+            return .success(try JSONDecoder().decode(Level.self, from: data))
+        } catch {
+            return .failure(.notJSON)
+        }
+    }
+}
+
+// MARK: - What the tree has asked for, and what is open under a root
+
+extension ControlRoomWorkdirs {
+    /// One level of a directory per directory, and which of those
+    /// directories the person has shut.
+    ///
+    /// **What a directory holds is asked for once and kept.** The side of the
+    /// page this belongs to redraws on every keystroke in the search field
+    /// and on every notice from the core, and a `files_list` per redraw would
+    /// be a directory read per redraw -- on the app thread, for the same
+    /// reason `files/README.md` gives about `realpath`. Nothing here expires:
+    /// what is in a directory changes, and the page says so by asking again
+    /// (`forget` then a redraw), which is a person's act rather than a
+    /// clock's.
+    ///
+    /// ⚠️ **A directory is named by its path, and the path is the real one.**
+    /// Two rows of the tree can reach the same directory by two spellings
+    /// (`.`, `sub/..`), so a key of the spelling the page drew would be two
+    /// entries for one directory -- one of them stale, and the page would
+    /// draw whichever it looked up. What the page has is the level's path
+    /// under its parent, so the key is that path joined onto the parent it
+    /// was read under; the root's own path is the one the core sent in the
+    /// directory row.
+    ///
+    /// **A level that could not be read is not stored.** Empty and "the core
+    /// refused" are two states the page draws differently -- one is a
+    /// directory with nothing in it, the other is a sentence about why -- so
+    /// a refusal stored as an empty level would draw the wrong one for ever.
+    /// The refusal is kept beside it instead, for the one row it belongs to.
+    ///
+    /// **Roots are not here.** Which roots are open is `Tree`'s, which the
+    /// page already has and which its own tests hold; this type is about the
+    /// directories *under* them, so the two do not both remember a root.
+    struct Levels: Equatable {
+        private(set) var levels: [String: Level] = [:]
+        /// What went wrong for a directory, by the same key, for the rows
+        /// that could not be read. Drawn instead of a level.
+        private(set) var refused: [String: Failure] = [:]
+        /// The directories under the roots somebody has shut, by path.
+        /// **Shut, on `Tree`'s rule**: a directory nobody has touched is
+        /// open, and a set of *open* ones could not tell that from "somebody
+        /// opened it" (`Tree`'s header says the whole of it).
+        private(set) var shut: Set<String> = []
+
+        init() {}
+
+        func level(_ path: String) -> Level? { levels[path] }
+
+        func refusal(_ path: String) -> Failure? { refused[path] }
+
+        /// Whether this directory has ever been asked for. **Different from
+        /// "its level is empty"**, which is an answer: a row nobody has
+        /// asked about shows nothing yet and must ask, and a row that was
+        /// asked about and came back empty must not ask again on every
+        /// redraw.
+        func hasAsked(_ path: String) -> Bool {
+            levels[path] != nil || refused[path] != nil
+        }
+
+        mutating func keep(_ level: Level, at path: String) {
+            levels[path] = level
+            refused[path] = nil
+        }
+
+        /// The core refused this directory: the refusal is drawn, and the
+        /// directory counts as asked about so the page does not ask again on
+        /// every redraw.
+        mutating func keepRefusal(_ failure: Failure, at path: String) {
+            levels[path] = nil
+            refused[path] = failure
+        }
+
+        /// Everything that was read is gone: the group changed, or the core
+        /// was asked again from scratch. The shut directories go too, on
+        /// `Tree.keep(only:)`'s reason -- a directory that comes back comes
+        /// back open rather than wearing a decision made about a directory
+        /// the group had before.
+        mutating func forget() {
+            levels.removeAll()
+            refused.removeAll()
+            shut.removeAll()
+        }
+
+        func isOpen(_ path: String) -> Bool { !shut.contains(path) }
+
+        mutating func toggle(_ path: String) {
+            if shut.contains(path) { shut.remove(path) } else { shut.insert(path) }
         }
     }
 }

@@ -12,6 +12,7 @@ pub const Write = @import("Write.zig");
 pub const Locks = @import("Locks.zig");
 pub const Recent = @import("Recent.zig");
 pub const Watch = @import("Watch.zig");
+pub const Listing = @import("Listing.zig");
 pub const Tickets = @import("Tickets.zig");
 
 test {
@@ -24,5 +25,6 @@ test {
     _ = Locks;
     _ = Recent;
     _ = Watch;
+    _ = Listing;
     _ = Tickets;
 }

@@ -1799,11 +1799,11 @@ GHOSTTY_API uintptr_t ghostty_app_control_page(ghostty_app_t, const char*, uintp
 // editing one file of a working directory through a capability ticket
 // (src/poltergeist/files/Tickets.zig, task 2573; the hosts' own door is
 // task 2628). `req` is one JSON request, the same text the socket carries --
-// {"method":"files_resolve","params":{"token":...,"rel":...}} and its four
+// {"method":"files_resolve","params":{"token":...,"rel":...}} and its five
 // siblings -- and the answer is the same JSON the socket would have carried.
 // Same buffer rule as ghostty_app_control_snapshot, and a second call with
 // the same request gives the same answer, so a host may ask for the length
-// first. **Zero bytes for a request that is not one of the five**: a host
+// first. **Zero bytes for a request that is not one of the six**: a host
 // that asks for something else is told nothing rather than answered with
 // somebody else's shape. Refusals come back as {"refused":...,"why":...},
 // which is what the ticket itself answers with. App thread only.

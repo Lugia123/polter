@@ -34,6 +34,7 @@ const Access = @import("Access.zig");
 const Text = @import("Text.zig");
 const Write = @import("Write.zig");
 const Merge = @import("Merge.zig");
+const Listing = @import("Listing.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -264,6 +265,66 @@ pub fn resolve(self: *Tickets, arena: Allocator, token: []const u8, rel: []const
             std.json.fmt(r.path, .{}), @tagName(r.kind), r.size, r.mtime_ns,
         }),
     }
+}
+
+// -------------------------------------------------------------------- list
+
+/// What is directly inside the directory `rel` names, one level deep (task
+/// 2668; `polter-artifacts/2145/PLAN.md` §2.5).
+///
+/// **A listing goes through the ticket exactly as a read does**, and for the
+/// same reason: the path is judged against *this ticket's* workdir and scope
+/// on this call, so a host cannot list a directory it has no ticket for.
+///
+/// ⚠️ **`rel` is relative to the ticket's own path, where `resolve`'s is
+/// relative to the file's *directory*.** The two look alike and are not:
+/// `resolve` answers where an `<img src>` in a file points, so it starts from
+/// the directory the file is in; a listing starts from the thing the ticket
+/// was made for, which is the directory being drawn. Joining a listing to
+/// `dirname(anchor)` would make the second level of a tree come out of the
+/// ticket's parent -- a subtree of the wrong directory, drawn without an
+/// error. Empty `rel` is the ticket's own path: a ticket on a directory
+/// lists that directory, which is what a host drawing a tree asks for.
+///
+/// The scope is the ticket's own and is never widened here: a `.file` ticket
+/// is on one file, and a file is not a directory to list.
+///
+/// **A file is not a directory to list**, and the answer says which of the
+/// two refusals it was -- `not_a_file` for a file, `unreadable` for a
+/// directory that is there and cannot be opened. Folding them together would
+/// make "that is a file" and "that could not be read" one message.
+///
+/// The order and what is left out are `Listing`'s.
+pub fn list(self: *Tickets, arena: Allocator, token: []const u8, rel: []const u8) Allocator.Error![]const u8 {
+    const e = self.find(token) orelse {
+        log.debug("files: list on a ticket not held", .{});
+        return noTicket(arena);
+    };
+    const path = if (rel.len == 0)
+        e.anchor
+    else if (std.fs.path.isAbsolute(rel))
+        rel
+    else
+        try std.fs.path.join(arena, &.{ e.anchor, rel });
+    const verdict = try Access.resolve(arena, self.io, .{
+        .workdir = e.workdir,
+        .path = path,
+        .scope = e.scope,
+        .anchor = e.anchor,
+        .too_wide = e.too_wide,
+    });
+    const real = switch (verdict) {
+        .refuse => |a| return refusedAccess(arena, a),
+        .ok => |r| r,
+    };
+    if (real.kind != .directory)
+        return refusedAccess(arena, .not_a_file);
+
+    const answer = (try Listing.of(arena, self.io, real.path)) orelse
+        return refusedAccess(arena, .unreadable);
+    var out: Io.Writer.Allocating = .init(arena);
+    Listing.writeJson(&out.writer, answer) catch return error.OutOfMemory;
+    return out.written();
 }
 
 // ------------------------------------------------------------------- close
@@ -778,4 +839,91 @@ test "2573 C7: a ticket keeps a few proposals, and the oldest stops working" {
     }
     try testing.expect(try f.isRefused(try f.t.commit(f.a(), first, &.{}, false)));
     try testing.expectEqualStrings("a\n", try f.get("w/a.md"));
+}
+
+test "2668 S1: a ticket lists its own directory one level deep, in the core's order" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.tmp.dir.createDirPath(testing.io, "w/sub");
+    try f.put("w/sub/deep.md", "d\n");
+    try f.put("w/a.md", "a\n");
+    try f.put("w/.git", "x"); // a name that is excluded whatever it is
+    try f.tmp.dir.createDirPath(testing.io, "other");
+    try f.put("other/theirs.md", "t\n");
+
+    // **The ticket is on the directory**, which is what a host drawing a
+    // tree asks for: `files_open` with the directory as its path.
+    const v = try f.open("sub", .workdir);
+    const listed = try f.parse(try f.t.list(f.a(), tokenOf(v), ""));
+    const names = listed.object.get("entries").?.array;
+    // The level of `sub`: its own file, and nothing from beside or above it.
+    try testing.expectEqual(@as(usize, 1), names.items.len);
+    try testing.expectEqualStrings("deep.md", names.items[0].object.get("name").?.string);
+    try testing.expect(!names.items[0].object.get("is_dir").?.bool);
+    try testing.expectEqual(@as(i64, 0), listed.object.get("more").?.integer);
+
+    // **A level below it by name**, from a ticket on the workdir itself:
+    // `sub` first (a directory), then the file, and the excluded `.git` is
+    // not there.
+    const root = try f.open(".", .workdir);
+    const top = try f.parse(try f.t.list(f.a(), tokenOf(root), ""));
+    const rows = top.object.get("entries").?.array;
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+    try testing.expectEqualStrings("sub", rows.items[0].object.get("name").?.string);
+    try testing.expect(rows.items[0].object.get("is_dir").?.bool);
+    try testing.expectEqualStrings("a.md", rows.items[1].object.get("name").?.string);
+
+    // **The second level comes out of the directory the ticket is on, not
+    // out of its parent.** This is the one thing a listing does differently
+    // from `resolve`, and getting it wrong draws the wrong subtree without
+    // an error: `sub`'s level is `deep.md`, and the workdir's level is not
+    // what comes back.
+    const named = try f.parse(try f.t.list(f.a(), tokenOf(root), "sub"));
+    try testing.expectEqual(@as(usize, 1), named.object.get("entries").?.array.items.len);
+    try testing.expectEqualStrings("deep.md", named.object.get("entries").?.array.items[0].object.get("name").?.string);
+
+    // **Out of the workdir is refused, not listed.** `sub/../..` is above the
+    // workdir, and `../other` is beside it.
+    try testing.expect(try f.isRefused(try f.t.list(f.a(), tokenOf(root), "../other")));
+    try testing.expect(try f.isRefused(try f.t.list(f.a(), tokenOf(root), "sub/../..")));
+}
+
+test "2668 S1: a listing is judged against the ticket's own scope, and a file is not a directory" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.tmp.dir.createDirPath(testing.io, "w/sub");
+    try f.put("w/sub/b.md", "b\n");
+    try f.put("w/a.md", "a\n");
+
+    // A ticket on a file: a file is not a directory to list, and the answer
+    // names that rather than "nothing there".
+    const one = try f.open("a.md", .file);
+    const file = try f.parse(try f.t.list(f.a(), tokenOf(one), ""));
+    try testing.expectEqualStrings("not_a_file", file.object.get("reason").?.string);
+
+    // A `.file` ticket on the workdir itself reaches the workdir and no
+    // further: a directory *below* it is out of this ticket's scope.
+    const here = try f.open(".", .file);
+    try testing.expect(try f.isRefused(try f.t.list(f.a(), tokenOf(here), "sub")));
+    const level = try f.parse(try f.t.list(f.a(), tokenOf(here), ""));
+    try testing.expectEqual(@as(usize, 2), level.object.get("entries").?.array.items.len);
+
+    // The same directory with the scope widened: now the level below it
+    // lists, which is the whole point of a ticket's scope.
+    const wide = try f.open(".", .workdir);
+    const down = try f.parse(try f.t.list(f.a(), tokenOf(wide), "sub"));
+    try testing.expectEqual(@as(usize, 1), down.object.get("entries").?.array.items.len);
+
+    // A workdir that may not be read at all refuses a listing too.
+    try testing.expect(try f.isRefused(try f.t.open(f.a(), .{ .path = f.work, .too_wide = true }, ".", .workdir)));
+}
+
+test "2668 S1: listing on a ticket that was never held, or one that was closed, is refused" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.put("w/a.md", "a\n");
+    const v = try f.open("a.md", .workdir);
+    try testing.expect(try f.isRefused(try f.t.list(f.a(), "00000000000000000000000000000000", "")));
+    _ = try f.t.close(f.a(), tokenOf(v));
+    try testing.expect(try f.isRefused(try f.t.list(f.a(), tokenOf(v), "")));
 }
