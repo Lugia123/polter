@@ -109,6 +109,13 @@ import time
 
 CONTRACT_VERSION = 1
 
+# A launch the role's own words contradict (task 2679). Answered the way
+# every other refusal here is: the reason on stderr, a non-zero exit, and no
+# `argv` at all -- so nothing half-built is ever run. `+launch` prints it as
+# "Codex could not build the command: …".
+class Refused(Exception):
+    pass
+
 # The server Polter registers for itself. A role that took it away would be
 # a terminal that cannot report back, which looks exactly like a dead one.
 POLTER_SERVER = "polter"
@@ -457,12 +464,39 @@ def inventory(req):
 
 
 BINARY = "codex"
-# (key, label, flag): measured on 0.163, `--ask-for-approval` and `--sandbox`.
+# (key, label, flag): the remaining value-taking option, measured on 0.163.
+# `approval` is not here any more -- it is one drop-down with more than one
+# kind of answer, built in `launch_options` (task 2679).
 OPTION_FLAGS = [
-    ("approval", "Approval", "--ask-for-approval"),
     ("sandbox", "Sandbox", "--sandbox"),
 ]
 
+# **One question, four answers** (task 2679). `--approve-for-me`,
+# `--dangerously-bypass-approvals-and-sandbox` and `--ask-for-approval <x>`
+# are all answers to "who approves what", and they are all offered by the
+# one `approval` drop-down, so a person sees one answer at a time rather
+# than three controls that can disagree. The two value-less flags come
+# first, Polter's own default at the top; the `--ask-for-approval` values
+# are what a role written before 0.166 picked, and they stay offered and
+# stay shown, so such a role reads back as what it is instead of as the
+# default it never chose.
+#
+# Measured on codex-cli 0.166.0, each flag against a control run: shown by
+# its own `--help`, and taken by `codex` and `codex resume <id>` alike.
+APPROVAL_FLAGS = [
+    ("approve-for-me", "--approve-for-me"),
+    ("bypass", "--dangerously-bypass-approvals-and-sandbox"),
+]
+# Polter's default, and only where this Codex's `--help` lists it: a role
+# that picked nothing gets it, and a Codex without the flag offers no
+# default at all, so it runs exactly as it did.
+DEFAULT_APPROVAL = "approve-for-me"
+# The two `--ask-for-approval` policies, where a sandbox is the person's to
+# pick. The two flags above each bring their own sandbox and are measured
+# to: `--approve-for-me` is the workspace-write sandbox, the bypass runs
+# with none. So a sandbox picked beside either is not applied -- said in a
+# note, never dropped in silence (task 2679).
+MANUAL_APPROVALS = ("on-request", "never")
 
 # Launch options (task 1677): the unattended settings a role picks per CLI,
 # as a drop-down rather than as words typed into "extra arguments". Only the
@@ -541,41 +575,191 @@ def flag_aliases(text, flag):
 
 
 def launch_options(text):
-    """The `options` an inventory offers, from a `--help` text."""
+    """The `options` an inventory offers, from a `--help` text.
+
+    `approval` is one drop-down with three kinds of answer in it (task
+    2679): the two value-less flags, in `APPROVAL_FLAGS`' order, then the
+    values `--ask-for-approval` lists, in its order. Each value carries the
+    arguments that give it, which is what lets one option offer answers
+    whose argv shapes differ. `sandbox` is unchanged: only the sandbox a
+    person picks by hand.
+    """
+    text = text or ""
     out = []
+    values = []
+    for value, flag in APPROVAL_FLAGS:
+        if takes_flag(text, flag):
+            values.append({"value": value, "args": [flag]})
+    for v in flag_values(text, "--ask-for-approval"):
+        values.append({"value": v, "args": ["--ask-for-approval", v]})
+    if values:
+        entry = {"key": "approval", "label": "Approval", "flag": "--ask-for-approval",
+                 "aliases": flag_aliases(text, "--ask-for-approval"), "values": values}
+        # Polter's own default, and only where this Codex takes it: a role
+        # that picked nothing gets it, and a Codex without the flag offers
+        # no default at all (`apply_options` reads `default` this way).
+        if takes_flag(text, APPROVAL_FLAGS[0][1]):
+            entry["default"] = DEFAULT_APPROVAL
+        out.append(entry)
     for key, label, flag in OPTION_FLAGS:
-        values = flag_values(text or "", flag)
-        if values:
+        vals = flag_values(text, flag)
+        if vals:
             out.append({"key": key, "label": label, "flag": flag,
-                        "aliases": flag_aliases(text or "", flag),
-                        "values": [{"value": v, "args": [flag, v]} for v in values]})
+                        "aliases": flag_aliases(text, flag),
+                        "values": [{"value": v, "args": [flag, v]} for v in vals]})
     return out
 
 
-def gives_flag(extra, spellings):
-    """Whether the extra arguments already give one of `spellings`, alone or
-    as `--flag=value` (a short one as `-s=value` too, which clap takes)."""
-    for a in extra:
-        for f in spellings:
-            if a == f or a.startswith(f + "="):
-                return True
-    return False
+def approval_answer(extra):
+    """What the role's own extra arguments say about approvals, as
+    `(flags, policy, sandbox)`.
+
+    `flags` are the value-less ones it gives: `approve-for-me`, `bypass`.
+    `policy` is whether it gives `--ask-for-approval`/`-a`, `sandbox`
+    whether it gives `--sandbox`/`-s` -- long and short, bare and `=value`.
+    """
+    flags = [value for value, flag in APPROVAL_FLAGS if flag in extra]
+    policy = any(_gives(a, "--ask-for-approval", "-a") for a in extra)
+    sandbox = any(_gives(a, "--sandbox", "-s") for a in extra)
+    return flags, policy, sandbox
+
+
+def _gives(a, flag, short):
+    return (a == flag or a.startswith(flag + "=")
+            or a == short or a.startswith(short + "="))
+
+
+def approval_clash(extra):
+    """Why these extra arguments cannot all be honoured (task 2679), or None.
+
+    `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox`,
+    `--ask-for-approval` and `--sandbox` are four answers to one question --
+    who approves what, in which sandbox -- and Codex documents no precedence
+    between them. **Measured on 0.166.0**: `--approve-for-me
+    --dangerously-bypass-approvals-and-sandbox`, and `--approve-for-me -s
+    read-only`, are each *accepted* (exit 0), so which of them wins is not
+    something to read off a run. Choosing one would be choosing a privilege
+    level for the person -- `bypass` is the one this Codex's own help calls
+    EXTREMELY DANGEROUS -- so a launch that says two different things in the
+    same place is refused, with what to remove, rather than resolved.
+    """
+    flags, policy, sandbox = approval_answer(extra)
+    if len(flags) > 1:
+        return ("The extra arguments give %s and %s; they cannot both be how "
+                "approvals are handled. Keep the one you want."
+                % (flag_for(flags[0]), flag_for(flags[1])))
+    if flags and policy:
+        return ("The extra arguments give %s and --ask-for-approval; they cannot both "
+                "be how approvals are handled. Keep the one you want." % flag_for(flags[0]))
+    if flags and sandbox:
+        return ("The extra arguments give %s and --sandbox; %s brings its own sandbox. "
+                "Keep the one you want." % (flag_for(flags[0]), flag_for(flags[0])))
+    return None
+
+
+def flag_for(value):
+    """The flag one of `APPROVAL_FLAGS`' values is, or the value itself."""
+    for v, flag in APPROVAL_FLAGS:
+        if v == value:
+            return flag
+    return value
 
 
 def apply_options(cli, extra, notes):
-    """The flags the role's `cli.options` stand for. A value this CLI does not
-    list is left out with a note; so is an option whose flag the role's extra
-    arguments already give, because those are the role's words too and a CLI
-    handed one flag twice keeps whichever it pleases."""
-    picked = cli.get("options") or {}
-    if not isinstance(picked, dict) or not picked:
-        return []
+    """The flags the role's `cli.options` stand for, in the order they go on
+    the command line.
+
+    **`approval` is one answer at a time** (task 2679), decided in this
+    order -- and exactly one of these happens:
+
+      * the extra arguments say anything about approvals or sandboxes: the
+        role's words on the command line win. Nothing is added, and a picked
+        value is left out with a note -- **so the drop-down and the command
+        line never say different things without the note saying so**;
+      * else the role picked one: its own flag goes on. A legacy role's
+        `on-request` / `never` is a value like any other, so such a role
+        reads back and runs as what it is written as, instead of being shown
+        as the default it never chose;
+      * else Polter's default, `--approve-for-me` -- automatic review in the
+        workspace-write sandbox, which is what an unattended role wants. A
+        Codex whose `--help` does not list it gets nothing, with a note, so
+        an older Codex runs exactly as it did.
+
+    **A sandbox takes effect only beside a manual policy.** Measured:
+    `--approve-for-me` is the workspace-write sandbox and the bypass runs
+    with none, so a sandbox that was picked is left out -- with a note, never
+    dropped in silence -- when the answer above is one of those two. That is
+    the one place the drop-down shows something the run does not use, and the
+    note is what says it.
+    """
+    picked = cli.get("options")
+    if not isinstance(picked, dict):
+        picked = {}
     offered = {o["key"]: o for o in launch_options(codex_help())}
     args = []
+
+    extra_flags, extra_policy, extra_sandbox = approval_answer(extra)
+    picked_approval = picked.get("approval")
+    approval = offered.get("approval")
+
+    # 1. What answers "who approves what", and where that answer comes from.
+    # **Polter's default is a last resort, not a first word**: the role's own
+    # words -- a pick, or the extra arguments -- keep exactly what they say.
+    # A role that picked a sandbox and no approval is such a case: adding
+    # `--approve-for-me` on top would bring the workspace-write sandbox and
+    # take that sandbox away, so the default is withheld and the note says
+    # so. (The window says the same thing under the two drop-downs.)
+    said_by_extra = flag_for(extra_flags[0]) if extra_flags else (
+        "--ask-for-approval" if extra_policy else ("--sandbox" if extra_sandbox else None))
+    source = None
+    effective = None
+    if said_by_extra is not None:
+        source, effective = "extra", extra_flags[0] if extra_flags else None
+    elif picked_approval is not None:
+        source, effective = "role", picked_approval
+    elif "sandbox" in picked:
+        source = "sandbox"
+    else:
+        source = "default"
+        effective = approval.get("default") if approval else None
+        if effective is None:
+            notes.append("No approval setting was added: this Codex does not take "
+                         "--approve-for-me (its --help does not list it).")
+            source = None
+
+    # 2. The flag for it, from wherever the answer came.
+    if source in ("role", "default"):
+        hit = next((v for v in (approval or {}).get("values", []) if v["value"] == effective), None)
+        if hit is None:
+            notes.append('Launch option approval="%s" is not a value this version takes; left out.'
+                         % effective)
+            source, effective = None, None
+        else:
+            args += list(hit["args"])
+    elif source == "extra":
+        if picked_approval is not None:
+            notes.append('Launch option "approval" left out: the extra arguments already give %s.'
+                         % said_by_extra)
+        elif said_by_extra != flag_for(DEFAULT_APPROVAL):
+            # No default was added because the role's own arguments decide.
+            # Said, so that a drop-down's answer and the command line are not
+            # two different things in silence.
+            notes.append("No approval setting was added: the role's own %s decides."
+                         % said_by_extra)
+    elif source == "sandbox":
+        notes.append("No approval setting was added: the role picked a sandbox, and "
+                     "--approve-for-me would bring its own.")
+
     for key, value in picked.items():
+        if key == "approval":
+            continue
         o = offered.get(key)
         if o is None:
             notes.append('Launch option "%s" is not one this version offers; left out.' % key)
+            continue
+        if key == "sandbox" and effective is not None and effective not in MANUAL_APPROVALS:
+            notes.append('Launch option "sandbox" left out: %s brings its own sandbox.'
+                         % flag_for(effective))
             continue
         if gives_flag(extra, [o["flag"]] + o["aliases"]):
             notes.append('Launch option "%s" left out: the extra arguments already give %s.' % (key, o["flag"]))
@@ -586,6 +770,16 @@ def apply_options(cli, extra, notes):
             continue
         args += hit["args"]
     return args
+
+
+def gives_flag(extra, spellings):
+    """Whether the extra arguments already give one of `spellings`, alone or
+    as `--flag=value` (a short one as `-s=value` too, which clap takes)."""
+    for a in extra:
+        for f in spellings:
+            if a == f or a.startswith(f + "="):
+                return True
+    return False
 
 
 def enabled(selection, item_id):
@@ -689,6 +883,12 @@ def launch(req):
             off[item["kind"]] += 1
 
     extra = [a for a in (cli.get("args") or []) if isinstance(a, str)]
+
+    # Two answers to "who approves what" in the role's own words are refused
+    # before anything is built (task 2679): see `approval_clash`.
+    clash = approval_clash(extra)
+    if clash is not None:
+        raise Refused(clash)
 
     opts = []
     if off_paths:
@@ -1028,7 +1228,11 @@ def main():
     if not isinstance(req, dict):
         sys.stderr.write("the request is not a JSON object\n")
         return 2
-    answer = {"inventory": inventory, "launch": launch, "identify": identify}[sys.argv[1]](req)
+    try:
+        answer = {"inventory": inventory, "launch": launch, "identify": identify}[sys.argv[1]](req)
+    except Refused as e:
+        sys.stderr.write("%s\n" % e)
+        return 1
     sys.stdout.write(json.dumps(answer, ensure_ascii=False))
     sys.stdout.write("\n")
     return 0

@@ -357,6 +357,7 @@
 "The CLI's default" = "CLI 默认";
 "Skip Permissions" = "跳过权限确认";
 "No tool asks before it runs, shell commands included. To confirm each one, choose ask." = "所有工具（含 shell 命令）都不再询问。要逐个确认，就选 ask。";
+"Automatic review and bypass each bring their own sandbox, so a Sandbox picked below is not applied with them. Keep a sandbox only with on-request or never." = "「自动审查」和「完全跳过」各自带沙箱，此时下面选的沙箱不会生效。只有选 on-request 或 never 时，沙箱才作数。";
 "Polter's default (%@)" = "Polter 默认（%@）";
 "Extra Arguments" = "额外参数";
 "Added to the command line as typed. Quote anything with a space in it." = "按原样追加到命令行。含空格的参数请加引号。";

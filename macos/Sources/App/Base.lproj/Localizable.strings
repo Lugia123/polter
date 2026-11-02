@@ -341,6 +341,7 @@
 "The CLI's default" = "The CLI's default";
 "Skip Permissions" = "Skip Permissions";
 "No tool asks before it runs, shell commands included. To confirm each one, choose ask." = "No tool asks before it runs, shell commands included. To confirm each one, choose ask.";
+"Automatic review and bypass each bring their own sandbox, so a Sandbox picked below is not applied with them. Keep a sandbox only with on-request or never." = "Automatic review and bypass each bring their own sandbox, so a Sandbox picked below is not applied with them. Keep a sandbox only with on-request or never.";
 "Polter's default (%@)" = "Polter's default (%@)";
 "Extra Arguments" = "Extra Arguments";
 "Added to the command line as typed. Quote anything with a space in it." = "Added to the command line as typed. Quote anything with a space in it.";

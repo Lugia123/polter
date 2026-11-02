@@ -82,8 +82,10 @@ FILES = {
 }
 
 
-# Codex 0.163.0's own `--help`, the part the launch options are read from
-# (task 1677; the text `test/codex-adapter/options.py` holds the adapter to).
+# Codex's own `--help`, the part the launch options are read from (task 1677;
+# the text `test/codex-adapter/options.py` holds the adapter to). The two
+# value-less approval flags are 0.166.0's (task 2679); everything else is
+# 0.163.0's.
 CODEX_HELP = """\
 Usage: codex [OPTIONS] [PROMPT]
 
@@ -95,6 +97,10 @@ Options:
 
       --approve-for-me
           Route approval requests through automatic review using the workspace-write sandbox
+
+      --dangerously-bypass-approvals-and-sandbox
+          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY
+          DANGEROUS.
 
   -a, --ask-for-approval <APPROVAL_POLICY>
           Configure when the model requires human approval before executing a command
@@ -113,7 +119,14 @@ Options:
 
 
 def option_requests(paths):
-    """Asked with a stand-in `codex` first on PATH that prints CODEX_HELP."""
+    """Asked with a stand-in `codex` first on PATH that prints CODEX_HELP.
+
+    The `approval` answers (task 2679): Polter's default when the role picked
+    nothing, a legacy role's own policy, the dangerous flag, and the
+    refusals -- the extra arguments may not give two answers to the one
+    question. Every one of them is here so that a difference between the two
+    adapters shows up as a difference rather than as a shared silence.
+    """
     home, cwd = paths["HOME"], paths["CWD"]
     role = {"key": "r", "name": "r"}
 
@@ -130,7 +143,20 @@ def option_requests(paths):
         launch("options: -s=x too", {"sandbox": "read-only"}, ["-s=danger-full-access"]),
         launch("options: --sandbox=x and -a x", {"sandbox": "read-only", "approval": "never"}, ["--sandbox=workspace-write", "-a", "never"]),
         launch("options: a value it does not list, a key it does not have, no value", {"sandbox": "yolo", "model": "x", "approval": None}),
-        launch("options: not an object is no options", ["read-only"]),
+        launch("options: options that are not an object still get the default", ["read-only"]),
+        # The four answers of the one `approval` drop-down.
+        launch("options: nothing picked gets Polter's default", {}),
+        launch("options: a legacy policy is its own flag", {"approval": "never"}),
+        launch("options: the dangerous one is its own flag", {"approval": "bypass"}),
+        launch("options: a sandbox beside a policy goes on", {"approval": "on-request", "sandbox": "read-only"}),
+        launch("options: a sandbox alone withholds the default", {"sandbox": "read-only"}),
+        launch("options: --search in the extra arguments is kept", {}, ["--search"]),
+        launch("options: extra -a keeps the default out", {}, ["-a", "never"]),
+        # Two answers in the role's own words: refused, both adapters alike.
+        launch("options: both value-less flags are refused", {}, ["--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"]),
+        launch("options: a flag and a policy are refused", {}, ["--approve-for-me", "-a", "never"]),
+        launch("options: a flag and a sandbox are refused", {}, ["--dangerously-bypass-approvals-and-sandbox", "--sandbox=read-only"]),
+        launch("options: a policy with a sandbox is not a clash", {}, ["-a", "never", "-s", "read-only"]),
     ]
 
 

@@ -483,7 +483,7 @@ struct AgentCliOption: Equatable, Identifiable {
     var title: String {
         switch key {
         case "permission_mode": return String(localized: "Permission Mode", comment: "角色库：Claude Code 的无人值守下拉，--permission-mode")
-        case "approval": return String(localized: "Approval", comment: "角色库：Codex 的无人值守下拉，--ask-for-approval")
+        case "approval": return String(localized: "Approval", comment: "角色库：Codex 的无人值守下拉，一个下拉四档：--approve-for-me / --dangerously-bypass-approvals-and-sandbox / --ask-for-approval 的两个值")
         case "sandbox": return String(localized: "Sandbox", comment: "角色库：Codex 的无人值守下拉，--sandbox")
         case "skip_permissions": return String(localized: "Skip Permissions", comment: "角色库：Antigravity 的无人值守下拉，--dangerously-skip-permissions")
         default: return label
@@ -496,6 +496,13 @@ struct AgentCliOption: Equatable, Identifiable {
         case "skip_permissions":
             return String(localized: "No tool asks before it runs, shell commands included. To confirm each one, choose ask.",
                           comment: "角色库：Antigravity「跳过权限确认」下拉下面的说明")
+        case "approval":
+            // The two value-less answers bring their own sandbox, so a
+            // Sandbox picked beside one of them is left out at launch --
+            // which has to be said here, where the person picks it, and not
+            // only in a launch note they never see (task 2679).
+            return String(localized: "Automatic review and bypass each bring their own sandbox, so a Sandbox picked below is not applied with them. Keep a sandbox only with on-request or never.",
+                          comment: "角色库：Codex「审批」下拉下面的说明——自动审查/完全跳过各自带沙箱，此时下面的沙箱不生效")
         default: return nil
         }
     }

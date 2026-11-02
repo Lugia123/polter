@@ -704,8 +704,26 @@ function Get-Inventory($Req) {
     return , $answer
 }
 
-# (key, label, flag): see OPTION_FLAGS in adapter.py.
-$script:OptionFlags = @(@('approval', 'Approval', '--ask-for-approval'), @('sandbox', 'Sandbox', '--sandbox'))
+# The remaining value-taking option (see `OPTION_FLAGS` in adapter.py).
+# `approval` is not here any more -- it is one drop-down with more than one
+# kind of answer, built in `Get-LaunchOptions` (task 2679).
+#
+# **`,@(...)`, not `@(...)`.** One row here is one entry; without the comma
+# `@()` flattens a single nested array into three strings, so `$o[2]` is the
+# letter `n` of `'sandbox'` and the option vanishes from the inventory
+# (measured, task 2679). With two rows it happened to survive, which is why
+# this only broke when `approval` left the table.
+$script:OptionFlags = @(,@('sandbox', 'Sandbox', '--sandbox'))
+
+# **One question, four answers** (task 2679): see `APPROVAL_FLAGS` in
+# adapter.py for why they are one drop-down and why the two value-less flags
+# come first. `$script:DefaultApproval` is Polter's own default, offered only
+# where this Codex's `--help` lists it.
+$script:ApprovalFlags = @(@('approve-for-me', '--approve-for-me'), @('bypass', '--dangerously-bypass-approvals-and-sandbox'))
+$script:DefaultApproval = 'approve-for-me'
+# The two `--ask-for-approval` policies, where a sandbox is the person's to
+# pick; the flags above each bring their own (task 2679).
+$script:ManualApprovals = @('on-request', 'never')
 
 # One argument as a Windows program reads its command line back into argv
 # (the MSVC runtime's rules, which `CommandLineToArgvW` shares): quoted when
@@ -891,14 +909,45 @@ function Get-FlagAliases([string]$Text, [string]$Flag) {
 }
 
 # The `options` an inventory offers, from a `--help` text (`$null` is none).
+# `approval` is built here rather than from a table, because one drop-down
+# holds both a value-less flag and a `--ask-for-approval` policy, each with
+# its own argv (see `launch_options` in adapter.py, task 2679).
 function Get-LaunchOptions($Text) {
     $t = $(if ($null -eq $Text) { '' } else { [string]$Text })
     $out = New-List
+    $values = New-List
+    foreach ($f in $script:ApprovalFlags) {
+        if (Test-TakesFlag $t ([string]$f[1])) {
+            $one = New-Map
+            $one['value'] = [string]$f[0]
+            $one['args'] = New-List
+            $one['args'].Add([string]$f[1])
+            $values.Add($one)
+        }
+    }
+    foreach ($v in (Get-FlagValues $t '--ask-for-approval')) {
+        $one = New-Map
+        $one['value'] = $v
+        $one['args'] = New-List
+        $one['args'].Add('--ask-for-approval')
+        $one['args'].Add($v)
+        $values.Add($one)
+    }
+    if ($values.Count -gt 0) {
+        $entry = New-Map
+        $entry['key'] = 'approval'
+        $entry['label'] = 'Approval'
+        $entry['flag'] = '--ask-for-approval'
+        $entry['aliases'] = Get-FlagAliases $t '--ask-for-approval'
+        $entry['values'] = $values
+        if (Test-TakesFlag $t ([string]$script:ApprovalFlags[0][1])) { $entry['default'] = $script:DefaultApproval }
+        $out.Add($entry)
+    }
     foreach ($o in $script:OptionFlags) {
-        $values = Get-FlagValues $t $o[2]
-        if ($values.Count -eq 0) { continue }
+        $vals = Get-FlagValues $t $o[2]
+        if ($vals.Count -eq 0) { continue }
         $vs = New-List
-        foreach ($v in $values) {
+        foreach ($v in $vals) {
             $one = New-Map
             $one['value'] = $v
             $one['args'] = New-List
@@ -937,21 +986,133 @@ function Get-PyPercentS($v) {
     return ConvertTo-PyJson $v
 }
 
+# What the role's own extra arguments say about approvals (see
+# `approval_answer` in adapter.py): the value-less flags it gives, whether it
+# gives `--ask-for-approval`, and whether it gives `--sandbox`.
+#
+# The three come back as `@($flags, $policy, $sandbox)`, the same shape
+# `Get-Gathered` hands three values back in. **Not `, @(,$flags), …`**: that
+# comma wraps the list in an array of its own, so `$answer[0]` is that array
+# and `$flags[0]` is the whole `List` -- which stringified into a refusal
+# naming `System.Collections.Generic.List`1[System.Object]`, and hid the
+# default approval (measured, task 2679: five `compare.py` differences).
+function Get-ApprovalAnswer($Extra) {
+    $flags = New-List
+    foreach ($f in $script:ApprovalFlags) {
+        foreach ($a in $Extra) { if ($a -ceq [string]$f[1]) { $flags.Add([string]$f[0]); break } }
+    }
+    $policy = $false
+    $sandbox = $false
+    foreach ($a in $Extra) {
+        if (Test-GivesFlag @($a) @('--ask-for-approval', '-a')) { $policy = $true }
+        if (Test-GivesFlag @($a) @('--sandbox', '-s')) { $sandbox = $true }
+    }
+    return @($flags, $policy, $sandbox)
+}
+
+# The flag a value of `$script:ApprovalFlags` is, or the value itself.
+function Get-ApprovalFlag([string]$Value) {
+    foreach ($f in $script:ApprovalFlags) { if ([string]$f[0] -ceq $Value) { return [string]$f[1] } }
+    return $Value
+}
+
+# Why these extra arguments cannot all be honoured (see `approval_clash` in
+# adapter.py), or `$null`. Refused rather than resolved: Codex accepts two
+# answers to one question (measured on 0.166.0) and documents no precedence,
+# so picking one would be picking a privilege level for the person.
+function Get-ApprovalClash($Extra) {
+    $answer = Get-ApprovalAnswer $Extra
+    $flags = $answer[0]; $policy = $answer[1]; $sandbox = $answer[2]
+    $one = $(if ($flags.Count -gt 0) { Get-ApprovalFlag ([string]$flags[0]) } else { '' })
+    if ($flags.Count -gt 1) {
+        return 'The extra arguments give ' + (Get-ApprovalFlag ([string]$flags[0])) + ' and ' + (Get-ApprovalFlag ([string]$flags[1])) + '; they cannot both be how approvals are handled. Keep the one you want.'
+    }
+    if ($flags.Count -gt 0 -and $policy) {
+        return 'The extra arguments give ' + $one + ' and --ask-for-approval; they cannot both be how approvals are handled. Keep the one you want.'
+    }
+    if ($flags.Count -gt 0 -and $sandbox) {
+        return 'The extra arguments give ' + $one + ' and --sandbox; ' + $one + ' brings its own sandbox. Keep the one you want.'
+    }
+    return $null
+}
+
 # The flags the role's `cli.options` stand for (see `apply_options`).
 function Get-AppliedOptions($Cli, $Extra, $Notes) {
     $args0 = New-List
     $picked = Get-J $Cli 'options'
-    if (-not (Test-Truthy $picked)) { return , $args0 }
-    if (-not (Test-JDict $picked)) { return , $args0 }
+    if (-not (Test-JDict $picked)) { $picked = New-Map }
     $offered = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::Ordinal)
     foreach ($o in (Get-LaunchOptions (Get-CodexHelp))) { $offered[[string]$o['key']] = $o }
+
+    $answer = Get-ApprovalAnswer $Extra
+    $extraFlags = $answer[0]; $extraPolicy = $answer[1]; $extraSandbox = $answer[2]
+    $pickedApproval = Get-J $picked 'approval'
+    $approval = $(if ($offered.ContainsKey('approval')) { $offered['approval'] } else { $null })
+
+    # What answers "who approves what", and where that answer comes from (see
+    # `apply_options`: the pick, then Polter's default, unless the role's own
+    # words on the command line already answer it).
+    $saidByExtra = $null
+    if ($extraFlags.Count -gt 0) {
+        $saidByExtra = Get-ApprovalFlag ([string]$extraFlags[0])
+    } elseif ($extraPolicy) {
+        $saidByExtra = '--ask-for-approval'
+    } elseif ($extraSandbox) {
+        $saidByExtra = '--sandbox'
+    }
+    $source = ''; $effective = $null
+    if ($null -ne $saidByExtra) {
+        $source = 'extra'
+        if ($extraFlags.Count -gt 0) { $effective = [string]$extraFlags[0] }
+    } elseif ($null -ne $pickedApproval) {
+        $source = 'role'; $effective = [string]$pickedApproval
+    } elseif (Test-JHas $picked 'sandbox') {
+        # A role that picked a sandbox and no approval: the default is
+        # withheld, because `--approve-for-me` would bring the
+        # workspace-write sandbox and take that one away (see `apply_options`).
+        $source = 'sandbox'
+    } else {
+        $source = 'default'
+        if ($null -ne $approval) { $effective = Get-J $approval 'default' }
+        if ($null -eq $effective) {
+            $Notes.Add('No approval setting was added: this Codex does not take --approve-for-me (its --help does not list it).')
+            $source = ''
+        }
+    }
+
+    if ($source -ceq 'role' -or $source -ceq 'default') {
+        $hit = $null
+        if ($null -ne $approval) {
+            foreach ($v in $approval['values']) { if (($effective -is [string]) -and ([string]$v['value'] -ceq $effective)) { $hit = $v; break } }
+        }
+        if ($null -eq $hit) {
+            $Notes.Add('Launch option approval="' + (Get-PyPercentS $effective) + '" is not a value this version takes; left out.')
+            $source = ''; $effective = $null
+        } else {
+            foreach ($a in $hit['args']) { $args0.Add($a) }
+        }
+    } elseif ($source -ceq 'extra') {
+        if ($null -ne $pickedApproval) {
+            $Notes.Add('Launch option "approval" left out: the extra arguments already give ' + $saidByExtra + '.')
+        } elseif ($saidByExtra -cne (Get-ApprovalFlag $script:DefaultApproval)) {
+            $Notes.Add('No approval setting was added: the role''s own ' + $saidByExtra + ' decides.')
+        }
+    } elseif ($source -ceq 'sandbox') {
+        $Notes.Add('No approval setting was added: the role picked a sandbox, and --approve-for-me would bring its own.')
+    }
+
     foreach ($key in (Get-JKeys $picked)) {
+        if ($key -ceq 'approval') { continue }
         $value = Get-J $picked $key
         if (-not $offered.ContainsKey($key)) {
             $Notes.Add('Launch option "' + $key + '" is not one this version offers; left out.')
             continue
         }
         $o = $offered[$key]
+        if ($key -ceq 'sandbox' -and $null -ne $effective -and ($script:ManualApprovals -cnotcontains [string]$effective)) {
+            $Notes.Add('Launch option "sandbox" left out: ' + (Get-ApprovalFlag ([string]$effective)) + ' brings its own sandbox.')
+            continue
+        }
         $spellings = New-List
         $spellings.Add([string]$o['flag'])
         foreach ($a in $o['aliases']) { $spellings.Add([string]$a) }
@@ -1099,6 +1260,14 @@ function Get-Launch($Req) {
     $extra = New-List
     $args0 = Get-J $cli 'args'
     if (Test-JList $args0) { foreach ($a in (Get-JItems $args0)) { if ($a -is [string]) { $extra.Add($a) } } }
+
+    # Two answers to "who approves what" in the role's own words are refused
+    # before anything is built (task 2679): see `approval_clash` in
+    # adapter.py. Thrown, so `Invoke-Main` writes it to stderr and exits 1 --
+    # the same shape the Python adapter answers with, so both platforms
+    # refuse the same launch with the same words.
+    $clash = Get-ApprovalClash $extra
+    if ($null -ne $clash) { throw $clash }
 
     $opts = New-List
     if ($offPaths.Count -gt 0) {
