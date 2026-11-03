@@ -8273,22 +8273,44 @@ fn resolveLaunch(
     return self.resolveLaunchSeat(alloc, key, cli, by, own, null);
 }
 
-/// `resolveLaunch` for a squad's seat when `seat_over` is set: the checks
-/// below are made against **what the seat will start**, not against the
-/// role. A squad that moves a member to another CLI is judged on that CLI's
-/// entry (which `squad.resolve` makes, empty if the role has none), so the
-/// role's own `NotSetUpForCli` / `NoCli` do not refuse it (plan v3 item 13).
-fn resolveLaunchSeat(
-    self: *App,
+/// The first half of `resolveLaunchSeat`: which CLI a launch will start, and
+/// whether it goes through an Agent CLI of the person's own.
+///
+/// **Split out because the launcher question and the squad's word were
+/// answering each other wrongly** (#2747). A squad that names a CLI for its
+/// seat gives the role an entry for it (`squad.resolve` writes `clis`), and
+/// the launcher lookup below used to ask *that*: a seat whose squad said
+/// `agy-bestfunc` looked like a role already set up for `agy-bestfunc`, the
+/// lookup was skipped, and the launch came to the survey asking for a plugin
+/// by a launcher's key. Naming the same key explicitly was fine, which is
+/// the asymmetry -- only the squad's materialised entry hid it. Hence
+/// `role.cli`, the role as the person wrote it.
+///
+/// The reading of the plugins is not here: a caller goes on to
+/// `Persona.defaultCli`, `agent_cli.survey` and the rest as before, with
+/// `persona`, `via` and `asked` as this decided them.
+const PreLaunch = struct {
+    /// The role as the squad's word leaves it, for what comes after.
+    persona: poltergeistpkg.persona.Persona,
+    /// Whether a CLI for this launch is already settled -- the caller named
+    /// one, or the squad did. What is *not* settled is the one question
+    /// `ControlRoom.pickOwn` answers, and the caller asks it then.
+    cli_settled: bool,
+    /// The launcher of the person's own, by its key, when the CLI asked for
+    /// is one of those and not one the role is set up for.
+    via: ?[]const u8,
+    /// What will actually be started: a launcher's base, or the CLI asked
+    /// for as it was.
+    asked: []const u8,
+};
+
+fn preLaunch(
     alloc: Allocator,
-    key: []const u8,
-    cli_asked: []const u8,
-    by: ?poltergeistpkg.Bus.Id,
-    own: []const poltergeistpkg.ControlRoom.OwnCli,
+    role: poltergeistpkg.persona.Persona,
     seat_over: ?poltergeistpkg.squad.Override,
-) !LaunchChoice {
-    self.ensurePersonas();
-    const role = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    cli_asked: []const u8,
+    launchers: poltergeistpkg.Launchers.Set,
+) !PreLaunch {
     var p = role;
     var cli = cli_asked;
     if (seat_over) |over| {
@@ -8310,21 +8332,194 @@ fn resolveLaunchSeat(
     // role's choices for that CLI -- every check below is the base's.
     // A role need not be set up for the base itself: it then starts with
     // nothing chosen for it, as `+launch` does.
+    //
+    // **`role.cli` and not `p.cli`** (#2747): a squad's materialised entry
+    // is not the person's role having that CLI, and reading it here is what
+    // sent a launcher's key to the survey as a plugin key.
     var via: ?[]const u8 = null;
     var asked = cli;
-    if (cli.len > 0 and p.cli(cli) == null) {
-        var arena: std.heap.ArenaAllocator = .init(self.alloc);
-        defer arena.deinit();
-        if (self.launcherSet(arena.allocator()).find(cli)) |l| {
+    if (cli.len > 0 and role.cli(cli) == null) {
+        if (launchers.find(cli)) |l| {
             if (!l.enabledFor(p.key)) return error.LauncherNotOn;
             via = try alloc.dupe(u8, l.key);
             asked = try alloc.dupe(u8, l.base);
         }
     }
+    return .{ .persona = p, .cli_settled = cli.len > 0, .via = via, .asked = asked };
+}
+
+test "2747: a squad that names an Agent CLI of the person's own resolves to its base, the same as naming it outright" {
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const Launchers = poltergeistpkg.Launchers;
+    const persona = poltergeistpkg.persona;
+
+    // A role set up for Claude Code and nothing else -- the case the squad's
+    // word moves off the role's own CLI.
+    const role: persona.Persona = .{
+        .key = "worker-dev",
+        .name = "Dev",
+        .clis = &.{.{ .cli = "claude-code" }},
+    };
+    // The person's own, on Claude Code underneath, switched on for this role.
+    const l: Launchers.Launcher = .{
+        .key = "agy-bestfunc",
+        .name = "Antigravity · bestfunc",
+        .base = "claude-code",
+        .command = "/Users/me/bin/agy-bestfunc",
+        .env = &.{.{ .name = "ANTIGRAVITY_MODEL", .value = "bestfunc" }},
+        .args = &.{"--verbose"},
+        .roles = &.{"worker-dev"},
+    };
+    const set: Launchers.Set = .{ .launchers = &.{l} };
+
+    // The squad moves the seat onto the person's own CLI **and says which
+    // model it wants there**, which is what makes the base's entry live.
+    var over: poltergeistpkg.squad.Override = .none;
+    over.cli = "agy-bestfunc";
+    over.clis = &.{.{ .cli = "claude-code", .over = .{ .model = "squad-model", .args = null, .options = null } }};
+
+    // **The default path**: the caller named no CLI, the squad named one.
+    const by_squad = try preLaunch(alloc, role, over, "", set);
+    // Not `.?`: a mutant that skips the lookup must fail the expectation and
+    // say so, not panic on a null.
+    const squad_via: []const u8 = by_squad.via orelse "";
+    try testing.expectEqualStrings("agy-bestfunc", squad_via);
+    // It goes through the person's own, starting its **base**.
+    try testing.expectEqualStrings("claude-code", by_squad.asked);
+    // The squad named a CLI, so nothing is left for `pickOwn` to choose.
+    try testing.expect(by_squad.cli_settled);
+    // This is the entry that used to hide the launcher: the squad's word
+    // left the role looking set up for the launcher's key.
+    try testing.expect(by_squad.persona.cli("agy-bestfunc") != null);
+
+    // What the caller does next with it: the squad's word laid over the role
+    // **for the base**, which is where its model and arguments for that CLI
+    // are bound (the caller's own `squad.resolve` line).
+    const keys = [_][]const u8{"claude-code"};
+    const squad_r = try poltergeistpkg.squad.resolve(alloc, role, over, by_squad.asked, &keys, null);
+    try testing.expectEqualStrings("claude-code", squad_r.cli);
+    try testing.expectEqualStrings("squad-model", squad_r.choice.model.?);
+
+    // **Naming the same key outright** is the same answer.
+    const by_name = try preLaunch(alloc, role, over, "agy-bestfunc", set);
+    const name_via: []const u8 = by_name.via orelse "";
+    try testing.expectEqualStrings(squad_via, name_via);
+    try testing.expectEqualStrings(by_squad.asked, by_name.asked);
+    const name_r = try poltergeistpkg.squad.resolve(alloc, role, over, by_name.asked, &keys, null);
+    try testing.expectEqualStrings(squad_r.cli, name_r.cli);
+    try testing.expectEqualStrings(squad_r.choice.model.?, name_r.choice.model.?);
+
+    // And the line that starts it is the same one, through `rewrite`: the
+    // launcher's command where the base's program was, its arguments last.
+    const argv = [_][]const u8{ "claude", "--settings", "{}" };
+    const a = try Launchers.rewrite(alloc, &argv, set.find(squad_via).?, .posix);
+    const b = try Launchers.rewrite(alloc, &argv, set.find(name_via).?, .posix);
+    try testing.expectEqual(a.len, b.len);
+    for (a, b) |x, y| try testing.expectEqualStrings(x, y);
+    try testing.expectEqualStrings("/Users/me/bin/agy-bestfunc", a[0]);
+    try testing.expectEqualStrings("--verbose", a[a.len - 1]);
+    // The launcher's variables are the ones the CLI will see.
+    try testing.expectEqualStrings("ANTIGRAVITY_MODEL", l.env[0].name);
+}
+
+test "2747: a launcher not switched on for the role is refused, and one the role does not know stays for the survey" {
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const Launchers = poltergeistpkg.Launchers;
+    const persona = poltergeistpkg.persona;
+
+    const role: persona.Persona = .{
+        .key = "worker-dev",
+        .name = "Dev",
+        .clis = &.{.{ .cli = "claude-code" }},
+    };
+    const off: Launchers.Launcher = .{
+        .key = "agy-bestfunc",
+        .name = "Antigravity · bestfunc",
+        .base = "claude-code",
+        .command = "/Users/me/bin/agy-bestfunc",
+        .roles = &.{"polter-tester"}, // not this role
+    };
+    const set: Launchers.Set = .{ .launchers = &.{off} };
+    var over: poltergeistpkg.squad.Override = .none;
+    over.cli = "agy-bestfunc";
+
+    // The squad naming it does not switch it on, and neither does the caller.
+    try testing.expectError(error.LauncherNotOn, preLaunch(alloc, role, over, "", set));
+    try testing.expectError(error.LauncherNotOn, preLaunch(alloc, role, over, "agy-bestfunc", set));
+
+    // **A key that is neither the role's CLI nor a launcher here** is left
+    // exactly as it was: no `via`, and the key the survey will refuse by
+    // name. Nothing is invented for it and nothing falls back.
+    var unknown: poltergeistpkg.squad.Override = .none;
+    unknown.cli = "agy-bestfunc";
+    const no_launcher: Launchers.Set = .{};
+    const got = try preLaunch(alloc, role, unknown, "", no_launcher);
+    try testing.expect(got.via == null);
+    try testing.expectEqualStrings("agy-bestfunc", got.asked);
+
+    // A built-in CLI is the role's own entry: not remapped. The caller
+    // named it, so this launch's CLI is settled and `pickOwn` is not asked.
+    const plain = try preLaunch(alloc, role, null, "claude-code", set);
+    try testing.expect(plain.via == null);
+    try testing.expectEqualStrings("claude-code", plain.asked);
+    try testing.expect(plain.cli_settled);
+
+    // **Nobody named one** -- no `cli` from the caller, and a squad that
+    // says nothing about the CLI -- so this is exactly the launch
+    // `ControlRoom.pickOwn` decides. It must not look settled here (#2747's
+    // guard was the other half of the same bug).
+    const nobody = try preLaunch(alloc, role, poltergeistpkg.squad.Override.none, "", set);
+    try testing.expect(nobody.via == null);
+    try testing.expectEqualStrings("", nobody.asked);
+    try testing.expect(!nobody.cli_settled);
+
+    // A CLI the caller names that the role is not set up for, with no agent
+    // CLI of the person's own by that key: the key is kept, for
+    // `NotSetUpForCli` to refuse after the plugins are read.
+    const stray = try preLaunch(alloc, role, null, "codex", no_launcher);
+    try testing.expect(stray.via == null);
+    try testing.expectEqualStrings("codex", stray.asked);
+}
+
+/// `resolveLaunch` for a squad's seat when `seat_over` is set: the checks
+/// below are made against **what the seat will start**, not against the
+/// role. A squad that moves a member to another CLI is judged on that CLI's
+/// entry (which `squad.resolve` makes, empty if the role has none), so the
+/// role's own `NotSetUpForCli` / `NoCli` do not refuse it (plan v3 item 13).
+fn resolveLaunchSeat(
+    self: *App,
+    alloc: Allocator,
+    key: []const u8,
+    cli_asked: []const u8,
+    by: ?poltergeistpkg.Bus.Id,
+    own: []const poltergeistpkg.ControlRoom.OwnCli,
+    seat_over: ?poltergeistpkg.squad.Override,
+) !LaunchChoice {
+    self.ensurePersonas();
+    const role = self.personas.set.find(key) orelse return error.NoSuchPersona;
+    // The CLI, the squad's word about it and the launcher it may go through,
+    // in one place that can be read without an App (`preLaunch`, #2747).
+    // The launchers are read into a scratch arena, and `preLaunch` keeps
+    // nothing of theirs: what it hands back is a launcher's key and base,
+    // copied into `alloc`.
+    const pre = pre: {
+        var arena: std.heap.ArenaAllocator = .init(self.alloc);
+        defer arena.deinit();
+        break :pre try preLaunch(alloc, role, seat_over, cli_asked, self.launcherSet(arena.allocator()));
+    };
+    var p = pre.persona;
+    var via = pre.via;
+    var asked = pre.asked;
     // None named, and the role has some of the person's own ticked (task
     // 2156 v3): those count as its CLIs do. Which one is `ControlRoom.pickOwn`,
     // so that what it decides can be read without an App.
-    if (cli.len == 0) {
+    if (cli_asked.len == 0 and !pre.cli_settled) {
         const by_via: []const u8 = if (by) |id|
             (if (id == poltergeistpkg.Chat.user_id) "" else self.poltergeist.agentOf(id).launcher.get() orelse "")
         else
