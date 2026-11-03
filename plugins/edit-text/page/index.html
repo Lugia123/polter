@@ -159,10 +159,23 @@
   }
 
   /// Whether the core's own reading says this is a file a person can read.
-  /// `encoding` is absent for a binary, which is the same answer `files_open`
-  /// gives the host; the page repeats it rather than guessing from bytes.
+  ///
+  /// **The core's tag, and `binary` is one of the tags it really answers.**
+  /// `Text.Encoding` is `utf8`, `utf8_bom`, `other`, `binary` (`Text.zig:30`),
+  /// so "there is a string here" is not the question -- a PNG answers
+  /// `"binary"` and would pass a check that only looked for a non-empty one.
+  /// What the core cannot sample answers with `null`, and that is a different
+  /// answer again: nothing was read, so the page has no reading to go on and
+  /// does not invent one.
+  ///
+  /// The list is written out rather than compared against `"binary"` alone:
+  /// a tag this page has not heard of is a core that learned a new one, and
+  /// drawing it as text without knowing that is the guess this check exists
+  /// to refuse.
+  var READABLE = { utf8: true, utf8_bom: true, other: true };
+
   function looksTextual(info) {
-    return typeof info.encoding === "string" && info.encoding.length > 0;
+    return typeof info.encoding === "string" && READABLE[info.encoding] === true;
   }
 
   function show(info) {

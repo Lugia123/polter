@@ -210,22 +210,44 @@ pub fn open(
 
     var out: Io.Writer.Allocating = .init(arena);
     const w = &out.writer;
-    w.print("{{\"token\":\"{s}\",\"info\":{{\"name\":{f},\"kind\":\"{s}\",\"size\":{d},\"mtime_ns\":\"{d}\",", .{
-        &e.token,
+    w.print("{{\"token\":\"{s}\",\"info\":{{", .{&e.token}) catch return error.OutOfMemory;
+    try writeInfo(w, real, info);
+    w.print(",\"editable\":{},\"not_editable\":", .{e.base != null}) catch return error.OutOfMemory;
+    if (not_editable) |n| w.print("{f}", .{std.json.fmt(n, .{})}) catch return error.OutOfMemory else w.writeAll("null") catch return error.OutOfMemory;
+    w.writeAll(",\"version\":") catch return error.OutOfMemory;
+    if (e.base) |b| w.print("{f}", .{std.json.fmt(try versionText(arena, b.version), .{})}) catch return error.OutOfMemory else w.writeAll("null") catch return error.OutOfMemory;
+    w.writeAll("}}") catch return error.OutOfMemory;
+    return out.written();
+}
+
+/// The fields that say what a file *is* -- its name, kind, size, mtime and,
+/// when it could be sampled, what kind of text it holds -- written the one way
+/// both `open`'s `info` and `resolve`'s answer carry them.
+///
+/// **One writer rather than two copies of the same seven fields.** They are
+/// the same names in the same spellings on both answers, and two copies would
+/// drift -- which is exactly how a preview page came to be told a file's kind
+/// and size but not its encoding, and so drew every text file as "not text"
+/// (task 2792).
+///
+/// `info` is null for a directory and for a file whose sample could not be
+/// read. Both are "there is nothing to say about its text", and neither is a
+/// guess: a `.file`-shaped answer with no sample is not a claim that the file
+/// is text.
+///
+/// **No trailing comma**: what follows these fields is the caller's, and the
+/// two callers differ (`open` adds `editable`, `resolve` closes the object).
+/// A writer that ended in a comma would put one of them in front of a `}`.
+fn writeInfo(w: *Io.Writer, real: Access.Resolved, info: ?Text.Info) Allocator.Error!void {
+    w.print("\"name\":{f},\"kind\":\"{s}\",\"size\":{d},\"mtime_ns\":\"{d}\",", .{
         std.json.fmt(std.fs.path.basename(real.path), .{}),
         @tagName(real.kind),
         real.size,
         real.mtime_ns,
     }) catch return error.OutOfMemory;
     if (info) |i| {
-        w.print("\"encoding\":\"{s}\",\"eol\":\"{s}\",", .{ @tagName(i.encoding), @tagName(i.eol) }) catch return error.OutOfMemory;
-    } else w.writeAll("\"encoding\":null,\"eol\":null,") catch return error.OutOfMemory;
-    w.print("\"editable\":{},\"not_editable\":", .{e.base != null}) catch return error.OutOfMemory;
-    if (not_editable) |n| w.print("{f}", .{std.json.fmt(n, .{})}) catch return error.OutOfMemory else w.writeAll("null") catch return error.OutOfMemory;
-    w.writeAll(",\"version\":") catch return error.OutOfMemory;
-    if (e.base) |b| w.print("{f}", .{std.json.fmt(try versionText(arena, b.version), .{})}) catch return error.OutOfMemory else w.writeAll("null") catch return error.OutOfMemory;
-    w.writeAll("}}") catch return error.OutOfMemory;
-    return out.written();
+        w.print("\"encoding\":\"{s}\",\"eol\":\"{s}\"", .{ @tagName(i.encoding), @tagName(i.eol) }) catch return error.OutOfMemory;
+    } else w.writeAll("\"encoding\":null,\"eol\":null") catch return error.OutOfMemory;
 }
 
 fn readSample(arena: Allocator, io: Io, path: []const u8) !?[]const u8 {
@@ -261,9 +283,36 @@ pub fn resolve(self: *Tickets, arena: Allocator, token: []const u8, rel: []const
     });
     switch (verdict) {
         .refuse => |a| return refusedAccess(arena, a),
-        .ok => |r| return std.fmt.allocPrint(arena, "{{\"path\":{f},\"kind\":\"{s}\",\"size\":{d},\"mtime_ns\":\"{d}\"}}", .{
-            std.json.fmt(r.path, .{}), @tagName(r.kind), r.size, r.mtime_ns,
-        }),
+        .ok => |r| {
+            // **What the file is, not only where it is.** A host that drew
+            // this answer as a preview was told the path, kind, size and mtime
+            // and nothing else, so a page asking `info` about a text file had
+            // no `encoding` to read and drew it as "not text" (task 2792).
+            // The same fields `open` answers, from the same writer.
+            //
+            // **Read now, every time, and never remembered on the ticket.**
+            // `resolve` is what a host comes back to before it reads, so this
+            // is the answer that is fresh; a cached one would describe the
+            // file as it was when the ticket was made, and a file that changed
+            // since would be previewed as its old self. The sample is this
+            // call's own and nothing on `Entry` moves -- in particular the
+            // ticket's `base` and version, which are about *writing* and are
+            // not what this question is.
+            var info: ?Text.Info = null;
+            if (r.kind == .file) {
+                if (readSample(arena, self.io, r.path) catch null) |bytes| info = Text.sniff(bytes, r.size);
+            }
+            var out: Io.Writer.Allocating = .init(arena);
+            const w = &out.writer;
+            // `path` first: it is what the four fields below are about, it is
+            // what every existing caller reads out of this answer, and it is
+            // the one field `open`'s `info` does not carry (its ticket already
+            // holds the real path).
+            w.print("{{\"path\":{f},", .{std.json.fmt(r.path, .{})}) catch return error.OutOfMemory;
+            try writeInfo(w, r, info);
+            w.writeAll("}") catch return error.OutOfMemory;
+            return out.written();
+        },
     }
 }
 
@@ -673,6 +722,67 @@ test "2573 C7: a link inside the workdir that leads out of it is refused by reso
     try f.tmp.dir.symLink(testing.io, "../other/secret.txt", "w/leak.txt", .{});
     const t = tokenOf(try f.open("a.md", .workdir));
     try testing.expect(try f.isRefused(try f.t.resolve(f.a(), t, "leak.txt")));
+}
+
+test "2792: resolve says what a text file is, not only where it is" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.put("w/a.md", "one\ntwo\n");
+    const t = tokenOf(try f.open("a.md", .workdir));
+    const r = try f.parse(try f.t.resolve(f.a(), t, ""));
+
+    // The four fields a `resolve` already answered with are all still here:
+    // this fix adds to the answer, and a host reading the old ones goes on
+    // working.
+    try testing.expect(std.mem.endsWith(u8, r.object.get("path").?.string, "a.md"));
+    try testing.expectEqualStrings("file", r.object.get("kind").?.string);
+    try testing.expectEqual(@as(i64, 8), r.object.get("size").?.integer);
+    try testing.expect(r.object.get("mtime_ns").?.string.len > 0);
+
+    // And the two a preview page reads to decide whether it may draw the
+    // file. Without them the page was told a text file's kind and size and
+    // nothing about its text, and drew every one of them as "not text".
+    try testing.expectEqualStrings("a.md", r.object.get("name").?.string);
+    try testing.expectEqualStrings("utf8", r.object.get("encoding").?.string);
+    try testing.expectEqualStrings("lf", r.object.get("eol").?.string);
+
+    // **A binary answers the tag `binary`, not null.** The page tells "not
+    // text" from "nothing was read" by that tag, so a null here would make
+    // the two one answer and leave the page with nothing to refuse on --
+    // which is the other half of the same bug.
+    try f.put("w/bin.dat", "ab\x00cd");
+    const b = try f.parse(try f.t.resolve(f.a(), tokenOf(try f.open("bin.dat", .file)), ""));
+    try testing.expectEqualStrings("binary", b.object.get("encoding").?.string);
+    try testing.expectEqualStrings("none", b.object.get("eol").?.string);
+}
+
+test "2792: resolve reads the sample on the call, so a file that changed is described as it is" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.put("w/a.md", "one\n");
+    const t = tokenOf(try f.open("a.md", .workdir));
+    var r = try f.parse(try f.t.resolve(f.a(), t, ""));
+    try testing.expectEqualStrings("utf8", r.object.get("encoding").?.string);
+    try testing.expectEqual(@as(i64, 4), r.object.get("size").?.integer);
+
+    // **The file changes behind the ticket's back.** A reading remembered on
+    // the ticket would still say `utf8` and 4, and the page would draw this
+    // file as its old self -- which is the one thing a preview must not do.
+    try f.put("w/a.md", "\xEF\xBB\xBFone\n");
+    r = try f.parse(try f.t.resolve(f.a(), t, ""));
+    try testing.expectEqualStrings("utf8_bom", r.object.get("encoding").?.string);
+    try testing.expectEqual(@as(i64, 7), r.object.get("size").?.integer);
+}
+
+test "2792: resolve does not dress a directory up as text" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.put("w/a.md", "a\n");
+    const t = tokenOf(try f.open(".", .workdir));
+    const r = try f.parse(try f.t.resolve(f.a(), t, ""));
+    try testing.expectEqualStrings("directory", r.object.get("kind").?.string);
+    try testing.expect(r.object.get("encoding").? == .null);
+    try testing.expect(r.object.get("eol").? == .null);
 }
 
 test "2573 C7: a token that was never issued, and one that was closed, are refused" {
