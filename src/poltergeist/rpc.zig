@@ -24359,7 +24359,7 @@ test "squad: task_list 每行带 seats——谁坐着、谁空着、谁是 lead�
 }
 
 test "channel: chatLineOf / historyLineOf 把频道带进回复行" {
-    const m: Chat.Message = .{ .seq = 4, .log_seq = 40, .from = 0x2222, .at_ms = 1000, .summary = false, .text = "x", .channel = 7 };
+    const m: Chat.Message = .{ .seq = 4, .log_seq = 40, .from = 0x2222, .at_ms = 1000, .summary = false, .text = "x", .channel = 7, .mentions = &.{}, .role = "" };
     try testing.expectEqual(@as(u64, 7), chatLineOf(m, "w", "x").channel);
     const e: ChatLog.Entry = .{ .seq = 41, .at_ms = 1000, .group = "g", .from = 0x2222, .author = "w", .summary = false, .text = "x", .channel = 9, .covers_from_log = 0 };
     try testing.expectEqual(@as(u64, 9), historyLineOf(e).channel);
