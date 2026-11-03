@@ -86,14 +86,15 @@ struct ControlRoomWorkdirsPage: View {
     /// where the core gave any.
     @State private var refusal: String?
 
-    /// **The width the person dragged the left column to**, and the width of
-    /// the box this page was given. Two, because they are two different
-    /// things: the column is drawn at `Split.drawn(wanted: asked, …)` -- the
-    /// first squeezed into what the second can hold -- and it is `asked`
-    /// that is kept, so narrowing the window does not eat the width that was
-    /// chosen (`ControlRoomWorkdirs.Split` says why that matters).
+    /// **The width the person dragged the left column to.** The column is
+    /// drawn at `Split.drawn(wanted: asked, container:)` -- this squeezed
+    /// into the box the page was given, which `page(container:height:)` reads
+    /// off
+    /// the box itself rather than off a report that comes back a pass later
+    /// -- and it is `asked` that is kept, so narrowing the window does not
+    /// eat the width that was chosen (`ControlRoomWorkdirs.Split` says why
+    /// that matters).
     @State private var asked: CGFloat = ControlRoomWorkdirs.Split.width
-    @State private var containerWidth: CGFloat = 0
     /// Whether the pointer is on the divider, and whether it is being
     /// dragged: the two things the line is drawn differently for.
     @State private var dividerHovered = false
@@ -104,10 +105,11 @@ struct ControlRoomWorkdirsPage: View {
     @State private var cursorPushed = false
     @State private var rowCursorPushed = false
 
-    /// **How tall 「最近改过」 was dragged to**, and the height of the column
-    /// itself. Two, for the same reason the column's width is two
-    /// (`ControlRoomWorkdirs.Split`): the section is drawn at
-    /// `Recent.drawn(wanted: askedRecent, …)` and it is `askedRecent` that is
+    /// **How tall 「最近改过」 was dragged to.** The section is drawn at
+    /// `Recent.drawn(wanted: askedRecent, container: <the column's height>, …)`
+    /// -- this squeezed into the column's own height, which
+    /// `page(container:height:)` hands down from the box this tab was offered
+    /// -- and it is `askedRecent` that is
     /// kept, so folding it, or a short column, does not eat the height that
     /// was chosen.
     ///
@@ -116,7 +118,6 @@ struct ControlRoomWorkdirsPage: View {
     /// include a title bar and a page strip that are not the column's room
     /// (`ControlRoomWorkdirs.Recent` says what that costs).
     @State private var askedRecent: CGFloat = ControlRoomWorkdirs.Recent.height
-    @State private var columnHeight: CGFloat = 0
     /// Whether the pointer is on the horizontal handle, and whether it is
     /// being dragged: the same pair the vertical one has, kept apart so that
     /// hovering one handle cannot light the other.
@@ -170,41 +171,31 @@ struct ControlRoomWorkdirsPage: View {
     private var source: PreviewTicket.Source { .core(ghostty) }
 
     var body: some View {
-        HStack(spacing: 0) {
-            bar
-            if activity.open {
-                side
-            }
-            right
+        // **The tab's own box, read as the layout input itself.**
+        //
+        // ⚠️ **A reader here is inside the tab, not round the window.** What
+        // it is handed is whatever this view was offered -- the supervisor
+        // frame's content box, after its bezel and the page strip -- which is
+        // the same box the `HStack` below would have laid itself out in. The
+        // reader does not propose anything to its own parent; it takes the
+        // proposal and gives it to `page(container:height:)`.
+        //
+        // **The width and the height are the two numbers the squeezes are
+        // computed from, so they must be the ones the layout is using now.**
+        // The earlier form reported them up from a background reader into
+        // `@State` and read them back a pass later, which is a page that lays
+        // itself out from a number it has not been given yet on the first
+        // pass -- and stays wrong wherever that report never lands. Handing
+        // the proposal down as an argument makes the box and the layout the
+        // same fact.
+        GeometryReader { place in
+            page(container: place.size.width, height: place.size.height)
         }
         // The page's own box, which is what a drag's x is read against (the
         // handle is offset from the page's leading edge, so its own local
         // space would be 8pt wide and say nothing about where the column is).
         .coordinateSpace(name: Self.pageSpace)
-        // **The handle is drawn over the boundary, and only when there is
-        // one.** An overlay and not a child of the `HStack`: an 8pt grab area
-        // is a hit target, not a column, so it must take no width out of the
-        // layout (the approved design `polter-artifacts/2713/v1/index.html`,
-        // `.resizer-v`: 8 wide with -4 either side, so it is centred on the
-        // boundary). Over the whole page rather than on the side, because a
-        // handle drawn as part of the side would have the
-        // workbench's own background laid across its right half.
-        .overlay(alignment: .leading) {
-            if activity.open, drawnSide > 0 {
-                divider.offset(x: Tile.actWidth + drawnSide - Split.handle / 2)
-            }
-        }
         .background(theme.terminalBackground.color)
-        // **The container's own width, for the squeeze only.** A
-        // `GeometryReader` in the background reports the box this page was
-        // given and draws nothing; it is deliberately *not* wrapped round the
-        // page, which is a reader that would take the whole window's layout
-        // into its own hands (`ControlRoomWorkdirs.Split.drawn` is where the
-        // number is used, and it is a rule a test can read).
-        .background(GeometryReader { place in
-            Color.clear.preference(key: ContainerWidth.self, value: place.size.width)
-        })
-        .onPreferenceChange(ContainerWidth.self) { containerWidth = $0 }
         .onAppear {
             model.refreshWorkdirs()
             readOpenDirectories()
@@ -266,6 +257,58 @@ struct ControlRoomWorkdirsPage: View {
         // on reading directories -- nor write its results back over the
         // search the next visit starts.
         .onDisappear { generation &+= 1 }
+    }
+
+    /// **The page's box, laid out from the numbers it was handed.**
+    ///
+    /// ⚠️ **The activity bar is not the column's room.** It is a fixed
+    /// `Tile.actWidth` at the leading edge, so what the column may take out of
+    /// the container is what is left after it -- pass the container whole and
+    /// the squeeze grants the column 48pt that are not there, which is exactly
+    /// the width that then comes off `Split.minRight` (`Split.drawn`).
+    ///
+    /// **The two squeezes are worked out here and handed down as arguments**,
+    /// so the number the layout is drawn at is the number the box implies, in
+    /// the pass that draws it. `asked` and `askedRecent` are still `@State`:
+    /// they are what the person dragged to, and they are kept, so narrowing
+    /// the window does not eat the width that was chosen.
+    ///
+    /// **A zero-width column is a real case, not a failure to measure**: at a
+    /// box too narrow for the column and the workbench both, `Split.drawn`
+    /// answers 0 and the column is drawn at 0 (`side` clips it). That 0 is
+    /// allowed through -- there is no floor here that turns it back into the
+    /// 296pt default, which would draw a column over a workbench that has no
+    /// room for it.
+    private func page(container: CGFloat, height: CGFloat) -> some View {
+        let sideWidth = Split.drawn(wanted: asked, container: max(0, container - Tile.actWidth))
+        // **The section squeezed into the column's own height.** The column
+        // is `height` tall -- it is the page's height (the tab's own box),
+        // not the window's, which would also hold a title bar and a page
+        // strip that are not the column's room (`ControlRoomWorkdirs.Recent`).
+        let recentHeight = Recent.drawn(wanted: askedRecent,
+                                        container: height,
+                                        folded: activity.recentFolded,
+                                        line: CGFloat(Look.Line.hairline))
+        return HStack(spacing: 0) {
+            bar
+            if activity.open {
+                side(width: sideWidth, recentHeight: recentHeight)
+            }
+            right
+        }
+        // **The handle is drawn over the boundary, and only when there is
+        // one.** An overlay and not a child of the `HStack`: an 8pt grab area
+        // is a hit target, not a column, so it must take no width out of the
+        // layout (the approved design `polter-artifacts/2713/v1/index.html`,
+        // `.resizer-v`: 8 wide with -4 either side, so it is centred on the
+        // boundary). Over the whole page rather than on the side, because a
+        // handle drawn as part of the side would have the
+        // workbench's own background laid across its right half.
+        .overlay(alignment: .leading) {
+            if activity.open, sideWidth > 0 {
+                divider.offset(x: Tile.actWidth + sideWidth - Split.handle / 2)
+            }
+        }
     }
 
     // MARK: - The activity bar
@@ -393,33 +436,36 @@ struct ControlRoomWorkdirsPage: View {
 
     // MARK: - The sidebar
 
-    private var side: some View {
+    /// **The column, at the widths it was handed.**
+    ///
+    /// Both numbers are arguments rather than read back off `@State`: `width`
+    /// is `Split.drawn(...)` and `recentHeight` is `Recent.drawn(...)`, worked
+    /// out in `page(container:height:)` from the box this tab was offered. A
+    /// column that asked its own drawn size back out of state would be laying
+    /// itself out from a report of itself (`page` says why that gap is the
+    /// bug being fixed).
+    private func side(width: CGFloat, recentHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             if activity.icon == .explorer {
-                recent
+                recent(height: recentHeight)
                 roots
             } else {
                 searchPanel
             }
         }
-        .frame(width: drawnSide)
+        .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
-        // **The column's own box, for the two things measured inside it.**
-        // The horizontal handle's drag reads its `y` against this space (the
-        // section is measured from the column's top, not the window's), and
-        // the height reported up is what the section is squeezed into. A
-        // background reader measures the box the column already has; it is
-        // not wrapped round the column, which would take the layout over.
+        // **The column's own box, for the drag inside it only.** The
+        // horizontal handle's drag reads its `y` against this space -- the
+        // section is measured from the column's top, not the window's. The
+        // height the section is squeezed into is not measured here: it is the
+        // page's own height, handed down from `page(container:height:)`.
         .coordinateSpace(name: Self.sideSpace)
-        .background(GeometryReader { place in
-            Color.clear.preference(key: ColumnHeight.self, value: place.size.height)
-        })
-        .onPreferenceChange(ColumnHeight.self) { columnHeight = $0 }
         // **A zero-width column draws nothing, and clips what it would
-        // have.** At a window too narrow for the column and the workbench
-        // both, `drawnSide` is 0 -- and a `VStack` whose own frame is zero
-        // still draws its children, so the tree would be laid over the
-        // workbench. Clipping is what keeps the zero case at zero.
+        // have.** At a box too narrow for the column and the workbench both,
+        // `width` is 0 -- and a `VStack` whose own frame is zero still draws
+        // its children, so the tree would be laid over the workbench.
+        // Clipping is what keeps the zero case at zero.
         .clipped()
         .overlay(alignment: .trailing) {
             Rectangle().fill(theme.line.color).frame(width: CGFloat(Look.Line.hairline))
@@ -431,26 +477,12 @@ struct ControlRoomWorkdirsPage: View {
         // tree's header, declared after it, would be drawn over it. An
         // overlay of the whole column is above both (`ControlRoomWorkdirs.Recent`,
         // the approved design's `.resizer-h`). It costs the layout nothing:
-        // the section is `drawnRecent` tall with or without it.
+        // the section is `recentHeight` tall with or without it.
         .overlay(alignment: .top) {
-            if activity.icon == .explorer, !activity.recentFolded, drawnRecent > 0 {
-                rowHandle.offset(y: drawnRecent - Recent.handle / 2)
+            if activity.icon == .explorer, !activity.recentFolded, recentHeight > 0 {
+                rowHandle.offset(y: recentHeight - Recent.handle / 2)
             }
         }
-    }
-
-    /// The column's width as drawn: `asked` squeezed into the room this
-    /// window has (`ControlRoomWorkdirs.Split.drawn`). **Not `asked`**, which
-    /// is what is remembered -- see `Split` for why the two are apart.
-    ///
-    /// ⚠️ **`containerWidth` is the whole page's width, and the activity bar
-    /// is not the column's room.** The bar is a fixed `Tile.actWidth` at the
-    /// leading edge, so what the column may take out of the container is what
-    /// is left after it -- pass the container whole and the squeeze grants
-    /// the column 48pt that are not there, which is exactly the width that
-    /// then comes off `minRight`.
-    private var drawnSide: CGFloat {
-        Split.drawn(wanted: asked, container: max(0, containerWidth - Tile.actWidth))
     }
 
     /// **The vertical divider between the column and the workbench** (task
@@ -549,7 +581,12 @@ struct ControlRoomWorkdirsPage: View {
     /// keeps this section to the bar, the chevron and the fold. The design's
     /// 今天 3 个 count is deliberately **not** drawn: a count is a number, and
     /// the host has not counted anything.
-    private var recent: some View {
+    ///
+    /// `height` is `Recent.drawn(wanted: askedRecent, container: …)`, worked
+    /// out in `page(container:height:)` -- **the section's whole box
+    /// including the line at its foot**, and **not `askedRecent`**, which is
+    /// what is remembered: folding and a short column both leave it alone.
+    private func recent(height: CGFloat) -> some View {
         VStack(spacing: 0) {
             RowHover { over in
                 Button { activity.toggleRecent() } label: {
@@ -588,24 +625,13 @@ struct ControlRoomWorkdirsPage: View {
         // put on the section and not on the empty state, which takes whatever
         // is left under the bar. Nothing here names a content height of its
         // own.
-        .frame(height: drawnRecent)
+        .frame(height: height)
         // **A short column clips the section rather than drawing it over the
         // tree.** On a column too short to hold the section and `minTree`
-        // both, `drawnRecent` can come out under the header's own height; a
+        // both, `height` can come out under the header's own height; a
         // `VStack` does not clip its children by itself, so without this the
         // title row would be laid over the working directories.
         .clipped()
-    }
-
-    /// How tall 「最近改过」 is drawn: `askedRecent` squeezed into the column's
-    /// own height (`ControlRoomWorkdirs.Recent.drawn`), **the section's whole
-    /// box including the line at its foot**. **Not `askedRecent`**, which is
-    /// what is remembered -- folding and a short column both leave it alone.
-    private var drawnRecent: CGFloat {
-        Recent.drawn(wanted: askedRecent,
-                     container: columnHeight,
-                     folded: activity.recentFolded,
-                     line: CGFloat(Look.Line.hairline))
     }
 
     /// **The horizontal handle under 「最近改过」** (task 2719 S4; the
@@ -614,8 +640,8 @@ struct ControlRoomWorkdirsPage: View {
     /// The same shape as the vertical one, turned on its side: an 8pt grab
     /// area with a hairline along it that takes the accent under the pointer
     /// and while dragging. It is not in the layout -- the section is exactly
-    /// as tall as `drawnRecent` with or without it -- so the two sections do
-    /// not shift when the pointer arrives.
+    /// as tall as the section's drawn height with or without it -- so the two
+    /// sections do not shift when the pointer arrives.
     private var rowHandle: some View {
         let lit = rowHandleHovered || rowHandleDragging
         return ZStack {
@@ -1678,35 +1704,6 @@ struct ControlRoomWorkdirsPage: View {
 
     private func editingWords(_ n: UInt64) -> String {
         String(localized: "\(String(n)) being changed", comment: "工作目录页：根节点右侧，正在被改的文件个数")
-    }
-}
-
-/// The width of the box the page was given, reported up from a background
-/// `GeometryReader` so that the column can be squeezed to fit it without the
-/// reader wrapping the page (`ControlRoomWorkdirs.Split.drawn`).
-///
-/// ⚠️ **Deliberately not `GeometryReader { … }` round the page's body.** A
-/// reader is a view that takes the size it is offered and proposes nothing,
-/// so wrapping the page in one is how a page ends up laying itself out by the
-/// whole window's numbers instead of its own. The background form measures the
-/// box the page already has.
-private struct ContainerWidth: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// The height of the left column's own box, reported up from a background
-/// reader for the same reason `ContainerWidth` reports the width: 「最近改过」
-/// is squeezed into the **column's** room, and the window's height also holds
-/// a title bar and a page strip that are not the column's.
-private struct ColumnHeight: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
