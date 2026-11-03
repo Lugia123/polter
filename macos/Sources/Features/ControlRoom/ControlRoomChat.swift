@@ -258,11 +258,12 @@ final class ControlRoomChatContainer: NSView {
 /// (`PaneFramePreview` says why): what changes when the sidebar opens is its
 /// *frame*, never which view it is.
 ///
-/// **The sidebar's cell is `PreviewSlot.controlRoomSidebarKey`**, the same
-/// name the working-directories page uses -- so 「右栏只有一个『当前文件』」
-/// is the store that was already there and not a second mechanism. A
-/// terminal pane names itself by its surface's id and therefore never
-/// collides with either (the design: 终端格里的预览是那一个格子自己的).
+/// **The sidebar's cell is the chat's own, for the group in front**
+/// (`ControlRoomSidebar.key(group:)`, task 2775). It is *not* the
+/// working-directories page's cell: 群聊只能显示当前群聊天文件，工作目录自己的
+/// 预览留在工作目录, and a file opened on one page is not the file the other
+/// is showing. A terminal pane names itself by its surface's id and therefore
+/// collides with neither (the design: 终端格里的预览是那一个格子自己的).
 struct ControlRoomChatPage: View {
     typealias Look = ControlRoomLook
 
@@ -271,8 +272,9 @@ struct ControlRoomChatPage: View {
 
     @Environment(\.colorScheme) private var scheme
     /// The one store every preview in the application is kept in
-    /// (`Ghostty.App.previewStore`), so that what this page shows is what a
-    /// terminal pane shows when the two are on the same file.
+    /// (`Ghostty.App.previewStore`). The cell named below is the chat
+    /// sidebar's own (task 2775), so this page shows what was opened here
+    /// and does not take the working-directories page's file.
     @EnvironmentObject private var ghostty: Ghostty.App
 
     /// Which side of this page the keyboard is standing on, as the window's
@@ -287,10 +289,11 @@ struct ControlRoomChatPage: View {
     /// asks otherwise.
     @State private var side: ControlRoomSidebar.Side = .chat
 
-    /// The cell this page's sidebar lives in. Named through
-    /// `ControlRoomSidebar` so that the key has one spelling for the whole
-    /// application.
-    private static var cell: String { ControlRoomSidebar.key }
+    /// The cell this page's sidebar lives in: **the chat's own, for this
+    /// group** (task 2775). Named through `ControlRoomSidebar` so that the
+    /// key has one spelling for the whole application, and named with the
+    /// group so that switching groups does not carry a preview across.
+    private var cell: String { ControlRoomSidebar.key(group: group) }
 
     var body: some View {
         let theme = Look.theme(scheme)
@@ -310,8 +313,8 @@ struct ControlRoomChatPage: View {
                 .buttonStyle(.plain)
             }
         }
-        .panePreview(cell: Self.cell, store: $ghostty.previewStore) { split in
-            PanePreviewPanel(cell: Self.cell, split: split, store: $ghostty.previewStore)
+        .panePreview(cell: cell, store: $ghostty.previewStore) { split in
+            PanePreviewPanel(cell: cell, split: split, store: $ghostty.previewStore)
                 // Where ⌘⌥→ puts the keyboard: a view with nothing in it that
                 // the chat stops receiving keys into. Everything it does not
                 // use goes on up the responder chain (`SidebarFocusSink`), so
@@ -335,7 +338,7 @@ struct ControlRoomChatPage: View {
         // (「关掉以后，键盘回到这个格子的终端里」), and it is the half that
         // goes wrong silently: a window whose first responder is a view that
         // is no longer drawn is a window where typing goes nowhere.
-        .onChange(of: ghostty.previewStore.state(Self.cell).open) { open in
+        .onChange(of: ghostty.previewStore.state(cell).open) { open in
             guard !open else { return }
             move(to: ControlRoomSidebar.side(opened: false))
         }

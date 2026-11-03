@@ -766,7 +766,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             return false
 
         case .toggle:
-            let opened = ghostty.previewStore.toggleSidebar()
+            // **The group in front's chat sidebar** (task 2775): ⌘\ opens and
+            // closes the sidebar of the chat page the person is looking at,
+            // and each group's sidebar is its own -- so the key names the
+            // group whose row is selected.
+            let key = ControlRoomSidebar.key(group: model.selection ?? "")
+            let opened = ghostty.previewStore.toggleSidebar(key)
             Ghostty.logger.notice("control room: the preview sidebar is \(opened ? "open" : "closed", privacy: .public)")
             // Opening puts the keyboard in the sidebar and closing brings it
             // back out (`ControlRoomSidebar.side`), through the chat page's

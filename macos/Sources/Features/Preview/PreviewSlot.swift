@@ -24,31 +24,33 @@ enum PreviewSlot {
     typealias Layout = PreviewLayout
     typealias Look = ControlRoomLook
 
-    /// **The one cell key the control room's two whole-width pages share**
-    /// (task 2645, #2140 M3; the design's `INTERACTION.md` §一 和 §二:
-    /// 「右栏只有一个『当前文件』」).
+    /// **The chat page's sidebar, for one group** (task 2775, the user's
+    /// ruling of 2026-11-03).
     ///
-    /// A `Store` remembers a cell by the `String` the caller names it with,
-    /// and every terminal pane names itself -- its surface's id -- so two
-    /// panes never share one. The chat page and the working-directories page
-    /// are the other case: they are not cells of anybody's split tree, they
-    /// hold no terminal, and the design says the file opened on one of them
-    /// is the file the other is showing. So they name themselves the same
-    /// `String`, and sharing falls out of the store that was already there
-    /// rather than being a second mechanism -- no moving a file from one key
-    /// to another as the person changes pages, and no second place a current
-    /// file lives.
+    /// The chat page and the working-directories page **do not share one
+    /// current file**: 群聊只能显示当前群聊天文件，工作目录自己的预览留在工作
+    /// 目录. This is the earlier ruling that they did being overturned, so
+    /// the two are two names and not one -- a file opened on the workdirs
+    /// page is not the file the chat's sidebar is showing.
     ///
-    /// ⚠️ **One constant, named twice**, which is the whole point: two
-    /// literals spelled the same in two files are two places to be wrong in
-    /// and nothing that notices when one of them is. `ControlRoomChatPage`
-    /// and `ControlRoomWorkdirsPage` both name *this*.
+    /// **And the key carries the group**, which is the rest of the same
+    /// ruling: 换群不能带他群预览. A `Store` remembers a cell by the `String`
+    /// it is named with, so a key that named only the page would hand the
+    /// group that was left's preview to the group that arrived.
     ///
-    /// ⚠️ **And it is deliberately not a surface's id.** A terminal pane's
-    /// preview is that pane's own (the design: 终端格里的预览是那一个格子
-    /// 自己的), so nothing may ever mint a surface id equal to this. The
-    /// name has a shape no UUID has, which is why it reads as a sentence.
-    static let controlRoomSidebarKey = "control-room-sidebar"
+    /// ⚠️ **Two prefixes and never one**, and neither is a surface's id: a
+    /// terminal pane's preview is that pane's own (终端格里的预览是那一个格子
+    /// 自己的), and no UUID has either shape.
+    static func chatSidebarKey(group: String) -> String {
+        "control-room-chat-sidebar/" + group
+    }
+
+    /// **The working-directories page's workbench, for one group.** Its own
+    /// prefix for `chatSidebarKey`'s reason, and the group for the same
+    /// reason again.
+    static func workdirsKey(group: String) -> String {
+        "control-room-workdirs/" + group
+    }
 
     /// What one cell's preview is doing.
     struct State: Equatable {
@@ -130,18 +132,16 @@ enum PreviewSlot {
             return open
         }
 
-        /// The same flip, for the control room's two whole-width pages:
-        /// they are one place to the person, so they are one key here.
+        /// The same flip, for the control room's right-hand sidebar: ⌘\ is
+        /// the window's own key and it acts on **the sidebar of the group in
+        /// front**, so the caller names that group's key rather than the
+        /// flip working out a key for itself.
         ///
-        /// ⚠️ **The pages call this, and never a key.** A page that spelled
-        /// the key itself -- even the right one -- would be a second place
-        /// the key is written, and the day one of the two is edited the
-        /// pages stop sharing with nothing to say so. There is deliberately
-        /// no `key` parameter on this and no second spelling of the
-        /// constant: the only way to reach the sidebar's state is through
-        /// the one name (`controlRoomSidebarKey`, above).
+        /// ⚠️ **The key is a parameter and not a constant** (task 2775): the
+        /// chat's sidebar is the current group's, and a store that reached
+        /// for a name of its own could not be the group's.
         @discardableResult
-        mutating func toggleSidebar() -> Bool { toggle(PreviewSlot.controlRoomSidebarKey) }
+        mutating func toggleSidebar(_ key: String) -> Bool { toggle(key) }
 
         /// The divider in this cell was dragged to `w`, or nil for "put it
         /// back to the default".

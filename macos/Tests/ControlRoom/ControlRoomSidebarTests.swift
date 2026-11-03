@@ -223,7 +223,7 @@ struct ControlRoomSidebarTests {
     /// **One set of modifiers for the whole file**, and the caller uses this
     /// one rather than writing the four again
     /// (`ControlRoomController.sidebarTakesKey`). Two spellings of one set is
-    /// the same defect the single `controlRoomSidebarKey` prevents, one
+    /// the same defect the one `ControlRoomSidebar.key(group:)` prevents, one
     /// field over -- and this one was found by reading, not by a test.
     @Test func theModifierSetIsOneThing() {
         #expect(Sidebar.relevant == [.command, .option, .shift, .control])
@@ -255,18 +255,20 @@ struct ControlRoomSidebarTests {
         #expect(Sidebar.side(opened: false) == .chat)
     }
 
-    // MARK: The cell both pages name
+    // MARK: The cell, and whose it is
 
-    /// **One key for the whole right-hand side**, which is how 「右栏只有一
-    /// 个『当前文件』」 is the store that was already there. The chat page and
-    /// the working-directories page both name this constant.
-    @Test func theSidebarIsOneCellAndTheToggleReachesIt() {
+    /// **⌘\ acts on the group in front's sidebar**, and the toggle reaches
+    /// that cell (task 2775). The chat's sidebar is named for the group, so
+    /// the same chord on two groups is two cells.
+    @Test func theToggleReachesTheGroupInFrontsSidebar() {
         var store = Slot.Store()
-        #expect(store.state(Sidebar.key).open == false)
-        let opened = store.toggleSidebar()
+        let api = Sidebar.key(group: "api")
+        #expect(store.state(api).open == false)
+        let opened = store.toggleSidebar(api)
         #expect(opened == true)
-        #expect(store.state(Sidebar.key).open == true)
-        #expect(store.state(Slot.controlRoomSidebarKey).open == true)
+        #expect(store.state(api).open == true)
+        // And it is the chat sidebar's own name, not a literal spelled here.
+        #expect(api == Slot.chatSidebarKey(group: "api"))
     }
 
     /// ⚠️ **And it is not a surface's id.** A terminal pane names itself by
@@ -276,18 +278,52 @@ struct ControlRoomSidebarTests {
     /// quietly stop being true.
     @Test func theSidebarsNameIsNotShapedLikeAUUID() {
         let uuid = UUID().uuidString
-        #expect(Sidebar.key != uuid)
-        #expect(UUID(uuidString: Sidebar.key) == nil)
-        #expect(Sidebar.key == Slot.controlRoomSidebarKey)
+        let key = Sidebar.key(group: uuid)
+        #expect(key != uuid)
+        #expect(UUID(uuidString: key) == nil)
+        #expect(UUID(uuidString: Slot.workdirsKey(group: uuid)) == nil)
+    }
+
+    /// **换群不能带他群预览**: the group that arrives does not see the one
+    /// that was left's sidebar. This is the half a page-wide key could not
+    /// give -- 2645's single key made the two pages one, and a key named for
+    /// the page alone would make the two groups one.
+    @Test func anotherGroupsSidebarIsItsOwn() {
+        var store = Slot.Store()
+        let api = Sidebar.key(group: "api")
+        let frontend = Sidebar.key(group: "frontend")
+        #expect(api != frontend)
+        store.setFile(api, rel: "src/api.zig", token: String(repeating: "a", count: 32))
+        _ = store.toggleSidebar(api)
+        // The other group's cell is untouched: closed, with no file.
+        #expect(store.state(frontend).open == false)
+        #expect(store.state(frontend).rel == "")
+        #expect(store.state(frontend).token == "")
+    }
+
+    /// **The chat page and the working-directories page do not share a
+    /// cell** (task 2775, the user's ruling of 2026-11-03): 群聊只能显示当前群
+    /// 聊天文件，工作目录自己的预览留在工作目录. A file opened on one page is not
+    /// the file the other is showing, so the two names differ for one group.
+    @Test func theChatSidebarAndTheWorkdirsPageAreTwoCells() {
+        let group = "api"
+        #expect(Sidebar.key(group: group) != Slot.workdirsKey(group: group))
+        var store = Slot.Store()
+        store.setFile(Slot.workdirsKey(group: group), rel: "docs/a.md",
+                      token: String(repeating: "b", count: 32))
+        // The chat's sidebar for the same group is unmoved.
+        #expect(store.state(Sidebar.key(group: group)).rel == "")
+        #expect(store.state(Sidebar.key(group: group)).token == "")
     }
 
     @Test func theToggleFlipsAndNeverOnlyOpens() {
         var store = Slot.Store()
-        let first = store.toggleSidebar()
-        let second = store.toggleSidebar()
+        let key = Sidebar.key(group: "api")
+        let first = store.toggleSidebar(key)
+        let second = store.toggleSidebar(key)
         #expect(first == true)
         #expect(second == false)
-        #expect(store.state(Sidebar.key).open == false)
+        #expect(store.state(key).open == false)
     }
 
     /// Closing keeps the file, as it does for a pane's own preview: the
@@ -295,11 +331,12 @@ struct ControlRoomSidebarTests {
     /// toggle that cleared the cell would reopen on an empty panel.
     @Test func theToggleLeavesTheFileWhereItWas() {
         var store = Slot.Store()
-        store.setFile(Sidebar.key, rel: "src/a.zig", token: String(repeating: "a", count: 32))
-        _ = store.toggleSidebar()
-        _ = store.toggleSidebar()
-        #expect(store.state(Sidebar.key).rel == "src/a.zig")
-        #expect(store.state(Sidebar.key).token == String(repeating: "a", count: 32))
+        let key = Sidebar.key(group: "api")
+        store.setFile(key, rel: "src/a.zig", token: String(repeating: "a", count: 32))
+        _ = store.toggleSidebar(key)
+        _ = store.toggleSidebar(key)
+        #expect(store.state(key).rel == "src/a.zig")
+        #expect(store.state(key).token == String(repeating: "a", count: 32))
     }
 
     /// A pane's cell is its own: the sidebar's flag must not reach one, and a
@@ -309,10 +346,11 @@ struct ControlRoomSidebarTests {
         // One pane, named once: a second `UUID()` here would be a second
         // pane, and the reading below would be of a cell nobody wrote.
         let pane = UUID().uuidString
+        let key = Sidebar.key(group: "api")
         store.set(pane, open: true)
-        #expect(store.state(Sidebar.key).open == false)
-        _ = store.toggleSidebar()
-        #expect(store.state(Sidebar.key).open == true)
+        #expect(store.state(key).open == false)
+        _ = store.toggleSidebar(key)
+        #expect(store.state(key).open == true)
         #expect(store.state(pane).open == true)
     }
 }

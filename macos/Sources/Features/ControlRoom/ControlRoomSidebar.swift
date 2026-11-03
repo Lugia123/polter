@@ -5,12 +5,13 @@ import Foundation
 /// #2140 M3; the design's `INTERACTION.md` §一 怎么打开 and §三 键盘一览).
 ///
 /// **What the sidebar *is* is not decided here.** Its state is
-/// `PreviewSlot`'s -- one key, `controlRoomSidebarKey`, which the chat page
-/// and the working-directories page both name, which is how the design's
-/// 「右栏只有一个『当前文件』」 is one `Store` and not a mechanism. What it
-/// draws is `PanePreviewPanel`'s. What is here is the one thing neither of
-/// those can answer: **a key and its modifiers mean which of these**, given
-/// what has the keyboard.
+/// `PreviewSlot`'s, and **the chat's sidebar is the group in front's own**
+/// (`key(group:)`, task 2775): 群聊只能显示当前群聊天文件 -- it is not the
+/// working-directories page's cell, and a key that named only the page would
+/// carry the group that was left's preview into the one that arrived. What
+/// it draws is `PanePreviewPanel`'s. What is here is the one thing neither
+/// of those can answer: **a key and its modifiers mean which of these**,
+/// given what has the keyboard.
 ///
 /// **Decisions, not a key handler.** The window's content view asks these
 /// (`ControlRoomController.onKeyEquivalent`) and does what they say, exactly
@@ -36,11 +37,15 @@ import Foundation
 /// the key cannot be rebound, and a `keybind = cmd+\=...` in a config file
 /// does nothing to it.
 enum ControlRoomSidebar {
-    /// The sidebar's own name in the store. Reached through `PreviewSlot`
-    /// rather than spelled here: a second literal equal to the first is a
-    /// second place to be wrong in, and nothing notices when one of the two
-    /// is edited.
-    static let key = PreviewSlot.controlRoomSidebarKey
+    /// The sidebar's own name in the store, **for the group in front** (task
+    /// 2775). Reached through `PreviewSlot` rather than spelled here: a
+    /// second literal equal to the first is a second place to be wrong in,
+    /// and nothing notices when one of the two is edited.
+    ///
+    /// **The group is a parameter and not a constant.** 换群不能带他群预览: a
+    /// key that named only the page would hand the group that was left's
+    /// preview to the group that arrived.
+    static func key(group: String) -> String { PreviewSlot.chatSidebarKey(group: group) }
 
     /// Which side of the chat page the keyboard is standing on. The design
     /// treats the sidebar as one more pane of the cell

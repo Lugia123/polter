@@ -56,10 +56,10 @@ struct ControlRoomWorkdirsPage: View {
     let group: String
     @ObservedObject var model: ControlRoomModel
 
-    /// The one store every preview in the application is kept in, the same
-    /// one the chat page's sidebar uses (`Ghostty.App.previewStore`, task
-    /// 2645): 「右栏只有一个『当前文件』」, so a file opened on this page is the
-    /// file the chat page's sidebar is showing.
+    /// The one store every preview in the application is kept in
+    /// (`Ghostty.App.previewStore`). **The cell is this page's own**, named
+    /// for the group in front (task 2775): a file opened here stays here and
+    /// does not become what the chat page's sidebar is showing.
     @EnvironmentObject private var ghostty: Ghostty.App
     @Environment(\.colorScheme) private var scheme
 
@@ -176,9 +176,13 @@ struct ControlRoomWorkdirsPage: View {
     /// than as "no working directory on record", which is a different fact
     /// about a group the core has already answered for.
     private var waiting: Bool { !ready && !group.isEmpty }
-    /// The cell this page's workbench lives in -- the same cell the chat
-    /// page's sidebar uses, through the one constant that names it.
-    private var cell: String { ControlRoomSidebar.key }
+    /// The cell this page's workbench lives in -- **its own, for the group
+    /// in front** (task 2775, the user's ruling of 2026-11-03).
+    ///
+    /// ⚠️ **Not the chat page's sidebar.** 工作目录自己的预览留在工作目录: the
+    /// two pages were one key before and are two now, because a file opened
+    /// here is not the file the chat's sidebar shows.
+    private var cell: String { PreviewSlot.workdirsKey(group: group) }
     /// What the core is asked with: one source for the ticket and for the
     /// listing, so the two cannot reach two different cores.
     private var source: PreviewTicket.Source { .core(ghostty) }
@@ -1357,10 +1361,10 @@ struct ControlRoomWorkdirsPage: View {
     /// the page can say about it.
     ///
     /// **The file itself is not drawn here.** What a preview holds is
-    /// `PreviewSlot`'s: this page writes the ticket into the one cell the
-    /// chat page's sidebar also names, and draws what the slot holds through
-    /// the same `PreviewWebView` that panel uses. A second reader of a file
-    /// would be a second answer about what is open.
+    /// `PreviewSlot`'s: this page writes the ticket into **its own cell**
+    /// for the group in front (`cell`, task 2775), and draws what the slot
+    /// holds through the same `PreviewWebView` that panel uses. A second
+    /// reader of a file would be a second answer about what is open.
     @ViewBuilder
     private var workBody: some View {
         let state = ghostty.previewStore.state(cell)
@@ -1517,8 +1521,8 @@ struct ControlRoomWorkdirsPage: View {
     }
 
     /// A file was clicked: it gets a ticket of its own (`.file`, on itself)
-    /// and is put in the workbench -- the same cell the chat page's sidebar
-    /// names, so the two pages show one file.
+    /// and is put in the workbench -- **this page's own cell, for the group
+    /// in front** (task 2775), so the chat page's sidebar keeps its own file.
     private func open(_ node: Node) {
         guard let dir = dirs.first(where: { ControlRoomWorkdirs.contains($0.path, node.path) }) else {
             refusal = ControlRoomWorkdirs.noDirectory
@@ -1527,6 +1531,10 @@ struct ControlRoomWorkdirsPage: View {
         switch PreviewTicket.open(source, workdirId: dir.id, path: node.path) {
         case .success(let answer):
             refusal = nil
+            // **This page's own cell, for the group in front** (task 2775):
+            // opening a file here no longer reaches the chat page's sidebar.
+            // The cell's own `open` flag is still set -- it is this page's
+            // memory, not another page's, which is the whole of the change.
             ghostty.previewStore.setFile(cell, rel: node.rel, token: answer.token)
             ghostty.previewStore.set(cell, open: true)
         case .failure(let why):
