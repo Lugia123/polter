@@ -65,6 +65,52 @@ pub const History = enum {
     all,
 };
 
+/// One terminal a message was addressed to by name, and what it was called
+/// at the moment it was named.
+///
+/// **The title is a snapshot, not a lookup.** A terminal's title follows
+/// whatever it is working on, so reading it back tomorrow would relabel
+/// what somebody was told today. The record keeps the words that were on
+/// the tab when the message was posted (`ChatLog.Mention`).
+///
+/// The title is handed in by the host, which is the only side that can
+/// read a tab -- `Chat` is pure and has no titles to look up.
+pub const Mention = struct {
+    id: Id,
+
+    /// Empty when the host had nothing to say about it: a bare shell with
+    /// no title and no directory to stand in for one. Owned by the group;
+    /// an empty title is a static `""` and is never freed.
+    title: []const u8 = "",
+};
+
+/// What was true of a message at the moment it was posted, beyond the words
+/// themselves: who it was addressed to, and what role the speaker was in.
+///
+/// **One argument and not two parallel lists.** A separate `ids` and
+/// `titles` would be two lists that have to stay in step by hand, and the
+/// failure -- a title beside the wrong id -- is invisible in every shape
+/// that reads them. Here a name and its title are the same element or
+/// neither is.
+///
+/// **Both are snapshots and both are taken by the host**, which is the only
+/// side that can read a tab or a persona. `Chat` is pure: it has no titles
+/// to look up and no role store to ask.
+pub const About = struct {
+    mentions: []const Mention = &.{},
+
+    /// The speaker's role key as `PersonaStore` has it, `""` for a terminal
+    /// that wears no role at all.
+    ///
+    /// Not optional: `""` is a real answer here, and "nobody wrote it down"
+    /// is a property of the line on disk, which says so with a null of its
+    /// own (`ChatLog.Entry.role`).
+    role: []const u8 = "",
+
+    /// Nothing said: no names, no role.
+    pub const none: About = .{ .mentions = &.{}, .role = "" };
+};
+
 pub const Message = struct {
     /// Monotonic within its group, so one cursor per group is enough.
     seq: u64,
@@ -94,8 +140,29 @@ pub const Message = struct {
     /// (`Bus.Entry.worker_mentions`), and it is the supervisor who is woken.
     /// Who was originally named is in `text`, for people to read.
     ///
+    /// Each carries the title its terminal had **when this was posted**,
+    /// because a window that draws "@ worker-core" has to keep saying that
+    /// tomorrow and a title follows whatever the terminal is working on.
+    /// The titles are handed in by the host, the only side that can read a
+    /// tab -- `Chat` is pure and has none to look up.
+    ///
     /// Owned by the group. Empty for nearly every message.
-    mentions: []const Id = &.{},
+    ///
+    /// **No default.** Every place a `Message` is built says what its
+    /// mentions are, so a new one cannot come out meaning "nobody was
+    /// named" when the truth is that nobody wrote the field down. What is
+    /// genuinely unknown is a property of the line on disk, and the record
+    /// says so with a null of its own (`ChatLog.Entry.mentions`).
+    mentions: []const Mention,
+
+    /// The role the speaker wore when this was posted, as `PersonaStore`
+    /// keys it, or `""` for a terminal in no role at all. A snapshot for the
+    /// reason the titles above are: a terminal that changes role on Tuesday
+    /// must not relabel what it said on Monday.
+    ///
+    /// `""` is a real answer; "nobody recorded one" is the record's, again
+    /// (`ChatLog.Entry.role`). **No default**, for `mentions`' reason.
+    role: []const u8,
 
     /// Which channel this was said in: 0 is the public one everybody in the
     /// group reads, anything else is a task's number and the channel of
@@ -116,6 +183,8 @@ pub const Message = struct {
 
     fn release(self: Message, alloc: Allocator) void {
         alloc.free(self.text);
+        if (self.role.len > 0) alloc.free(self.role);
+        for (self.mentions) |m| if (m.title.len > 0) alloc.free(m.title);
         if (self.mentions.len > 0) alloc.free(self.mentions);
     }
 };
@@ -1638,6 +1707,9 @@ pub fn postMentioning(
 /// terminals that can read the channel, which the chat does not know and
 /// the caller does. A name that could not read the post refuses it whole,
 /// before anything is added. Null is "everybody in the group".
+///
+/// Ids only: see `postInAbout` for the door a host uses, which carries the
+/// titles and the speaker's role with them.
 pub fn postIn(
     self: *Chat,
     name: []const u8,
@@ -1648,24 +1720,69 @@ pub fn postIn(
     readers: ?[]const Id,
     now_ms: u64,
 ) Error!Posted {
-    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
-    if (!group.members.contains(from)) return error.NotAMember;
     if (mentions.len > max_mentions) return error.TooManyMentions;
 
-    var buf: [max_mentions]Id = undefined;
+    // The ids become names with nothing known about what each is called.
+    // The buffer is this frame's, and it outlives the call below, which
+    // copies everything it keeps before it returns.
+    var named: [max_mentions]Mention = undefined;
+    for (mentions, 0..) |id, i| named[i] = .{ .id = id };
+    return self.postInAbout(name, from, text, .{ .mentions = named[0..mentions.len] }, channel, readers, now_ms);
+}
+
+/// `postIn`, with what was true of the message at the moment it was posted:
+/// what each named terminal was called, and what role the speaker was in
+/// (`About`). This is the door a **host** uses -- it is the only side that
+/// can read a tab or a persona -- and the id-only `postIn` is written on
+/// top of it, so there is one set of rules and not two.
+///
+/// **The names are checked as names and the titles ride along.** Nothing
+/// about a title can refuse a post: the title is not the message. And the
+/// snapshot that is stored is built from `about.mentions` in the order it
+/// arrives, so what the record keeps is exactly what passed the checks --
+/// no name can be dropped between the check and the write and leave its
+/// title behind for somebody else's.
+pub fn postInAbout(
+    self: *Chat,
+    name: []const u8,
+    from: Id,
+    text: []const u8,
+    about: About,
+    channel: u64,
+    readers: ?[]const Id,
+    now_ms: u64,
+) Error!Posted {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    if (!group.members.contains(from)) return error.NotAMember;
+    if (about.mentions.len > max_mentions) return error.TooManyMentions;
+
+    var buf: [max_mentions]Mention = undefined;
     var n: usize = 0;
-    for (mentions) |id| {
+    for (about.mentions) |m| {
+        const id = m.id;
         if (id == from) return error.MentionSelf;
         if (!group.members.contains(id)) return error.MentionNotAMember;
         if (readers) |ids| {
             if (std.mem.indexOfScalar(Id, ids, id) == null) return error.MentionNotInChannel;
         }
-        if (std.mem.indexOfScalar(Id, buf[0..n], id) != null) continue;
-        buf[n] = id;
+        // A repeat is collapsed onto the first one, title and all: the
+        // later copy adds nothing the record does not already keep.
+        var seen = false;
+        for (buf[0..n]) |kept| {
+            if (kept.id == id) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+        buf[n] = m;
         n += 1;
     }
 
-    return self.append(group, from, text, now_ms, false, buf[0..n], channel);
+    return self.append(group, from, text, now_ms, false, .{
+        .mentions = buf[0..n],
+        .role = about.role,
+    }, channel);
 }
 
 /// One of Polter's own sentences in `group` (task 2156 v5). See
@@ -1688,7 +1805,7 @@ pub fn postAsPolter(
     now_ms: u64,
 ) Error!Posted {
     const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
-    return self.append(group, polter_id, text, now_ms, false, &.{}, 0);
+    return self.append(group, polter_id, text, now_ms, false, About.none, 0);
 }
 
 /// The text of one message as the group holds it -- trimmed and, if it was
@@ -1787,6 +1904,13 @@ fn beyondFloor(m: Message, who: Member) bool {
     return m.summary and m.covers_from != 0 and m.covers_from <= who.floor;
 }
 
+/// Whether `id` is one of the terminals a message names. The id is what a
+/// mention *is*; the title beside it is only what to call it.
+fn names(mentions: []const Mention, id: Id) bool {
+    for (mentions) |m| if (m.id == id) return true;
+    return false;
+}
+
 /// Whether anything `who` may see and has not been handed, written by
 /// somebody other than `id`, comes before `seq`.
 fn unreadBefore(group: *const Group, who: Member, id: Id, seq: u64) bool {
@@ -1805,7 +1929,7 @@ fn append(
     text: []const u8,
     now_ms: u64,
     summary: bool,
-    mentions: []const Id,
+    about: About,
     channel: u64,
 ) Error!Posted {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
@@ -1814,11 +1938,50 @@ fn append(
     const kept = utf8Cut(trimmed, self.config.max_text_bytes);
     const owned = try self.alloc.dupe(u8, kept);
     errdefer self.alloc.free(owned);
-    const named: []const Id = if (mentions.len == 0) &.{} else try self.alloc.dupe(Id, mentions);
-    errdefer if (named.len > 0) self.alloc.free(named);
+
+    // **Copied, the whole snapshot.** The caller's strings are its own and
+    // may be gone before anybody reads the message back; what the group
+    // keeps has to be the group's. An empty one is stored as the static
+    // `""` and never freed -- `release` frees a title only when it has
+    // length, so allocation and release are the same rule read twice.
+    const role: []const u8 = if (about.role.len == 0)
+        ""
+    else
+        try self.alloc.dupe(u8, about.role);
+    errdefer if (role.len > 0) self.alloc.free(role);
+
+    // **One cleanup for the whole snapshot, and it is at function scope.**
+    // Written inside the `if` below it would be out of scope by the time
+    // `log.append` can fail, and the array it was meant to give back would
+    // leak -- the caller never sees it, so nothing else can free it.
+    //
+    // Titles are given back against the same `len > 0` rule `release` uses,
+    // so the empty ones (the static `""`) are never handed to the
+    // allocator, and allocation and release stay one rule read twice.
+    var named: []Mention = &.{};
+    errdefer {
+        for (named) |m| if (m.title.len > 0) self.alloc.free(m.title);
+        if (named.len > 0) self.alloc.free(named);
+    }
+
+    if (about.mentions.len > 0) {
+        const out = try self.alloc.alloc(Mention, about.mentions.len);
+        // **Every slot is a valid `Mention` before any title is copied.**
+        // The array is published to `named` -- and so to the `errdefer`
+        // above -- while it still holds only ids and empty titles, so a
+        // failure in the copy loop leaves something every element of which
+        // can be handed to `release`. Copying straight into `out[i]` would
+        // leave the slots past the failure `undefined`.
+        for (about.mentions, 0..) |m, i| out[i] = .{ .id = m.id };
+        named = out;
+
+        for (about.mentions, 0..) |m, i| {
+            if (m.title.len == 0) continue;
+            named[i].title = try self.alloc.dupe(u8, m.title);
+        }
+    }
 
     const seq = group.next_seq;
-    group.next_seq += 1;
 
     try group.log.append(self.alloc, .{
         .seq = seq,
@@ -1827,8 +1990,16 @@ fn append(
         .summary = summary,
         .text = owned,
         .mentions = named,
+        .role = role,
         .channel = channel,
     });
+
+    // **Spent only once the record has it.** `log.append` can fail, and
+    // until it has not this number has been handed to nobody: advancing
+    // first would leave a hole in the numbering that is indistinguishable
+    // from a message that went missing, which is the one thing a reader of
+    // this log must never have to guess at.
+    group.next_seq += 1;
 
     // The sender has seen its own message by definition -- **and nothing
     // else by posting it.** This used to set the cursor to the new message
@@ -1944,6 +2115,13 @@ pub fn compact(
         .at_ms = now_ms,
         .summary = true,
         .text = owned,
+        // **A summary names nobody and has no role**, said out loud rather
+        // than left to a default. It is the supervisor's sentence about a
+        // stretch of conversation, not a message addressed to anyone; the
+        // terminals it stands in for keep their own names and roles, and
+        // they are still in the record on disk.
+        .mentions = &.{},
+        .role = "",
         .channel = channel,
         .covers_from = first_seq,
         .covers_from_log = first_log,
@@ -2089,7 +2267,7 @@ fn unreadNaming(self: *const Chat, name: []const u8, id: Id, scope: Scope) usize
         if (beyondFloor(m, who)) continue;
         if (m.from == id) continue;
         if (!scope.sees(m.channel, m.at_ms)) continue;
-        if (std.mem.indexOfScalar(Id, m.mentions, id) == null) continue;
+        if (!names(m.mentions, id)) continue;
         n += 1;
     }
     return n;
@@ -2143,6 +2321,29 @@ pub const Batch = struct {
     more: bool,
 };
 
+/// What one `readAfter` handed over: the same messages, plus how far the
+/// pass got.
+///
+/// `passed` is carried out rather than applied because **the caller is the
+/// one that decides whether reading this counts as having seen it**. See
+/// `readAfter`.
+pub const Pass = struct {
+    messages: []const Message,
+
+    /// Whether the budget cut it short. Same meaning as `Batch.more`.
+    more: bool,
+
+    /// The seq of the last message this pass walked over that the reader
+    /// was not already past, **whether or not it is in `messages`**: a
+    /// message a `scope` hides is not unread, so it is walked past with the
+    /// rest. Everything beyond the reader's `floor` is left out of this,
+    /// because a bar is permanent and there is nothing to walk past.
+    ///
+    /// `read` is the only caller that does anything with it, and what it
+    /// does is move that member's cursor here.
+    passed: u64,
+};
+
 /// What `id` may see in this group after `since`, oldest first, up to
 /// `budget` -- and `id` is marked as having seen exactly that much.
 ///
@@ -2160,6 +2361,13 @@ pub const Batch = struct {
 ///
 /// The slice is the caller's; the texts inside it still belong to the
 /// group, so a caller that keeps them must copy.
+///
+/// **A window is not a member.** This moves a member's cursor, which is
+/// the model of "what this member has been shown" -- `unread` and
+/// `waking` read the same field to decide what to tell it about. Two
+/// readers of one group therefore walk over each other's place in it, so
+/// anything that is a *view* rather than the member itself reads with
+/// `readAfter`, which moves nothing.
 pub fn read(
     self: *Chat,
     alloc: Allocator,
@@ -2180,6 +2388,52 @@ pub fn read(
     // in both directions -- asking again for an older range gets it.
     const after = since orelse who.cursor;
 
+    const pass = try self.readAfter(alloc, name, id, after, budget, scope);
+    errdefer alloc.free(pass.messages);
+
+    // **Exactly what went out, and not one message further.** The old line
+    // here reached for the newest message in the log instead, which is the
+    // defect: it claimed on the member's behalf to have seen things that
+    // were about to be cut off the end of this very reply. The only things
+    // passed over besides are the ones `scope` hides, and `passed` stops at
+    // the last message before a cut.
+    if (pass.passed > who.cursor) who.cursor = pass.passed;
+
+    return .{ .messages = pass.messages, .more = pass.more };
+}
+
+/// What `id` may see in this group after `after`, oldest first, up to
+/// `budget` -- **and nothing of the chat is changed by asking.**
+///
+/// `after` is exclusive and is not optional here: "carry on from where I am"
+/// is a statement about a member's own place in the group, and this read
+/// does not have one. A caller that wants that reads it out of `cursorFor`
+/// and passes it, or uses `read`.
+///
+/// **This is what a window reads with.** `read` marks the member as having
+/// seen what it handed over, which is right for the member itself: the
+/// notice sweep counts `cursor` and would tell an agent about messages it
+/// had just been shown. A control-room pane is not a member -- the person
+/// has several of them, they come and go, and two of them sharing one
+/// cursor would each drag the other's place around. So `read` is written on
+/// top of this one and is the only thing in the program that moves that
+/// field; "the person looked at this group" stays where it was, the `seen`
+/// control act.
+///
+/// The slice is the caller's; the texts inside it still belong to the
+/// group, so a caller that keeps them must copy.
+pub fn readAfter(
+    self: *Chat,
+    alloc: Allocator,
+    name: []const u8,
+    id: Id,
+    after: u64,
+    budget: Budget,
+    scope: Scope,
+) Error!Pass {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const who = group.members.get(id) orelse return error.NotAMember;
+
     var out: std.ArrayListUnmanaged(Message) = .empty;
     errdefer out.deinit(alloc);
 
@@ -2192,7 +2446,7 @@ pub fn read(
     var passed: u64 = 0;
     for (group.log.items) |m| {
         if (m.seq <= after) continue;
-        if (beyondFloor(m, who.*)) continue;
+        if (beyondFloor(m, who)) continue;
         if (!scope.sees(m.channel, m.at_ms)) {
             passed = m.seq;
             continue;
@@ -2211,15 +2465,16 @@ pub fn read(
         passed = m.seq;
     }
 
-    // **Exactly what went out, and not one message further.** The old line
-    // here reached for the newest message in the log instead, which is the
-    // defect: it claimed on the member's behalf to have seen things that
-    // were about to be cut off the end of this very reply. The only things
-    // passed over besides are the ones `scope` hides, and `passed` stops at
-    // the last message before a cut.
-    if (passed > who.cursor) who.cursor = passed;
+    return .{ .messages = try out.toOwnedSlice(alloc), .more = more, .passed = passed };
+}
 
-    return .{ .messages = try out.toOwnedSlice(alloc), .more = more };
+/// The highest seq `id` has been shown in this group. What a caller that
+/// reads with `readAfter` passes as `after` to carry on from where the
+/// member is.
+pub fn cursorFor(self: *const Chat, name: []const u8, id: Id) Error!u64 {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const who = group.members.get(id) orelse return error.NotAMember;
+    return who.cursor;
 }
 
 /// Who is in this group, sorted so two listings can be compared.
@@ -4620,4 +4875,309 @@ test "channel: 摘要记下 covers_from，被挡过的成员读不到它，没�
     defer testing.allocator.free(theirs.messages);
     try testing.expectEqual(@as(usize, 0), theirs.messages.len);
     try testing.expectEqual(@as(usize, 0), chat.unread("g", cee, Scope.public));
+}
+
+test "2669: a message keeps the names and titles it was posted with, in that order" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    // `b` named first, so the order is not the order the members were
+    // added in and cannot be reproduced by walking the member list.
+    _ = try chat.postInAbout("build", boss, "look", .{
+        .mentions = &.{
+            .{ .id = b, .title = "✳ tests" },
+            .{ .id = a, .title = "✳ retry.py" },
+        },
+        .role = "reviewer",
+    }, 0, null, 1);
+
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 1), seen.len);
+    try testing.expectEqual(@as(usize, 2), seen[0].mentions.len);
+    try testing.expectEqual(b, seen[0].mentions[0].id);
+    try testing.expectEqualStrings("✳ tests", seen[0].mentions[0].title);
+    try testing.expectEqual(a, seen[0].mentions[1].id);
+    try testing.expectEqualStrings("✳ retry.py", seen[0].mentions[1].title);
+    try testing.expectEqualStrings("reviewer", seen[0].role);
+}
+
+test "2669: a title is kept as it was, not looked up again" {
+    // The point of the snapshot, and the only assertion that can tell it
+    // from a lookup: the caller hands over a title, and nothing anywhere in
+    // `Chat` can produce the string.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+
+    _ = try chat.postInAbout("build", boss, "one", .{
+        .mentions = &.{.{ .id = a, .title = "what it was called then" }},
+        .role = "worker",
+    }, 0, null, 1);
+    _ = try chat.postInAbout("build", boss, "two", .{
+        .mentions = &.{.{ .id = a, .title = "what it is called now" }},
+        .role = "",
+    }, 0, null, 2);
+
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 2), seen.len);
+    try testing.expectEqualStrings("what it was called then", seen[0].mentions[0].title);
+    try testing.expectEqualStrings("what it is called now", seen[1].mentions[0].title);
+    // The older message keeps its role when the terminal's has moved on.
+    try testing.expectEqualStrings("worker", seen[0].role);
+    // And no role is an answer, not a blank: the two messages differ.
+    try testing.expectEqualStrings("", seen[1].role);
+}
+
+test "2669: the id-only door records names with nothing known about them" {
+    // The other control: a post through `postIn` still names people, and
+    // what it says about each is that nobody said anything -- which is not
+    // the same as naming nobody.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+
+    _ = try chat.postMentioning("build", boss, "look", &.{a}, 1);
+
+    // Asked **before** anything is read, because reading is what makes a
+    // message not-unread: the count below is about what the mention did to
+    // this terminal, and a read would have moved its cursor past it.
+    try testing.expectEqual(@as(usize, 1), chat.waking("build", a, .watched, .everything));
+
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 1), seen[0].mentions.len);
+    try testing.expectEqual(a, seen[0].mentions[0].id);
+    try testing.expectEqualStrings("", seen[0].mentions[0].title);
+}
+
+test "2669: a name that repeats keeps the first title, and a name that cannot read is still refused" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    try chat.add("build", b, .none, .{});
+
+    _ = try chat.postInAbout("build", boss, "look", .{
+        .mentions = &.{
+            .{ .id = a, .title = "first" },
+            .{ .id = a, .title = "second" },
+        },
+        .role = "",
+    }, 0, null, 1);
+
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
+    defer testing.allocator.free(seen);
+    try testing.expectEqual(@as(usize, 1), seen[0].mentions.len);
+    try testing.expectEqualStrings("first", seen[0].mentions[0].title);
+
+    // A title is not the message: it can neither smuggle a stranger in nor
+    // make a refusal go away. The name is checked as a name.
+    try testing.expectError(error.MentionNotAMember, chat.postInAbout("build", boss, "x", .{
+        .mentions = &.{.{ .id = 0x9999, .title = "somebody" }},
+        .role = "",
+    }, 0, null, 2));
+
+    // ...and an id that cannot read the channel refuses the post whole,
+    // title and all, so no half of a name goes out alone.
+    try testing.expectError(error.MentionNotInChannel, chat.postInAbout("build", boss, "x", .{
+        .mentions = &.{.{ .id = b, .title = "✳ tests" }},
+        .role = "",
+    }, 7, &.{a}, 3));
+}
+
+test "2669: a compaction names nobody and wears no role" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .all, .{});
+    _ = try chat.postMentioning("build", boss, "one", &.{a}, 0);
+    _ = try chat.postMentioning("build", boss, "two", &.{a}, 1);
+    _ = try chat.compact("build", 2, 0, "the gist", boss, 2);
+
+    const seen = (try chat.read(testing.allocator, "build", a, 0, .unlimited, .everything)).messages;
+    defer testing.allocator.free(seen);
+
+    try testing.expectEqual(@as(usize, 1), seen.len);
+    try testing.expect(seen[0].summary);
+    // Said out loud rather than left to a default: a summary is the
+    // supervisor's sentence about a stretch of talk, not a message aimed
+    // at anyone, and the terminals it covers keep their own names in the
+    // record on disk.
+    try testing.expectEqual(@as(usize, 0), seen[0].mentions.len);
+    try testing.expectEqualStrings("", seen[0].role);
+}
+
+test "2669: reading with readAfter moves nobody's place, and read still does" {
+    // Both halves asserted together, on purpose: a test that only checked
+    // the first would pass just as well if `readAfter` had stopped reading
+    // at all, and `read` is what the notice sweep counts.
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    const first = (try chat.post("build", boss, "one", 0)).seq;
+    _ = try chat.post("build", boss, "two", 1);
+    _ = try chat.post("build", boss, "three", 2);
+
+    try testing.expectEqual(@as(u64, 0), try chat.cursorFor("build", a));
+
+    // A window reading: it is handed the messages and its place in the
+    // group does not move, so `unread` is unchanged and a second window
+    // cannot drag the first one's position around.
+    const pass = try chat.readAfter(testing.allocator, "build", a, 0, .unlimited, .everything);
+    defer testing.allocator.free(pass.messages);
+    try testing.expectEqual(@as(usize, 3), pass.messages.len);
+    try testing.expectEqual(@as(u64, 3), pass.passed);
+    try testing.expectEqual(@as(u64, 0), try chat.cursorFor("build", a));
+    try testing.expectEqual(@as(usize, 3), chat.unread("build", a, .everything));
+
+    // The member itself reading: its place moves, exactly as far as what
+    // it was shown.
+    const batch = try chat.read(testing.allocator, "build", a, first, .unlimited, .everything);
+    defer testing.allocator.free(batch.messages);
+    try testing.expectEqual(@as(usize, 2), batch.messages.len);
+    try testing.expectEqual(@as(u64, 3), try chat.cursorFor("build", a));
+    try testing.expectEqual(@as(usize, 0), chat.unread("build", a, .everything));
+}
+
+test "2669: a capped pass moves nobody past the cut, and says there is more" {
+    var chat = testChat();
+    defer chat.deinit();
+
+    try chat.create("build", boss);
+    try chat.add("build", a, .none, .{});
+    for (0..4) |i| _ = try chat.post("build", boss, "message", i);
+
+    // A budget that fits one message and not two: 7 bytes of text plus 4
+    // of overhead is 11, so 15 takes the first and stops on the second.
+    const pass = try chat.readAfter(testing.allocator, "build", a, 0, .{ .bytes = 15, .per_line = 4 }, .everything);
+    defer testing.allocator.free(pass.messages);
+    try testing.expectEqual(@as(usize, 1), pass.messages.len);
+    try testing.expect(pass.more);
+    // The cut is the cut: `passed` stops at the last message that went out,
+    // so a reader that writes this down has not been told it read the rest.
+    try testing.expectEqual(@as(u64, 1), pass.passed);
+    try testing.expectEqual(@as(u64, 0), try chat.cursorFor("build", a));
+}
+
+test "2669: a post that runs out of memory leaves no message and no seq gone" {
+    // **Why this is a test and not a comment.** `append` copies four things
+    // out of the caller's hands -- the text, the role, the mentions array,
+    // and a title per name -- and every one of them can fail after some of
+    // the others have already been taken. Two ways that goes wrong, and
+    // neither shows up anywhere else: a slot that was never written is
+    // handed back as garbage (which is why the array is taken, and every
+    // slot filled with its id, before any title is copied), and `next_seq`
+    // is spent on a message the group never got, which leaves a hole no
+    // reader can tell from one that went missing.
+    //
+    // **Every allocation in the post is failed in turn**, and the two
+    // assertions are made on each failure: nothing was added, and the next
+    // post still gets the first number. A leak shows up as bytes that went
+    // out and never came back when the group is torn down.
+    const four = [_]Id{ a, 0x4444, 0x5555, 0x6666 };
+    const about: About = .{
+        .mentions = &.{
+            .{ .id = a, .title = "✳ retry.py" },
+            .{ .id = 0x4444, .title = "✳ tests" },
+            .{ .id = 0x5555, .title = "✳ build" },
+            // One with no title, so the loop's skip is on the path too.
+            .{ .id = 0x6666, .title = "" },
+        },
+        .role = "reviewer",
+    };
+
+    var induced: usize = 0;
+    var landed: usize = 0;
+
+    var index: usize = 0;
+    while (index < 64) : (index += 1) {
+        var fa: std.testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = index });
+        const alloc = fa.allocator();
+
+        // Everything, including the group this is posted into, is built
+        // through the allocator under test -- `Chat` holds the one it was
+        // made with, so a post can only be made to fail if the group came
+        // from the same place.
+        var chat: Chat = .init(alloc, .{});
+        var ready = true;
+        chat.create("build", boss) catch {
+            ready = false;
+        };
+        if (ready) for (four) |id| chat.add("build", id, .none, .{}) catch {
+            ready = false;
+            break;
+        };
+        if (!ready) {
+            // A failure in the setup is not what this is about: the
+            // allocator failed before the post could be reached at all.
+            chat.deinit();
+            continue;
+        }
+
+        const posted = chat.postInAbout("build", boss, "look", about, 0, null, 1);
+
+        // From here on nothing more is made to fail, so that what happened
+        // can be looked at rather than guessed at: a failure already
+        // induced stays induced, and only new allocations are let through.
+        fa.fail_index = std.math.maxInt(usize);
+
+        if (posted) |p| {
+            landed += 1;
+            try testing.expectEqual(@as(u64, 1), p.seq);
+            try testing.expectEqual(@as(usize, 1), countFor(&chat, alloc, a));
+            // The post got all the way through, so there is nothing left
+            // for a larger index to fail: this was the last interesting
+            // one. (Checked below rather than trusted.)
+            chat.deinit();
+            try testing.expectEqual(fa.allocated_bytes, fa.freed_bytes);
+            break;
+        } else |err| {
+            try testing.expectEqual(Error.OutOfMemory, err);
+            induced += 1;
+
+            // Nothing was added...
+            try testing.expectEqual(@as(usize, 0), countFor(&chat, alloc, a));
+
+            // ...and nothing was spent. The number handed out next is the
+            // first one, not the one after a message nobody ever got.
+            const said = try chat.postInAbout("build", boss, "after", .none, 0, null, 2);
+            try testing.expectEqual(@as(u64, 1), said.seq);
+            try testing.expectEqual(@as(usize, 1), countFor(&chat, alloc, a));
+        }
+
+        chat.deinit();
+        try testing.expectEqual(fa.allocated_bytes, fa.freed_bytes);
+    }
+
+    // **Negative control on this test itself.** A loop that induced nothing
+    // and a loop that exercised the whole path look the same from a green
+    // result, and the first one would be a test that proves nothing. Four
+    // titles and a role is at least five copies on the way in.
+    try testing.expect(induced >= 5);
+    try testing.expectEqual(@as(usize, 1), landed);
+}
+
+/// How many messages the group holds, as `reader` sees them.
+fn countFor(chat: *Chat, alloc: Allocator, reader: Id) usize {
+    const pass = chat.readAfter(alloc, "build", reader, 0, .unlimited, .everything) catch
+        return 0;
+    defer alloc.free(pass.messages);
+    return pass.messages.len;
 }

@@ -16428,7 +16428,13 @@ fn chatCompact(
     // frees the agents' context; it is not an instruction to forget, and
     // the record of a night is worth more than the shape it was in when
     // the supervisor tidied up.
-    self.logChatCovering(group, seq, by, at, true, summary, channel, done.covers_log);
+    //
+    // **`.none`, the same answer the model gives** (`Chat.compact` writes an
+    // empty list and an empty role into the summary it builds): this is a
+    // sentence Polter wrote about the night, not one the supervisor said, so
+    // it names nobody and wears no role. It is recorded as known-empty
+    // rather than left unrecorded, because here somebody does know.
+    self.logChatAbout(group, seq, by, at, true, summary, channel, done.covers_log, .none);
 
     return done.wrote;
 }
@@ -16443,10 +16449,30 @@ fn chatPost(
     const self: *App = @ptrCast(@alignCast(ctx));
     const at: u64 = @intCast(self.poltergeistWallMs());
 
-    var named: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.Bus.Id = undefined;
-    if (mentions.to.len > named.len) return error.TooManyMentions;
-    for (mentions.to, 0..) |d, i| named[i] = d.to;
-    const posted = try self.chat.postIn(group, from, text, named[0..mentions.to.len], mentions.channel, null, at);
+    // **What each named terminal is called, taken now** (task 2669). A
+    // title moves with the terminal's work, so the record has to be handed
+    // the words that are on the tab at this moment or it can never say who
+    // was named in a way a person can read tomorrow.
+    //
+    // The arena is this call's: `Chat` copies everything it keeps before it
+    // returns, and nothing here outlives the call.
+    var titles: std.heap.ArenaAllocator = .init(self.alloc);
+    defer titles.deinit();
+
+    var titled: [poltergeistpkg.Chat.max_mentions]poltergeistpkg.Chat.Mention = undefined;
+    if (mentions.to.len > titled.len) return error.TooManyMentions;
+    for (mentions.to, 0..) |d, i| {
+        titled[i] = .{
+            .id = d.to,
+            .title = self.chatMemberTitle(titles.allocator(), d.to) catch "",
+        };
+    }
+    const about: poltergeistpkg.Chat.About = .{
+        .mentions = titled[0..mentions.to.len],
+        .role = self.terminalRole(from),
+    };
+
+    const posted = try self.chat.postInAbout(group, from, text, about, mentions.channel, null, at);
     const seq = posted.seq;
 
     // A terminal's title moves with its work, so the record follows it.
@@ -16456,7 +16482,7 @@ fn chatPost(
 
     // Written down after the model accepted it, so the record holds what
     // was actually said rather than what somebody tried to say.
-    self.logChat(group, seq, from, at, false, text, mentions.channel);
+    self.logChatAbout(group, seq, from, at, false, text, mentions.channel, 0, about);
 
     // **Typed before the notices go out**, not after: a notice lands in the
     // input box without a return, and a named terminal handed one first
@@ -16578,6 +16604,21 @@ fn tellMentionGaveUp(self: *App, e: poltergeistpkg.MentionRetry.Entry, code: []c
 /// line it became on disk can be tied back to it. With no log, or with a
 /// write that failed, the message keeps `log_seq = 0` -- which is what a
 /// reader paging backwards has to see to know the trail stops there.
+///
+/// **Known-empty, and deliberately not the speaker's role.** The callers of
+/// this name are the sentences Polter writes about a group -- a rename, a
+/// terminal coming back, its own aside -- and every one of them already
+/// went into the group through the id-only door (`Chat.post`), so the
+/// message in memory named nobody and wears no role. The record says the
+/// same thing, and that is the point: a message must not read one way while
+/// a reader holds it live and another way when they page back for it. The
+/// role belongs to the message as it exists in both places, not to the tab
+/// the sentence happens to be filed under.
+///
+/// A caller that knows *more* than this -- the terminal that posted, which
+/// has a real role -- is `chatPost`, and it writes its snapshot through
+/// `logChatAbout`. A caller that knows *less* says so with a null, and that
+/// reads back off disk as "not recorded".
 fn logChat(
     self: *App,
     group: []const u8,
@@ -16588,11 +16629,22 @@ fn logChat(
     text: []const u8,
     channel: u64,
 ) void {
-    self.logChatCovering(group, seq, from, at_ms, summary, text, channel, 0);
+    self.logChatAbout(group, seq, from, at_ms, summary, text, channel, 0, .none);
 }
 
-/// `logChat`, with the log seq a summary starts at (0: not known).
-fn logChatCovering(
+/// `logChat`, with what was true of the message when it was posted: who it
+/// named, what each was called, and the speaker's role (`Chat.About`).
+/// **The one writer**; `logChat` above is the same thing with nothing to
+/// say about names.
+///
+/// `about` is optional because the two answers are different: `null` is
+/// "this path does not know", `Chat.About.none` is "it knows: nobody, no
+/// role". A line written with the first has no keys at all and reads back
+/// as "not recorded"; one written with the second has an empty list and an
+/// empty string, which is a fact somebody stood behind. Collapsing them
+/// would make every old line look like a message that deliberately
+/// addressed nobody.
+fn logChatAbout(
     self: *App,
     group: []const u8,
     seq: u64,
@@ -16602,6 +16654,7 @@ fn logChatCovering(
     text: []const u8,
     channel: u64,
     covers_log: u64,
+    about: ?poltergeistpkg.Chat.About,
 ) void {
     const l = if (self.chat_log) |*v| v else return;
 
@@ -16611,7 +16664,7 @@ fn logChatCovering(
 
     const at_wall_ms: i64 = @intCast(at_ms);
 
-    const log_seq = l.appendCovering(
+    const log_seq = l.appendAll(
         group,
         from,
         author,
@@ -16620,6 +16673,7 @@ fn logChatCovering(
         text,
         channel,
         covers_log,
+        about,
     );
     if (log_seq != 0) self.chat.setLogSeq(group, seq, log_seq);
 
@@ -17029,6 +17083,19 @@ fn chatMembers(
         named += 1;
     }
     return out;
+}
+
+/// A terminal's role as the control room draws it, or `""` when it wears
+/// none (task 2669).
+///
+/// **The same reading the room uses** (`controlSnapshot`'s role): a role
+/// that came from a launch, else the persona's own key. Written once here
+/// rather than at the call site so that the role in a message and the role
+/// on a tab cannot come from two rules that drift apart -- a snapshot that
+/// disagrees with the screen it was taken from is worse than none.
+fn terminalRole(self: *App, id: poltergeistpkg.Bus.Id) []const u8 {
+    if (self.personas.launchOf(id)) |l| return l.role;
+    return self.personas.stateOf(id).key orelse "";
 }
 
 /// What to call a terminal where a person will read it.

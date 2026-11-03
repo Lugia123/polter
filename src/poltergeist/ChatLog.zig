@@ -316,6 +316,34 @@ const Line = struct {
 
     /// A summary's start, as a log seq. Absent: not known (task 2494).
     covers_from_log: u64 = 0,
+
+    /// The terminals this named, each with the title it had at the time
+    /// (task 2669). **Null and not empty when the key is absent.**
+    ///
+    /// The two are different facts and this is the field that tells them
+    /// apart: `[]` is "this message named nobody", and it is what every
+    /// line written from now on says; absent is "the Polter that wrote this
+    /// did not record names at all", which is every line already on disk.
+    /// A reader that flattened them would draw a message from last week as
+    /// having deliberately addressed nobody.
+    mentions: ?[]const Mention = null,
+
+    /// The role the speaker wore, as `PersonaStore` keys it. `""` is a real
+    /// answer -- the terminal wore no role -- and is written out. Absent is
+    /// "not recorded", on the same lines `mentions` is absent on.
+    role: ?[]const u8 = null,
+};
+
+/// One line's mention, as it was written down (task 2669).
+const Mention = struct {
+    /// Written as the same `0x…` text `from` is, so a person reading the
+    /// file by eye compares two ids the same way.
+    id: []const u8 = "",
+
+    /// What the terminal was called at that moment. Kept because a title
+    /// moves with the terminal's work: without this the record could only
+    /// say which id was named, which is nothing a person can read.
+    title: []const u8 = "",
 };
 
 /// Read one line back, or null if it is not one.
@@ -389,6 +417,13 @@ pub fn reopenHandles(self: *ChatLog) void {
 /// Failure is logged once and otherwise swallowed: a full disk must not
 /// stop the terminals talking to each other. The record is worth having,
 /// and it is not worth more than the thing it records.
+///
+/// **No snapshot, so `null` goes down** (task 2669): the line this writes
+/// has no `mentions` key and no `role` key, and reads back as "not
+/// recorded" -- the same answer every line already on disk gives. A caller
+/// that knows what the message named, even if what it knows is "nobody",
+/// calls `appendAbout` and says so; the two are different facts and a
+/// reader can tell them apart.
 pub fn append(
     self: *ChatLog,
     group: []const u8,
@@ -399,13 +434,38 @@ pub fn append(
     text: []const u8,
     channel: u64,
 ) u64 {
-    return self.appendCovering(group, from, author, at_ms, summary, text, channel, 0);
+    return self.appendAll(group, from, author, at_ms, summary, text, channel, 0, null);
+}
+
+/// `append`, with what was true of the message when it was posted: who it
+/// named and what each was called, and the speaker's role (`Chat.About`).
+/// **This is the door the host writes through**, and `About.none` is how it
+/// says "nobody, no role" -- which lands on disk as an empty list and an
+/// empty string, a fact somebody stood behind, rather than as the absent
+/// keys `append` leaves.
+pub fn appendAbout(
+    self: *ChatLog,
+    group: []const u8,
+    from: Bus.Id,
+    author: []const u8,
+    at_ms: i64,
+    summary: bool,
+    text: []const u8,
+    channel: u64,
+    about: Chat.About,
+) u64 {
+    return self.appendAll(group, from, author, at_ms, summary, text, channel, 0, about);
 }
 
 /// `append`, for a summary that says where it starts: `covers_log` is the
 /// log seq of the first message it replaced (0: not known). A member kept
 /// out of the history before that point is not given the summary by
 /// `group_history` -- it recaps what they were barred from (`hiddenFrom`).
+///
+/// **No snapshot, so `null` goes down**: see `appendAll`, which writes the
+/// two fields only when it is handed an `About`. A line this writes says
+/// nothing at all about names or roles, which is a different fact from a
+/// line that says there were none -- and the reader can tell them apart.
 pub fn appendCovering(
     self: *ChatLog,
     group: []const u8,
@@ -416,6 +476,41 @@ pub fn appendCovering(
     text: []const u8,
     channel: u64,
     covers_log: u64,
+) u64 {
+    return self.appendAll(group, from, author, at_ms, summary, text, channel, covers_log, null);
+}
+
+/// The one writer. Every other `append*` is a name for a particular
+/// combination of the two things that vary: where a summary starts, and
+/// what was true of the message when it was posted (`Chat.About`). Written
+/// this way round so that a new caller cannot pick up the writing rules
+/// without also being handed the snapshot fields -- leaving one out is a
+/// value it has to say, not a thing it can forget.
+///
+/// **`about` is optional, and `null` is a third answer that is not a
+/// state.** The wrappers above are called by code that has no snapshot to
+/// give -- the id-only API, and the tests -- and for those the line is
+/// written with the two keys simply absent. Absent reads back as `null`,
+/// which is "this line does not record names or a role"; `About.none`
+/// reads back as `[]` and `""`, which is "it does, and there were none".
+/// Collapsing the two would draw a message from before any of this
+/// existed as one that deliberately addressed nobody.
+///
+/// **`pub` because the host is a caller**: `App.logChatAbout` is the one
+/// place a message that was actually said is written down, and it needs
+/// both of the varying things at once. The named wrappers above exist for
+/// the callers that have nothing of their own to add.
+pub fn appendAll(
+    self: *ChatLog,
+    group: []const u8,
+    from: Bus.Id,
+    author: []const u8,
+    at_ms: i64,
+    summary: bool,
+    text: []const u8,
+    channel: u64,
+    covers_log: u64,
+    about: ?Chat.About,
 ) u64 {
     if (!self.stream_open) {
         self.reopenHandles();
@@ -463,6 +558,39 @@ pub fn appendCovering(
         s.objectField("covers_from_log") catch return 0;
         s.write(covers_log) catch return 0;
     }
+
+    // **A caller that has no snapshot writes neither key**, and then the
+    // line reads back exactly like one written before any of this existed:
+    // null, "not recorded". That is the honest answer for the id-only
+    // callers -- they were not told and they do not know -- and it is why
+    // these two are inside the `if` rather than written empty. `About.none`
+    // is the other answer, and a caller that knows the message named nobody
+    // and had no role says that out loud by passing it.
+    if (about) |a| {
+        s.objectField("mentions") catch return 0;
+        s.beginArray() catch return 0;
+        for (a.mentions) |m| {
+            s.beginObject() catch return 0;
+            s.objectField("id") catch return 0;
+            s.print("\"0x{x:0>16}\"", .{m.id}) catch return 0;
+            // Skipped when empty rather than written as `""`: a missing title
+            // and an empty one are the same fact here, and the line stays
+            // shorter for the overwhelmingly common case.
+            if (m.title.len > 0) {
+                s.objectField("title") catch return 0;
+                s.write(m.title) catch return 0;
+            }
+            s.endObject() catch return 0;
+        }
+        s.endArray() catch return 0;
+
+        // Written even when empty, as the empty string: "this terminal wore no
+        // role" is an answer, and leaving the key out would make the line look
+        // like one written before roles were recorded at all.
+        s.objectField("role") catch return 0;
+        s.write(a.role) catch return 0;
+    }
+
     s.objectField("text") catch return 0;
 
     // Truncated rather than dropped: a very long paste should leave a
@@ -533,7 +661,87 @@ pub const Entry = struct {
     /// For a summary: the log seq of the first message it replaced, 0 when
     /// that is not known (older lines, or a message never written down).
     covers_from_log: u64,
+
+    /// The terminals this named, each with the title it had then (task
+    /// 2669). **Null means the line did not record them at all**, which is
+    /// every line written before this existed; an empty slice is a message
+    /// that named nobody, which is a fact about the message. Two different
+    /// things, and this is where they are told apart -- a reader that
+    /// collapsed them would draw last week's message as one that
+    /// deliberately addressed nobody.
+    ///
+    /// Owned, like every other string here.
+    mentions: ?[]const Chat.Mention = null,
+
+    /// The role the speaker wore then, `""` for a terminal in no role.
+    /// Null means the line did not record one, on the same terms as above.
+    role: ?[]const u8 = null,
 };
+
+/// A line's mentions, copied into the shape `Entry` hands back.
+///
+/// **Null stays null.** A line with no `mentions` key is a message whose
+/// names were never written down, and an empty array is a message that
+/// named nobody; the caller gets `null` for the first and an empty slice
+/// for the second, because collapsing them is exactly the reading this
+/// field exists to prevent.
+///
+/// A mention whose id will not parse is dropped rather than turned into
+/// zero: id zero is the person, and a line cannot name the person.
+fn copyMentions(alloc: Allocator, line: ?[]const Mention) Allocator.Error!?[]const Chat.Mention {
+    const given = line orelse return null;
+    if (given.len == 0) return &.{};
+
+    // Counted first, so that what is handed back is its own allocation and
+    // the caller can free exactly what it was given. A slice into a longer
+    // buffer is not a free the allocator can make sense of, and this is the
+    // same trap `freePage` writes itself a note about.
+    var n: usize = 0;
+    for (given) |m| {
+        const id = std.fmt.parseUnsigned(Bus.Id, m.id, 0) catch continue;
+        if (id == Chat.user_id) continue;
+        n += 1;
+    }
+    if (n == 0) return &.{};
+
+    const out = try alloc.alloc(Chat.Mention, n);
+    errdefer alloc.free(out);
+
+    var done: usize = 0;
+    // Titles are taken one at a time, so a failure partway frees exactly
+    // the ones that were allocated and nothing else.
+    errdefer for (out[0..done]) |m| if (m.title.len > 0) alloc.free(m.title);
+    for (given) |m| {
+        const id = std.fmt.parseUnsigned(Bus.Id, m.id, 0) catch continue;
+        if (id == Chat.user_id) continue;
+        out[done] = .{
+            .id = id,
+            .title = if (m.title.len == 0) "" else try alloc.dupe(u8, m.title),
+        };
+        done += 1;
+    }
+    return out;
+}
+
+/// One line's role, or null when the line did not record one.
+///
+/// The empty string is a real answer -- a terminal wearing no role -- and
+/// comes back as an allocated `""` so that `Entry.role` being non-null
+/// means only one thing: the record knows.
+fn copyRole(alloc: Allocator, line: ?[]const u8) Allocator.Error!?[]const u8 {
+    const s = line orelse return null;
+    return try alloc.dupe(u8, s);
+}
+
+/// Let go of what `copyMentions` handed over. **The empty slice is static
+/// and is never freed**, which is the other half of the rule that made it
+/// empty in the first place -- one rule written twice, not two rules.
+pub fn freeMentions(alloc: Allocator, mentions: ?[]const Chat.Mention) void {
+    const m = mentions orelse return;
+    if (m.len == 0) return;
+    for (m) |one| if (one.title.len > 0) alloc.free(one.title);
+    alloc.free(m);
+}
 
 /// Whether `group_history` keeps `e` from a member whose bar sits at
 /// `log_floor` (`Chat.Floor`). Below the bar, always. A summary besides,
@@ -640,11 +848,7 @@ pub fn history(
         // Not `freePage`: the list's buffer is longer than its contents,
         // and handing the allocator the short slice is not a free it can
         // make sense of.
-        for (w.found.items) |e| {
-            alloc.free(e.group);
-            alloc.free(e.author);
-            alloc.free(e.text);
-        }
+        for (w.found.items) |e| freeEntry(alloc, e);
         w.found.deinit(alloc);
     }
 
@@ -695,12 +899,20 @@ pub fn history(
 }
 
 pub fn freePage(alloc: Allocator, page: Page) void {
-    for (page.entries) |e| {
-        alloc.free(e.group);
-        alloc.free(e.author);
-        alloc.free(e.text);
-    }
+    for (page.entries) |e| freeEntry(alloc, e);
     alloc.free(page.entries);
+}
+
+/// Let go of one entry's strings. **The one place that knows what an
+/// `Entry` owns**, so that the three places which drop a half-built page
+/// -- `history`'s and `Tail.next`'s `errdefer`s, and `freePage` -- cannot
+/// disagree about it and leak the two fields added last.
+pub fn freeEntry(alloc: Allocator, e: Entry) void {
+    alloc.free(e.group);
+    alloc.free(e.author);
+    alloc.free(e.text);
+    freeMentions(alloc, e.mentions);
+    if (e.role) |r| alloc.free(r);
 }
 
 /// A forward read of the log, from a mark onwards.
@@ -816,11 +1028,7 @@ pub const Tail = struct {
             // Not `freePage`: the list's buffer is longer than its
             // contents, and handing the allocator the short slice is not a
             // free it can make sense of.
-            for (out.items) |e| {
-                alloc.free(e.group);
-                alloc.free(e.author);
-                alloc.free(e.text);
-            }
+            for (out.items) |e| freeEntry(alloc, e);
             out.deinit(alloc);
         }
 
@@ -974,6 +1182,10 @@ pub const Tail = struct {
                     errdefer alloc.free(author);
                     const text = try alloc.dupe(u8, parsed.text);
                     errdefer alloc.free(text);
+                    const mentions = try copyMentions(alloc, parsed.mentions);
+                    errdefer freeMentions(alloc, mentions);
+                    const role = try copyRole(alloc, parsed.role);
+                    errdefer if (role) |r| alloc.free(r);
 
                     try out.append(alloc, .{
                         .seq = parsed.seq,
@@ -985,6 +1197,8 @@ pub const Tail = struct {
                         .text = text,
                         .channel = parsed.channel,
                         .covers_from_log = parsed.covers_from_log,
+                        .mentions = mentions,
+                        .role = role,
                     });
                 }
 
@@ -1276,6 +1490,10 @@ const Walk = struct {
             errdefer w.alloc.free(author);
             const text = try w.alloc.dupe(u8, parsed.text);
             errdefer w.alloc.free(text);
+            const mentions = try copyMentions(w.alloc, parsed.mentions);
+            errdefer freeMentions(w.alloc, mentions);
+            const role = try copyRole(w.alloc, parsed.role);
+            errdefer if (role) |r| w.alloc.free(r);
 
             try w.found.append(w.alloc, .{
                 .seq = parsed.seq,
@@ -1287,6 +1505,8 @@ const Walk = struct {
                 .text = text,
                 .channel = parsed.channel,
                 .covers_from_log = parsed.covers_from_log,
+                .mentions = mentions,
+                .role = role,
             });
             if (w.found.items.len >= w.want) return true;
         }
@@ -3607,4 +3827,98 @@ test "channel: group_history 压缩后，不带历史的成员读不到摘要，
     const legacy: Entry = .{ .seq = fl.log_seq + 5, .at_ms = 0, .group = "g", .from = boss, .author = "", .summary = true, .text = "", .channel = 0, .covers_from_log = 0 };
     try testing.expect(hiddenFrom(legacy, fl.log_seq, true));
     try testing.expect(!hiddenFrom(legacy, 0, false));
+}
+
+test "2669: names and titles go to disk and come back whole" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    {
+        var l = try ChatLog.open(testing.allocator, io, dir);
+        defer l.deinit();
+
+        _ = l.appendAbout("build", 0xdeadbeef, "worker-core", 1000, false, "look", 0, .{
+            .mentions = &.{
+                .{ .id = 0x2222, .title = "✳ retry.py" },
+                .{ .id = 0x3333, .title = "✳ tests" },
+            },
+            .role = "reviewer",
+        });
+        // Nothing named and no role, which is not the same as an old line:
+        // the two keys are there, saying so.
+        _ = l.appendAbout("build", 0xdeadbeef, "worker-core", 1001, false, "plain", 0, .none);
+    }
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    try testing.expectEqual(@as(usize, 2), page.entries.len);
+
+    const named = page.entries[0].mentions orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 2), named.len);
+    try testing.expectEqual(@as(Bus.Id, 0x2222), named[0].id);
+    try testing.expectEqualStrings("✳ retry.py", named[0].title);
+    try testing.expectEqual(@as(Bus.Id, 0x3333), named[1].id);
+    try testing.expectEqualStrings("✳ tests", named[1].title);
+    try testing.expectEqualStrings("reviewer", page.entries[0].role.?);
+
+    // Recorded and empty: a message that named nobody, written by a
+    // terminal wearing no role.
+    const none = page.entries[1].mentions orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 0), none.len);
+    try testing.expectEqualStrings("", page.entries[1].role.?);
+}
+
+test "2669: a line from before any of this reads back as not recorded, not as named nobody" {
+    // **The negative control, and the point of the two optional fields.**
+    // The line below is byte-for-byte what this program wrote until today:
+    // no `mentions` key and no `role` key. It must come back null, because
+    // an empty list would say the message deliberately addressed nobody --
+    // which is a claim about a message from last week that nobody can make.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // Written by hand rather than through `append`, so that the thing under
+    // test is the reader and not the writer's agreement with itself.
+    const legacy =
+        \\{"seq":1,"at_ms":1000,"group":"build","from":"0x000000000000dead","author":"w","text":"old"}
+        \\
+    ;
+    const path = try std.fs.path.join(alloc, &.{ dir, "chat", "build", "1970-01-01.jsonl" });
+    try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(path).?);
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer f.close(io);
+        try f.writePositionalAll(io, legacy, 0);
+    }
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
+    defer ChatLog.freePage(testing.allocator, page);
+
+    try testing.expectEqual(@as(usize, 1), page.entries.len);
+    try testing.expectEqualStrings("old", page.entries[0].text);
+    try testing.expect(page.entries[0].mentions == null);
+    try testing.expect(page.entries[0].role == null);
 }
