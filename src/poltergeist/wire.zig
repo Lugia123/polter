@@ -169,6 +169,11 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
                     rpc.files.Access.Scope,
                     (try optionalString(aa, params, "scope")) orelse "file",
                 ) orelse return error.BadParams,
+                // A person's choice, when they made one (task 2758). Absent
+                // and `""` are both "nobody chose" -- `previewFor` reads the
+                // empty string that way, and a form field left blank must not
+                // refuse the file.
+                .preferred = try optionalString(aa, params, "preferred"),
             },
         },
         .files_resolve => .{ .files_resolve = .{

@@ -961,7 +961,16 @@ pub const Request = union(Method) {
     agent_event: AgentEvent.Event,
     hook_context: struct { moment: HookMoment },
     file_guard: struct { path: []const u8 },
-    files_open: struct { workdir_id: []const u8, path: []const u8, scope: files.Access.Scope = .file },
+    files_open: struct {
+        workdir_id: []const u8,
+        path: []const u8,
+        scope: files.Access.Scope = .file,
+        /// The plugin key a person chose by hand, when they chose one
+        /// (task 2758). Empty and absent are both "nobody chose": see
+        /// `Plugin.previewFor`, which reads `""` the same way, so a form
+        /// field left blank is not a refusal.
+        preferred: ?[]const u8 = null,
+    },
     files_resolve: struct { token: []const u8, rel: []const u8 = "" },
     /// One level of a directory, relative to the ticket's file (task 2668).
     files_list: struct { token: []const u8, rel: []const u8 = "" },
@@ -7118,6 +7127,17 @@ pub const Host = struct {
             id: []const u8,
         ) anyerror!?files.Tickets.Workdir,
 
+        /// Every installed preview plugin as `previewFor` wants it -- the
+        /// manifest and whether the user has it switched on -- with the
+        /// **same** scan and the same settings reading `plugin_list` uses
+        /// (task 2758). Returned memory belongs to the caller's allocator,
+        /// and each `manifest` points at storage the host owns for as long
+        /// as the app lives: nothing here may be a copy of one.
+        previewCandidates: *const fn (
+            ctx: *anyopaque,
+            alloc: std.mem.Allocator,
+        ) anyerror![]const Plugin.Candidate,
+
         /// Everything the supervisor has not been shown, cleared as it is
         /// read. Empty when there is nothing waiting. Returned memory
         /// belongs to the caller's allocator.
@@ -7911,6 +7931,10 @@ pub const Host = struct {
 
     fn filesWorkdir(self: Host, alloc: std.mem.Allocator, id: []const u8) anyerror!?files.Tickets.Workdir {
         return self.vtable.filesWorkdir(self.ctx, alloc, id);
+    }
+
+    fn previewCandidates(self: Host, alloc: std.mem.Allocator) anyerror![]const Plugin.Candidate {
+        return self.vtable.previewCandidates(self.ctx, alloc);
     }
 
     fn setWatching(self: Host, id: Bus.Id, watching: bool) anyerror!void {
@@ -9258,6 +9282,114 @@ pub fn heardByAgent(who: Bus.Caller, method: Method) ?Bus.Id {
     return who.terminalId();
 }
 
+/// Whether this field is present and of one kind, for reading a document
+/// whose shape is somebody else's.
+///
+/// ⚠️ **Written out as a `switch` over the unwrapped value, and not with
+/// `==`.** `std.json.Value` is a tagged union, so `v == .string` does not
+/// compile; and a `switch` over the *optional* does not either -- Zig will
+/// not switch on `?std.json.Value`, so an absent field is answered before
+/// the payload is looked at.
+fn isString(v: ?std.json.Value) bool {
+    const value = v orelse return false;
+    return switch (value) {
+        .string => true,
+        else => false,
+    };
+}
+
+fn isObject(v: ?std.json.Value) bool {
+    const value = v orelse return false;
+    return switch (value) {
+        .object => true,
+        else => false,
+    };
+}
+
+/// `Tickets.open`'s answer with the preview plugin added to it (task 2758).
+///
+/// **The ticket's answer is read, not assumed.** Its JSON is parsed and the
+/// decision is made on the fields: a `refused` key means the core refused
+/// this path, and that text goes back **byte for byte** -- reformatting it
+/// would turn one refusal into another, and a request whose path was not
+/// allowed must not come back looking like anything else. Otherwise there
+/// must be a `token` and an `info` object -- a ticket -- and `plugin` is
+/// added beside them, with every original field carried over. Anything else
+/// is a shape this does not know how to answer, which is a **failure** and
+/// never a success with the plugin quietly left out.
+///
+/// This is also why a success is not assembled by string surgery: whether a
+/// refusal was refused is a fact about a field, and a reader that decided it
+/// by looking at the leading bytes would answer "success" the first time the
+/// two writers in `Tickets` laid one out differently.
+///
+/// **A refusal by name is never a substitution.** `specified_not_found`,
+/// `specified_disabled` and `specified_unsupported` all say what was asked
+/// for and did not happen; none of them falls back to another plugin, and
+/// `none` is a status and not a format -- there is no raw fallback here to
+/// add one to. `reads` is what the manifest declared, which is metadata and
+/// not a permission: the ticket's scope is the caller's and is what
+/// `Access.resolve` enforces.
+fn previewAnswer(
+    alloc: std.mem.Allocator,
+    opened: []const u8,
+    choice: Plugin.Choice,
+) std.mem.Allocator.Error!wire.Response {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, alloc, opened, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            log.warn("poltergeist: files_open could not read the ticket's answer err={}", .{err});
+            return hostFailure("HostRefused", "the ticket's answer could not be read");
+        },
+    };
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => {
+            log.warn("poltergeist: the ticket answered with something that is not an object", .{});
+            return hostFailure("HostRefused", "the ticket's answer could not be read");
+        },
+    };
+
+    // The core's own refusal, passed on as it was written.
+    if (obj.get("refused") != null) return .{ .json = opened };
+
+    // A ticket, or a shape that is neither of the two this knows.
+    if (!isString(obj.get("token")) or !isObject(obj.get("info"))) {
+        log.warn("poltergeist: the ticket answered without a token and info", .{});
+        return hostFailure("HostRefused", "the ticket's answer could not be read");
+    }
+
+    // Every field of the ticket's own answer, then the plugin. Re-serialised
+    // rather than spliced, so that the shape of the ticket's JSON is read
+    // here rather than counted on.
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    const w = &out.writer;
+    w.writeAll("{") catch return error.OutOfMemory;
+    var first = true;
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        if (!first) w.writeAll(",") catch return error.OutOfMemory;
+        first = false;
+        std.json.Stringify.value(entry.key_ptr.*, .{}, w) catch return error.OutOfMemory;
+        w.writeAll(":") catch return error.OutOfMemory;
+        std.json.Stringify.value(entry.value_ptr.*, .{}, w) catch return error.OutOfMemory;
+    }
+    if (!first) w.writeAll(",") catch return error.OutOfMemory;
+    w.writeAll("\"plugin\":") catch return error.OutOfMemory;
+    switch (choice) {
+        .match => |m| w.print("{{\"status\":\"matched\",\"key\":{f},\"reads\":\"{s}\"}}", .{
+            std.json.fmt(m.key, .{}),
+            @tagName(m.preview.?.reads),
+        }) catch return error.OutOfMemory,
+        .none => w.writeAll("{\"status\":\"none\",\"key\":null}") catch return error.OutOfMemory,
+        .specified_not_found => |key| w.print("{{\"status\":\"specified_not_found\",\"key\":{f}}}", .{std.json.fmt(key, .{})}) catch return error.OutOfMemory,
+        .specified_disabled => |key| w.print("{{\"status\":\"specified_disabled\",\"key\":{f}}}", .{std.json.fmt(key, .{})}) catch return error.OutOfMemory,
+        .specified_unsupported => |key| w.print("{{\"status\":\"specified_unsupported\",\"key\":{f}}}", .{std.json.fmt(key, .{})}) catch return error.OutOfMemory,
+    }
+    w.writeAll("}") catch return error.OutOfMemory;
+    return .{ .json = out.written() };
+}
+
 /// One of the six `files_*` requests, answered -- and `null` for anything
 /// else, so a caller that is not one of them is told so rather than
 /// answered with somebody else's shape.
@@ -9277,7 +9409,28 @@ fn filesArm(
                 log.warn("poltergeist: files_open could not look up a workdir err={}", .{err});
                 break :blk hostFailure("HostRefused", "the working directories could not be read");
             } orelse break :blk .{ .json = try std.fmt.allocPrint(alloc, "{{\"refused\":\"no_workdir\",\"why\":\"there is no working directory with that id\"}}", .{}) };
-            break :blk .{ .json = try host.filesTickets().open(alloc, wd, p.path, p.scope) };
+
+            // **Which plugin shows this file, decided before the ticket is
+            // made** (task 2758). A host that cannot say what is installed
+            // must not leave a live ticket behind for a request it then
+            // refuses, and the choice is the same request's `path` and
+            // `preferred` and nothing else.
+            //
+            // The scope the ticket is opened with is `p.scope`, the caller's
+            // own: a plugin's `reads` is what its manifest declares, not a
+            // permission, and nothing here widens a request on the strength
+            // of it. `Access.resolve` is untouched.
+            const candidates = host.previewCandidates(alloc) catch |err| {
+                log.warn("poltergeist: files_open could not read the plugins err={}", .{err});
+                break :blk hostFailure("HostRefused", "the plugins could not be read");
+            };
+            const choice = Plugin.previewFor(candidates, .{
+                .path = p.path,
+                .preferred = p.preferred,
+            });
+
+            const opened = try host.filesTickets().open(alloc, wd, p.path, p.scope);
+            break :blk try previewAnswer(alloc, opened, choice);
         },
         .files_resolve => |p| .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
         .files_list => |p| .{ .json = try host.filesTickets().list(alloc, p.token, p.rel) },
@@ -13486,6 +13639,9 @@ const fake_plugins = [_]PluginView{
 const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 /// A host that records what it was asked to do and can be told to refuse.
 const FilesWorkdir = struct { id: []const u8, dir: files.Tickets.Workdir };
+/// One installed plugin, as a fixture: the fake holds the manifest itself so
+/// that `previewCandidates` can hand out a pointer to it (task 2758).
+const FakePreview = struct { manifest: Plugin.Manifest, enabled: bool };
 
 const FakeHost = struct {
     /// What `filesTickets` hands out (task 2573); a test that opens one
@@ -13493,6 +13649,11 @@ const FakeHost = struct {
     tickets: files.Tickets = .init(std.testing.allocator, std.testing.io),
     /// What `filesWorkdir` knows.
     workdirs: []const FilesWorkdir = &.{},
+    /// What `previewCandidates` answers (task 2758): installed manifests and
+    /// whether each is switched on. The fake holds them so that a test can
+    /// say what is installed; the mapping from real plugin directories is
+    /// `App`'s and is not faked.
+    previews: []const FakePreview = &.{},
     sent: ?struct { id: Bus.Id, text: []const u8, submit: bool } = null,
     /// How many `sendText` calls were carried out.
     sent_n: usize = 0,
@@ -14006,6 +14167,7 @@ const FakeHost = struct {
             .openTerminals = openTerminals,
             .filesTickets = filesTickets,
             .filesWorkdir = filesWorkdir,
+            .previewCandidates = previewCandidates,
             .setWatching = setWatching,
             .stoodDown = stoodDown,
             .drainNotices = drainNotices,
@@ -14997,6 +15159,24 @@ const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         for (self.workdirs) |w| if (std.mem.eql(u8, w.id, id)) return w.dir;
         return null;
+    }
+
+    /// The candidates a host would hand `previewFor` (task 2758). A fixture
+    /// and nothing more: the fake holds manifests and their switch state,
+    /// and the real mapping is `App`'s.
+    ///
+    /// ⚠️ **The pointers are taken through a pointer, not a by-value loop
+    /// variable.** `for (self.previews) |p| &p.manifest` would hand out an
+    /// address of the loop's own copy -- one that dies at the end of each
+    /// iteration, so every candidate would point at the same dead temporary.
+    fn previewCandidates(
+        ctx: *anyopaque,
+        alloc: std.mem.Allocator,
+    ) anyerror![]const Plugin.Candidate {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        const out = try alloc.alloc(Plugin.Candidate, self.previews.len);
+        for (self.previews, out) |*p, *c| c.* = .{ .manifest = &p.manifest, .enabled = p.enabled };
+        return out;
     }
 
     fn configText(
@@ -21081,6 +21261,187 @@ const FilesRig = struct {
         return self.askf("{{\"method\":\"files_resolve\",\"params\":{{\"token\":\"{s}\",\"rel\":\"{s}\"}}}}", .{ token, rel });
     }
 };
+
+/// One installed plugin, stood up by hand for a `files_open` test (task
+/// 2758). The fake holds the manifest so that `previewCandidates` can hand
+/// out a pointer to it; what is real is the request path -- `dispatch` and
+/// `filesAnswer` and a ticket on a real temporary file -- and the faking is
+/// only what is installed.
+///
+/// `enabled` and `reads` are spelled at every call site rather than
+/// defaulted, for the reason `Plugin.zig`'s own fixture gives: both are
+/// branches being measured.
+fn rigPreview(
+    key: []const u8,
+    priority: i32,
+    extensions: []const []const u8,
+    reads: Plugin.Preview.Reads,
+    enabled: bool,
+) FakePreview {
+    return .{
+        .manifest = .{
+            .key = key,
+            .preview = .{ .extensions = extensions, .reads = reads, .priority = priority },
+            .exec = null,
+        },
+        .enabled = enabled,
+    };
+}
+
+/// Whether this key of a JSON object is present and JSON `null`.
+///
+/// A `switch` and not `== .null`: `std.json.Value` is a tagged union, and
+/// Zig has no `==` for one -- written the short way this does not compile.
+fn isJsonNull(v: std.json.Value) bool {
+    return switch (v) {
+        .null => true,
+        else => false,
+    };
+}
+test "2758 S6: files_open names the preview plugin that won, and says none when nothing claims the file" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+
+    // Two plugins claiming `.md`, and the one with the higher priority is
+    // not the one listed first -- so a `files_open` that answered with the
+    // first candidate would get a different key here.
+    var views = [_]FakePreview{
+        rigPreview("quiet", 1, &.{".md"}, .file, true),
+        rigPreview("loud", 99, &.{".md"}, .file, true),
+    };
+    r.fake.previews = &views;
+
+    const got = try r.open("a.md", "file");
+    const plugin = got.object.get("plugin").?.object;
+    try testing.expectEqualStrings("matched", plugin.get("status").?.string);
+    try testing.expectEqualStrings("loud", plugin.get("key").?.string);
+    // `reads` is what the manifest declared, carried whole so a host knows
+    // how far the page means to reach.
+    try testing.expectEqualStrings("file", plugin.get("reads").?.string);
+    // And a preview choice does not replace the ticket: the caller still
+    // gets the bytes' token and what the file is.
+    try testing.expectEqual(@as(usize, 32), got.object.get("token").?.string.len);
+    try testing.expectEqualStrings("a.md", got.object.get("info").?.object.get("name").?.string);
+
+    // Every one of them switched off. **A status and not a format**: there
+    // is no raw fallback here to be handed instead, and the ticket is still
+    // a ticket.
+    for (&views) |*v| v.enabled = false;
+    const none = try r.open("a.md", "file");
+    try testing.expectEqualStrings("none", none.object.get("plugin").?.object.get("status").?.string);
+    try testing.expect(isJsonNull(none.object.get("plugin").?.object.get("key").?));
+    try testing.expectEqual(@as(usize, 32), none.object.get("token").?.string.len);
+
+    // Installed and on, and claiming a kind of file this is not: same word.
+    for (&views) |*v| v.enabled = true;
+    try r.put("w/a.zip", "z");
+    const unclaimed = try r.open("a.zip", "file");
+    try testing.expectEqualStrings("none", unclaimed.object.get("plugin").?.object.get("status").?.string);
+}
+
+test "2758 S6: a plugin asked for by name is answered on its own, and is never quietly replaced" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+
+    var views = [_]FakePreview{
+        rigPreview("mine", 1, &.{".md"}, .file, true),
+        rigPreview("loud", 99, &.{".md"}, .file, true),
+        rigPreview("cli", 50, &.{}, .file, true),
+    };
+    r.fake.previews = &views;
+
+    const asked = struct {
+        fn of(rig: *FilesRig, key: []const u8) !std.json.Value {
+            return rig.askf(
+                "{{\"method\":\"files_open\",\"params\":{{\"workdir_id\":\"abcd\",\"path\":\"a.md\",\"scope\":\"file\",\"preferred\":\"{s}\"}}}}",
+                .{key},
+            );
+        }
+    }.of;
+
+    // 1. The one that was chosen, even though `loud` would have won.
+    const mine = try asked(&r, "mine");
+    try testing.expectEqualStrings("matched", mine.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("mine", mine.object.get("plugin").?.object.get("key").?.string);
+
+    // 2. Nobody has that key. The refusal names it -- and `loud`, which
+    // could have shown this file, is nowhere in the answer.
+    const ghost = try asked(&r, "ghost");
+    try testing.expectEqualStrings("specified_not_found", ghost.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("ghost", ghost.object.get("plugin").?.object.get("key").?.string);
+    try testing.expect(ghost.object.get("refused") == null);
+
+    // 3. Installed and switched **off**: not a quiet fall back to `loud`.
+    views[0].enabled = false;
+    const off = try asked(&r, "mine");
+    try testing.expectEqualStrings("specified_disabled", off.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("mine", off.object.get("plugin").?.object.get("key").?.string);
+    views[0].enabled = true;
+
+    // 4. On, and not a preview plugin at all -- it declares no `preview`.
+    const cli = try asked(&r, "cli");
+    try testing.expectEqualStrings("specified_unsupported", cli.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("cli", cli.object.get("plugin").?.object.get("key").?.string);
+
+    // 5. On, has a page, and does not claim this kind of file.
+    const wrong = try asked(&r, "mine");
+    try testing.expectEqualStrings("matched", wrong.object.get("plugin").?.object.get("status").?.string);
+    try r.put("w/a.zip", "z");
+    const zip = try r.askf(
+        "{{\"method\":\"files_open\",\"params\":{{\"workdir_id\":\"abcd\",\"path\":\"a.zip\",\"scope\":\"file\",\"preferred\":\"mine\"}}}}",
+        .{},
+    );
+    try testing.expectEqualStrings("specified_unsupported", zip.object.get("plugin").?.object.get("status").?.string);
+
+    // 6. An empty key is a field left blank, which is nobody having chosen
+    // -- not a key nobody has, which would refuse every file.
+    const blank = try asked(&r, "");
+    try testing.expectEqualStrings("matched", blank.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("loud", blank.object.get("plugin").?.object.get("key").?.string);
+}
+
+test "2758 S6: a refused path stays refused, and a plugin's reads does not widen the ticket" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+    try r.put("w/b.png", "b");
+    try r.put("other/x.md", "x");
+
+    // `wide` declares the whole workdir -- and the request below asks for
+    // one file.
+    var views = [_]FakePreview{rigPreview("wide", 50, &.{".md"}, .project, true)};
+    r.fake.previews = &views;
+
+    // Outside the workdir: refused, and **nothing that looks like success**
+    // -- no token to read with and no plugin that appears to have opened it.
+    const out = try r.open("../other/x.md", "file");
+    try testing.expectEqualStrings("access", out.object.get("refused").?.string);
+    try testing.expect(out.object.get("token") == null);
+    try testing.expect(out.object.get("plugin") == null);
+    try testing.expectEqual(@as(usize, 0), r.fake.tickets.count());
+
+    // A file that is there, with the plugin's `reads` saying `project`:
+    // `reads` is what the manifest declared and not a permission, so the
+    // ticket's scope is still the caller's `file` and `b.png` is refused.
+    const got = try r.open("a.md", "file");
+    try testing.expectEqualStrings("project", got.object.get("plugin").?.object.get("reads").?.string);
+    const token = got.object.get("token").?.string;
+    try testing.expect((try r.resolve(token, "b.png")).object.get("refused") != null);
+    try testing.expect((try r.resolve(token, "")).object.get("path") != null);
+
+    // The same request through the host's own door answers the same way:
+    // the door does not add a second rule about plugins.
+    const door = try r.askHost(
+        \\{"method":"files_open","params":{"workdir_id":"abcd","path":"a.md","scope":"file"}}
+    );
+    try testing.expectEqualStrings("matched", door.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("wide", door.object.get("plugin").?.object.get("key").?.string);
+}
 
 test "2628 M1/W1: a host reaches the files requests through its own door, and the ticket still decides" {
     var r: FilesRig = undefined;

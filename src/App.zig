@@ -10733,6 +10733,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
             .openTerminals = poltergeistOpenTerminals,
             .filesTickets = poltergeistFilesTickets,
             .filesWorkdir = poltergeistFilesWorkdir,
+            .previewCandidates = poltergeistPreviewCandidates,
             .openTerminal = poltergeistOpenTerminal,
             .worktreePrepare = poltergeistWorktreePrepare,
             .worktreeOpened = poltergeistWorktreeOpened,
@@ -14564,6 +14565,40 @@ test "poltergeist: a tab the apprt did not open is a failure, not a terminal tha
 fn poltergeistFilesTickets(ctx: *anyopaque) *poltergeistpkg.files.Tickets {
     const self: *App = @ptrCast(@alignCast(ctx));
     return &self.file_tickets;
+}
+
+/// Every installed plugin as `Plugin.previewFor` wants it, switched on or
+/// not (task 2758).
+///
+/// **The same `scanPlugins` and the same settings reading `plugin_list`
+/// uses**, so the plugin that shows a file and the plugin the settings
+/// window says is on cannot be two different answers. `keep_disabled` is
+/// true on purpose: a plugin the caller named by hand has to come back as
+/// `specified_disabled` rather than as `specified_not_found`, and that is
+/// only possible if the switched-off ones are in the list.
+///
+/// ⚠️ **`|*item|` and not `|item|`.** `scanPlugins` returns `Installed`
+/// values inside an array the arena owns; taking the address of a by-value
+/// loop variable would hand `previewFor` a pointer to a temporary that dies
+/// at the end of its own iteration, so every candidate would point at the
+/// same dead storage. The arena is the caller's, which outlives the call.
+fn poltergeistPreviewCandidates(
+    ctx: *anyopaque,
+    alloc: Allocator,
+) anyerror![]const poltergeistpkg.Plugin.Candidate {
+    const self: *App = @ptrCast(@alignCast(ctx));
+
+    const io = global.io();
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+
+    const installed = self.scanPlugins(alloc, io, &environ_map, true);
+    const out = try alloc.alloc(poltergeistpkg.Plugin.Candidate, installed.len);
+    for (installed, out) |*item, *c| c.* = .{
+        .manifest = &item.manifest,
+        .enabled = item.settings.enabled,
+    };
+    return out;
 }
 
 /// The working directory with this id, from whichever group has it. The id
