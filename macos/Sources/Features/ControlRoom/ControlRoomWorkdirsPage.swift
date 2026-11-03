@@ -32,25 +32,17 @@ import SwiftUI
 /// in the order the core sent them and draws them
 /// (`tools/control-room-hosts-do-not-decide.py`).
 ///
-/// # One colour is not the design's
+/// # The activity bar's ground is the look data's
 ///
-/// The design's activity bar has a ground of its own (`files4.css`,
-/// `--actbar-bg`). **That value is not in
-/// `src/input/control-room-look.json`**, and the two hosts' generated look
-/// files are written from that one document, so a colour invented here would
-/// be a second copy of the control room's look that nothing keeps in step
-/// with Windows. The bar is drawn on `windowBase` -- the window's own ground,
-/// which is the nearest thing the data has -- and the accent used for the
-/// mark in front is `attention`, which is the same blue the design's activity
-/// bar uses. **Adding `actbar_bg` to the look data is a separate
-/// change** and belongs to whoever takes it, with the two generated files
-/// regenerated together.
-///
-/// ⚠️ **The hex of those two tokens is not written here, deliberately.**
-/// `tools/the-control-room-look-is-one-set.py` reads host sources for the
-/// status colours' hex and refuses a host that carries a copy of one -- a
-/// comment with the number in it is a copy as far as that gate is concerned,
-/// which is why the paragraph above names the tokens and not their values.
+/// The design gives the column a ground of its own (`files4.css`,
+/// `.actbar { background: var(--actbar-bg) }`), and that value is now
+/// `actbar_bg` in `src/input/control-room-look.json` -- the one document both
+/// hosts' look files are generated from -- so this page reads
+/// `theme.actbarBg` like every other colour here. **No hex is written in this
+/// file**: a second copy of the control room's look here is exactly what
+/// `tools/the-control-room-look-is-one-set.py` refuses. The accent used for
+/// the mark in front is `attention`, the same blue the design's activity bar
+/// uses.
 struct ControlRoomWorkdirsPage: View {
     typealias Look = ControlRoomLook
     typealias Activity = ControlRoomWorkdirs.Activity
@@ -259,7 +251,7 @@ struct ControlRoomWorkdirsPage: View {
         }
         .frame(width: Tile.actWidth)
         .frame(maxHeight: .infinity)
-        .background(theme.windowBase.color)
+        .background(theme.actbarBg.color)
         .overlay(alignment: .trailing) {
             Rectangle().fill(theme.line.color).frame(width: CGFloat(Look.Line.hairline))
         }

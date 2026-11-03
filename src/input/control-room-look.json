@@ -44,7 +44,8 @@
     "perf-v4-svg": "design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166)",
     "task-v9": "design v9 main-tasks (Polter_Pub/assets/control-room-design/v9, src/style.css), read for task 2039 W3 (seq 169); the six task glyphs as the supervisor ruled them (seq 170): v9's shapes, drawn from this data on both hosts",
     "files-2140-v2": "design 2140 v2, INTERACTION.md (§一 终端格里的预览, 宽窄) and src/files.css (`.split.over > .fp`, `--cpw`), read for task 2623 S1; the numbers as the supervisor's ruling of 2026-11-01 named them. v3 redraws the same cell and says 不改 about this part (CHANGES.md, the two things left)",
-    "files-2140-v2-palette": "design 2140 v2, src/files-palette.css (`--scrim`, the one the preview pages load last and the one `.split.over > .cv::after` lays over the terminal), read for task 2634 M2"
+    "files-2140-v2-palette": "design 2140 v2, src/files-palette.css (`--scrim`, the one the preview pages load last and the one `.split.over > .cv::after` lays over the terminal), read for task 2634 M2",
+    "files-2665-v3": "design 2665 v3, src/files4.css: `.actbar { background: var(--actbar-bg) }` with `--actbar-bg` #171B21 under `.d` (line 17) and #EFF1F5 under `.l` (line 27), read for task 2719 S2 and approved with the 2713 design"
   },
 
   "numbers": {
@@ -695,6 +696,7 @@
     "text_secondary": { "light": "#545557", "dark": "#B4B8BB" },
     "text_tertiary": { "light": "#616365", "dark": "#95999C", "doc": "The time band's axis." },
     "window_base": { "light": "#E4E6E9", "dark": "#121416", "src": "v14-palette", "doc": "The window's ground. The design lays two faint blooms over it." },
+    "actbar_bg": { "light": "#EFF1F5", "dark": "#171B21", "src": "files-2665-v3", "doc": "The activity bar's own ground. The design gives the column a ground of its own rather than the window's (`files4.css`, `.actbar`)." },
     "terminal_background": { "light": "#FCFDFF", "dark": "#22272E" },
     "terminal_text": { "light": "#242729", "dark": "#DEE1E8" },
     "terminal_bold": { "light": "#0D1012", "dark": "#F3F7FE" },

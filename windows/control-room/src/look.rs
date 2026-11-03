@@ -1403,6 +1403,9 @@ pub struct Theme {
     /// The window's ground. The design lays two faint blooms over it.
     /// Source: design v14, CHANGES.md (the palette tables).
     pub window_base: Rgba,
+    /// The activity bar's own ground. The design gives the column a ground of its own rather than the window's (`files4.css`, `.actbar`).
+    /// Source: design 2665 v3, src/files4.css: `.actbar { background: var(--actbar-bg) }` with `--actbar-bg` #171B21 under `.d` (line 17) and #EFF1F5 under `.l` (line 27), read for task 2719 S2 and approved with the 2713 design.
+    pub actbar_bg: Rgba,
     /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
     pub terminal_background: Rgba,
     /// Source: design v17, src/tokens-l.css and src/tokens-d.css.
@@ -1745,6 +1748,7 @@ pub const LIGHT: Theme = Theme {
     text_secondary: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
     text_tertiary: Rgba { r: 97, g: 99, b: 101, a: 1.0 },
     window_base: Rgba { r: 228, g: 230, b: 233, a: 1.0 },
+    actbar_bg: Rgba { r: 239, g: 241, b: 245, a: 1.0 },
     terminal_background: Rgba { r: 252, g: 253, b: 255, a: 1.0 },
     terminal_text: Rgba { r: 36, g: 39, b: 41, a: 1.0 },
     terminal_bold: Rgba { r: 13, g: 16, b: 18, a: 1.0 },
@@ -1885,6 +1889,7 @@ pub const DARK: Theme = Theme {
     text_secondary: Rgba { r: 180, g: 184, b: 187, a: 1.0 },
     text_tertiary: Rgba { r: 149, g: 153, b: 156, a: 1.0 },
     window_base: Rgba { r: 18, g: 20, b: 22, a: 1.0 },
+    actbar_bg: Rgba { r: 23, g: 27, b: 33, a: 1.0 },
     terminal_background: Rgba { r: 34, g: 39, b: 46, a: 1.0 },
     terminal_text: Rgba { r: 222, g: 225, b: 232, a: 1.0 },
     terminal_bold: Rgba { r: 243, g: 247, b: 254, a: 1.0 },
