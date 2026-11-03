@@ -145,12 +145,17 @@ struct ControlRoomChatComposer: View {
     /// **`unknown` says "may or may not have gone" and not "failed"**: the
     /// whole reason the core has three states is that a caller which read
     /// this as a failure would send the message twice.
+    ///
+    /// ⚠️ **A confirmed post says nothing here at all** (task 2791, the user
+    /// reading `chat-sent.png`): the core's own answer to a post is a
+    /// protocol reply -- `{"ok":true}` -- and it is neither the person's
+    /// words nor anything about them. What succeeded is on screen already:
+    /// the message is in the list. Drawing the envelope under the box was
+    /// showing the wire to the person.
     private var status: String? {
         switch feed.posted {
-        case .none:
+        case .none, .confirmed:
             return nil
-        case let .confirmed(answer):
-            return answer
         case let .refused(why):
             return String(format: String(localized: "Not sent: %@",
                                          comment: "总控台：群聊页，发送被拒绝，%@ 是核心给的原因"), why)
