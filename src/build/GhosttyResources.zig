@@ -179,6 +179,13 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             "archive",
             "claude-code",
             "codex",
+            // **The text preview** (task 2779 S7). A page plugin with no
+            // `exec`: what it is is a manifest that claims the plain-text
+            // and source-file extensions and a page that reads the ticket
+            // through the preview bridge and draws it. It ships so that a
+            // file of a kind no other plugin answers for is opened as text
+            // rather than left blank.
+            "edit-text",
             "opencode",
             // **The other major version, as its own plugin** (task 2237):
             // `opencode` serves 1.x and this one 2.x, each declaring which

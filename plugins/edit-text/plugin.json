@@ -1,0 +1,22 @@
+{
+  "key": "edit-text",
+  "name": "Text",
+  "version": "1.0.0",
+  "description": "Shows a text file: reads it through the preview bridge and draws it with the host's own colours, fonts and sizes. Read-only -- there is no edit button, because a plugin that can be edited is one the host grows a change screen for, and this one hands nothing over. It claims the plain text and source-file extensions, so a file of a kind no other plugin answers for is still opened as text rather than left blank.",
+
+  "preview": {
+    "extensions": [
+      ".txt", ".text", ".log", ".md", ".markdown",
+      ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
+      ".csv", ".tsv",
+      ".xml", ".css", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+      ".py", ".rb", ".rs", ".go", ".zig", ".swift", ".java", ".kt",
+      ".c", ".h", ".cc", ".cpp", ".hpp", ".m", ".mm",
+      ".sh", ".bash", ".zsh", ".fish", ".ps1", ".sql",
+      ".diff", ".patch"
+    ],
+    "render": "page",
+    "page": "page/index.html",
+    "reads": "file"
+  }
+}

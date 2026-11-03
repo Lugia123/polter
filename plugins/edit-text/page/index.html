@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Text</title>
+<!--
+  The `edit-text` plugin's preview page (task 2779 S7).
+
+  **Read-only, and it says so by what it calls.** The page uses exactly three
+  of the preview bridge's eight calls -- `info`, `read` and `look` -- and never
+  `propose`, `dirty`, `readRel`, `openPath` or `watch`. There is no edit
+  button because there is nothing here that can edit: the manifest declares
+  neither `edits` nor `hands_edit_to`, so a page that drew one would be
+  promising a change screen the host never grows.
+
+  **The file's bytes come from `window.polter`, not from a URL.** `read`
+  hands back base64 of a span of the ticket's own file, and every byte of it
+  went through the core's `files_resolve(token, rel)`, which judges the path
+  against the ticket's scope. **This page never builds a path and never
+  fetches one**: no `fetch`, no `XMLHttpRequest`, no `<img src>` at a local
+  path. `connect-src 'none'` in the host's policy is what would stop a
+  request anyway; not making one is what makes that policy a second line
+  rather than the only one.
+
+  **A file too large to show is said to be too large.** `info` gives the size
+  before anything is read, and `read` answers with `truncated`, which is about
+  the ask rather than the file. Both are shown: "that is all of it" and "that
+  is all you were given" are different sentences and the page must not print
+  the first when it means the second.
+
+  **Nothing here decides whether the file may be read.** A refusal arrives as
+  a rejected promise carrying the core's own words, and it is printed as it
+  arrived. The page has no second opinion about the scope.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    font-size: var(--size-body, 13px);
+    background: var(--well, Canvas); color: var(--text, CanvasText);
+  }
+  header {
+    flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line, rgba(128,128,128,.3));
+    color: var(--text-secondary, inherit);
+  }
+  header .name { color: var(--text, CanvasText); font-weight: 600; }
+  header .meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+  header .badge {
+    border: 1px solid var(--line, rgba(128,128,128,.4));
+    border-radius: var(--radius-card, 4px); padding: 0 5px;
+    color: var(--text-tertiary, inherit); font-size: .85em;
+  }
+  main { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  pre {
+    margin: 0; padding: 10px 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: var(--size-body, 13px); line-height: var(--line-height, 1.5);
+    white-space: pre; tab-size: 4;
+  }
+  .notice {
+    margin: 10px 12px; padding: 8px 10px;
+    border: 1px solid var(--line, rgba(128,128,128,.3));
+    border-radius: var(--radius-card, 4px);
+    background: var(--panel, transparent); color: var(--text-secondary, inherit);
+  }
+  .notice.problem { color: var(--problem, #c0392b); }
+  .empty { padding: 16px 12px; color: var(--text-tertiary, inherit); }
+</style>
+</head>
+<body>
+<header>
+  <span class="name" id="name">&nbsp;</span>
+  <span class="badge" id="badge"></span>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <pre id="text" hidden></pre>
+  <div class="empty" id="empty"></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // The most this page will decode and draw. **The host's own ceiling rather
+  // than a number invented here**: `PreviewRoutes.readMax` is what `read`
+  // will answer with at most, so asking for more would only come back short.
+  var READ_MAX = 4 * 1024 * 1024;
+
+  var strings = {
+    en: {
+      loading: "Reading the file…",
+      size: "size",
+      empty: "This file is empty.",
+      notText: "This file is not text, so there is nothing to show here.",
+      truncated: "Showing the first {Shown} of {Total}. The rest is not loaded.",
+      refused: "The preview could not be shown: {Why}",
+      noBridge: "This page was opened without the preview bridge, so the file cannot be read.",
+      encoding: "encoding",
+      eol: "end of line"
+    },
+    "zh-Hans": {
+      loading: "正在读取文件…",
+      size: "大小",
+      empty: "这个文件是空的。",
+      notText: "这个文件不是文本，没有可以显示的内容。",
+      truncated: "只显示了前 {Shown}（共 {Total}），其余没有加载。",
+      refused: "没法显示这份预览：{Why}",
+      noBridge: "这个页面没有带着预览桥打开，所以读不到文件。",
+      encoding: "编码",
+      eol: "换行"
+    }
+  };
+  var lang = (navigator.language || "en").toLowerCase();
+  var L = strings[lang.indexOf("zh") === 0 ? "zh-Hans" : "en"];
+  function say(key, vars) {
+    var s = L[key] || strings.en[key] || key;
+    if (!vars) return s;
+    for (var k in vars) s = s.split("{" + k + "}").join(vars[k]);
+    return s;
+  }
+
+  var el = {
+    name: document.getElementById("name"),
+    badge: document.getElementById("badge"),
+    meta: document.getElementById("meta"),
+    text: document.getElementById("text"),
+    empty: document.getElementById("empty")
+  };
+
+  function bytes(n) {
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    var units = ["B", "KB", "MB", "GB"], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + " " + units[i];
+  }
+
+  /// A failure, in the words the host gave. The bridge rejects with a string
+  /// carrying the core's own sentence -- printing something of this page's
+  /// instead would lose the one thing that says *why* the preview is empty.
+  function failed(why) {
+    el.text.hidden = true;
+    el.empty.className = "notice problem";
+    el.empty.textContent = say("refused", { Why: String(why) });
+  }
+
+  function base64ToText(b64) {
+    var raw = atob(b64);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    // `fatal: false` rather than throwing: a file that is mostly text but
+    // has one bad byte still has something worth reading, and a preview that
+    // refused the whole file over it would be withholding more than asked.
+    return new TextDecoder("utf-8", { fatal: false }).decode(out);
+  }
+
+  /// Whether the core's own reading says this is a file a person can read.
+  /// `encoding` is absent for a binary, which is the same answer `files_open`
+  /// gives the host; the page repeats it rather than guessing from bytes.
+  function looksTextual(info) {
+    return typeof info.encoding === "string" && info.encoding.length > 0;
+  }
+
+  function show(info) {
+    el.name.textContent = info.name || "";
+    if (info.kind && info.kind !== "file") el.badge.textContent = info.kind;
+    var parts = [];
+    if (typeof info.size === "number") parts.push(bytes(info.size));
+    if (info.encoding) parts.push(say("encoding") + " " + info.encoding);
+    if (info.eol) parts.push(say("eol") + " " + info.eol);
+    el.meta.textContent = parts.join(" · ");
+  }
+
+  async function run() {
+    var polter = window.polter;
+    if (!polter || typeof polter.info !== "function" || typeof polter.read !== "function") {
+      el.empty.className = "notice problem";
+      el.empty.textContent = say("noBridge");
+      return;
+    }
+
+    // The host's own tokens, so this page draws in the colours of the window
+    // around it rather than inventing a palette beside it. Asked first and
+    // best-effort: a bridge that cannot answer `look` must not stop the file
+    // being shown.
+    if (typeof polter.look === "function") {
+      try {
+        var look = await polter.look();
+        var root = document.documentElement.style;
+        if (look && look.colours) {
+          var c = look.colours;
+          if (c.text) root.setProperty("--text", c.text);
+          if (c.text_secondary) root.setProperty("--text-secondary", c.text_secondary);
+          if (c.text_tertiary) root.setProperty("--text-tertiary", c.text_tertiary);
+          if (c.well) root.setProperty("--well", c.well);
+          if (c.panel) root.setProperty("--panel", c.panel);
+          if (c.line) root.setProperty("--line", c.line);
+          if (c.problem) root.setProperty("--problem", c.problem);
+        }
+        if (look && look.font) {
+          if (look.font.ui) root.setProperty("--font-ui", "\"" + look.font.ui + "\", system-ui, sans-serif");
+          if (look.font.mono) root.setProperty("--font-mono", "\"" + look.font.mono + "\", monospace");
+        }
+        if (look && look.size) {
+          // The host's floor, handed over rather than chosen here: a page set
+          // at a literal 13 px goes unreadable the day the system's text size
+          // moves (`SettingsFont.minimumPointSize`).
+          var body = look.size.body, min = look.size.min;
+          var size = typeof min === "number" ? Math.max(body || min, min) : body;
+          if (typeof size === "number") root.setProperty("--size-body", size + "px");
+          if (typeof look.size.line_height === "number") {
+            root.setProperty("--line-height", String(look.size.line_height));
+          }
+        }
+        if (look && look.radius && typeof look.radius.card === "number") {
+          root.setProperty("--radius-card", look.radius.card + "px");
+        }
+      } catch (e) { /* the tokens are a courtesy; the file is the job. */ }
+    }
+
+    el.empty.textContent = say("loading");
+
+    var info;
+    try {
+      info = await polter.info();
+    } catch (why) { return failed(why); }
+
+    if (!info || typeof info !== "object") {
+      return failed("the file could not be described");
+    }
+    show(info);
+
+    if (info.kind === "directory") {
+      el.empty.textContent = say("notText");
+      return;
+    }
+    if (!looksTextual(info)) {
+      el.empty.textContent = say("notText");
+      return;
+    }
+    if (info.size === 0) {
+      el.empty.textContent = say("empty");
+      return;
+    }
+
+    // A span, not the whole file, even when it fits: `read` answers at most
+    // `READ_MAX` and saying what was asked for keeps the two ceilings the
+    // same number.
+    var length = Math.min(info.size || READ_MAX, READ_MAX);
+    var answer;
+    try {
+      answer = await polter.read(0, length);
+    } catch (why) { return failed(why); }
+
+    if (!answer || typeof answer.base64 !== "string") {
+      return failed("the file could not be read");
+    }
+
+    var text = base64ToText(answer.base64);
+    el.text.textContent = text;
+    el.text.hidden = false;
+    el.empty.className = "empty";
+    el.empty.textContent = "";
+
+    // **`truncated` is about the ask.** A short read of a large file is said
+    // out loud, with both numbers, because the alternative is a page that
+    // shows the first 4 MB of a 40 MB log and looks exactly like a page
+    // showing all of it.
+    var read = answer.base64.length * 3 / 4;
+    if (answer.truncated || (typeof info.size === "number" && read < info.size)) {
+      var note = document.createElement("div");
+      note.className = "notice";
+      note.textContent = say("truncated", { Shown: bytes(read), Total: bytes(info.size) });
+      el.text.parentNode.insertBefore(note, el.text);
+    }
+  }
+
+  run();
+})();
+</script>
+</body>
+</html>
