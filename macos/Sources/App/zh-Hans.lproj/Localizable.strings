@@ -1519,3 +1519,11 @@
    给用户只一句；缺的是哪个字段属于日志 */
 "This preview plugin is not available." = "这个预览插件暂不可用";
 "This plugin shows the file in a browser view, which is not available here yet." = "这个插件在浏览器视图里显示文件，这里还没有这条路径";
+
+/* 总控台：群聊页的输入框与发送按钮（task 2791）。⌘↩ 才发送，单独的 Return
+   是输入法的候选确认，不发送 */
+"Message" = "消息";
+"Send" = "发送";
+"Not sent: %@" = "没有发出：%@";
+"It may or may not have been sent. Check the conversation before sending it again." = "可能发出去了，也可能没有。再发之前先看会话里有没有。";
+"It may or may not have been sent (%@). Check the conversation before sending it again." = "可能发出去了，也可能没有（%@）。再发之前先看会话里有没有。";

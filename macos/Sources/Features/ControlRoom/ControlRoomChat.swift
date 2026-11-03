@@ -3,8 +3,15 @@ import GhosttyKit
 import SwiftUI
 
 /// The control room's chat page (task 2015; the design's v1 `C1-chat`): a
-/// terminal running `polter +chat --group=<group>`, one a group, where the
-/// supervisor's terminal is when the chat page is in front.
+/// group's chat, one a group, where the supervisor's terminal is when the
+/// chat page is in front.
+///
+/// **Two shapes, one page** (task 2791, #2791). What this file has always
+/// made is a terminal running `polter +chat --group=<group>`. It now also
+/// makes the core's own message list, natively, when the door for it is
+/// handed in (`askCore`) -- and which of the two a group gets is decided
+/// here and nowhere else, so the page, the keyboard chords and the pruning
+/// go on saying the same things about either.
 ///
 /// **Not one of anybody's terminals**: the core leaves a chat surface out of
 /// `terminal_list` and the snapshot, and it is in no terminal window's split
@@ -16,20 +23,33 @@ import SwiftUI
 ///    takes the ones that are its (`closedByCore`);
 ///  * the model prunes the chats of groups gone from the snapshot (`prune`).
 ///
+/// **A native chat is not a surface at all**, so the second of those finds
+/// nothing for it and no `ghosttyCloseSurface` ever names it.
+///
 /// **What it speaks as** is the person: `poltergeistChat`, which tells the
 /// core that requests from this surface speak for the person at the
-/// keyboard. This is the one place that sets it since task 2080 took the
-/// menu's own chat tab out.
+/// keyboard, and `ghostty_app_chat_read`, which tells the core the same
+/// thing by taking no surface at all. This is the one place that sets the
+/// flag since task 2080 took the menu's own chat tab out.
 ///
 /// Four are kept; past that the one looked at longest ago goes. A chat
 /// whose program ended is **not opened again until the person asks**
 /// (group seq 223, the Windows host's `chat_page::ENDED`): one whose
-/// program ends as it starts would be opened for ever.
+/// program ends as it starts would be opened for ever. A native chat has no
+/// program to end.
 final class ControlRoomChatContainer: NSView {
     private struct Chat {
         let group: String
-        let view: Ghostty.SurfaceView
+        /// The terminal this group's chat is, while it is one. **Nil for a
+        /// native chat** (task 2791): the list is drawn from the core's own
+        /// messages and there is no terminal, so nothing here may assume
+        /// one -- which is what `keyboardHolder` and `focusChat` below are
+        /// written around.
+        let view: Ghostty.SurfaceView?
         let host: NSView
+        /// The model behind a native chat, which is where its polling lives;
+        /// nil for a terminal.
+        let feed: ControlRoomChatFeed?
     }
 
     /// The one looked at longest ago first (`ControlRoomChatRules.lookedAt`).
@@ -43,6 +63,19 @@ final class ControlRoomChatContainer: NSView {
     var onKeyboardLeft: () -> Void = {}
 
     private weak var ghostty: Ghostty.App?
+
+    /// **The door the native chat reads through** (task 2791), handed in by
+    /// whoever has the core (`ControlRoomController`). Nil -- and then this
+    /// container makes the `polter +chat` terminal it has always made, and
+    /// nothing about the page changes. Handed in rather than built here so
+    /// that this file decides nothing about the core, and so that the page
+    /// keeps working in a build whose core has no such door.
+    var askCore: ControlRoomChatFeed.Ask?
+
+    /// **The door the native chat posts through** (task 2791, slice 2),
+    /// handed in by the same caller. Nil where the build has no post door,
+    /// and then the pane draws no box rather than a box that does nothing.
+    var sendCore: ControlRoomChatFeed.Send?
 
     init(_ ghostty: Ghostty.App) {
         self.ghostty = ghostty
@@ -91,12 +124,22 @@ final class ControlRoomChatContainer: NSView {
     /// sight, which needs a window -- `show` comes from the page's
     /// `onAppear`, which can run before this view is in one -- and the
     /// window not behind another tab (`windowVisibilityChanged`).
+    ///
+    /// **And it is where a native chat's polling is switched** (task 2791):
+    /// the group in front and in a window is the one that asks, and every
+    /// other one is stopped. A chat nobody can see must not go on asking the
+    /// core, and a page's `stop` is not enough on its own here -- a chat is
+    /// hidden rather than taken out when the page is left, so nothing else
+    /// would ever tell it to stop.
     private func applyVisibility() {
         let seen = window?.occlusionState.contains(.visible) == true
         for chat in chats {
             let shown = chat.group == front
             chat.host.isHidden = !shown
-            ControlRoomLender.setVisible(chat.view, shown && seen)
+            if let view = chat.view { ControlRoomLender.setVisible(view, shown && seen) }
+            if let feed = chat.feed {
+                if shown && seen { feed.start(group: chat.group) } else { feed.stop() }
+            }
         }
     }
 
@@ -114,21 +157,28 @@ final class ControlRoomChatContainer: NSView {
     /// (`ControlRoomController.syncLentFocus`). A surface is told about its
     /// own first-responder changes, not about its window's.
     func syncFocus() {
-        guard let holder = keyboardHolder, let window else { return }
-        holder.view.focusDidChange(window.isKeyWindow)
+        guard let holder = keyboardHolder, let window, let view = holder.view else { return }
+        view.focusDidChange(window.isKeyWindow)
     }
 
-    /// The chat the keyboard is in, when it is in one.
+    /// The chat the keyboard is in, when it is in one. **A native chat is
+    /// never one** (task 2791): it is SwiftUI, there is no terminal to hold
+    /// the first responder, and the page's two arrows therefore find nothing
+    /// to move onto on that side.
     private var keyboardHolder: Chat? {
         guard let responder = window?.firstResponder as? NSView else { return nil }
-        return chats.first { responder === $0.view || responder.isDescendant(of: $0.view) }
+        return chats.first { chat in
+            guard let view = chat.view else { return false }
+            return responder === view || responder.isDescendant(of: view)
+        }
     }
 
     /// Take the keyboard out of `chat`: its window has it, and the
     /// controller says who gets it (`onKeyboardLeft`).
     private func takeKeyboard(out chat: Chat, why: String) {
-        chat.view.window?.makeFirstResponder(nil)
-        chat.view.focusDidChange(false)
+        guard let view = chat.view else { return }
+        view.window?.makeFirstResponder(nil)
+        view.focusDidChange(false)
         Ghostty.logger.notice("control room: the keyboard was in the chat for \(chat.group, privacy: .public), being \(why, privacy: .public); taken out")
         onKeyboardLeft()
     }
@@ -143,9 +193,9 @@ final class ControlRoomChatContainer: NSView {
     @discardableResult
     func focusChat() -> Bool {
         guard let front, let chat = chats.first(where: { $0.group == front }),
-              let window = chat.view.window else { return false }
-        window.makeFirstResponder(chat.view)
-        chat.view.focusDidChange(window.isKeyWindow)
+              let view = chat.view, let window = view.window else { return false }
+        window.makeFirstResponder(view)
+        view.focusDidChange(window.isKeyWindow)
         return true
     }
 
@@ -154,9 +204,9 @@ final class ControlRoomChatContainer: NSView {
     /// what `takeKeyboard` would do, and is wrong here, since the list is
     /// not where this key is going.
     func resignChat() {
-        guard let holder = keyboardHolder else { return }
-        holder.view.window?.makeFirstResponder(nil)
-        holder.view.focusDidChange(false)
+        guard let holder = keyboardHolder?.view else { return }
+        holder.window?.makeFirstResponder(nil)
+        holder.focusDidChange(false)
     }
 
     /// Leaving the chat page: the keyboard comes out of its chat before it
@@ -170,8 +220,30 @@ final class ControlRoomChatContainer: NSView {
         applyVisibility()
     }
 
+    /// `front`, and one group a chat -- **made natively when this build has
+    /// the core's door for it** (task 2791), and as the `polter +chat`
+    /// terminal otherwise, which is the page's first shape and the one it
+    /// falls back to wherever the door is not handed in.
+    ///
+    /// The two are one shape with two insides (`Chat.view` nil for the
+    /// native one), so `show`, `prune` and the focus calls above go on
+    /// reading and saying the same things about either.
     private func make(_ group: String) -> Chat? {
         guard let ghostty, let app = ghostty.app else { return nil }
+        if let askCore {
+            let feed = ControlRoomChatFeed(ask: askCore, send: sendCore)
+            let host = NSHostingView(rootView: ControlRoomNativeChatPane(group: group, feed: feed))
+            host.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(host)
+            NSLayoutConstraint.activate([
+                host.topAnchor.constraint(equalTo: topAnchor),
+                host.bottomAnchor.constraint(equalTo: bottomAnchor),
+                host.leadingAnchor.constraint(equalTo: leadingAnchor),
+                host.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+            Ghostty.logger.notice("control room: chat for \(group, privacy: .public): native, out of the core's own messages")
+            return Chat(group: group, view: nil, host: host, feed: feed)
+        }
         var config = Ghostty.SurfaceConfiguration()
         config.command = ControlRoomChatRules.command(group: group)
         config.poltergeistChat = true
@@ -189,21 +261,30 @@ final class ControlRoomChatContainer: NSView {
             host.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         Ghostty.logger.notice("control room: chat for \(group, privacy: .public): \(config.command ?? "", privacy: .public) (poltergeistChat)")
-        return Chat(group: group, view: view, host: host)
+        return Chat(group: group, view: view, host: host, feed: nil)
     }
 
     private func close(at i: Int, why: String) {
         // **Asked before it leaves `chats`** (group seq 289, M4b 4): after,
         // `keyboardHolder` -- which looks among `chats` -- could never name
         // it, and a chat whose program ended kept the keyboard as it went.
-        let hadKeyboard = keyboardHolder?.view === chats[i].view
+        // A native chat has no view and never holds the keyboard, so the
+        // two ids are compared only when both sides have one.
+        let heldKeyboard = keyboardHolder.map { holder -> Bool in
+            guard let held = holder.view, let here = chats[i].view else { return false }
+            return held === here
+        } ?? false
         let chat = chats.remove(at: i)
-        if hadKeyboard { takeKeyboard(out: chat, why: "closed") }
+        if heldKeyboard { takeKeyboard(out: chat, why: "closed") }
+        // A native chat's polling stops with it (task 2791): a chat that is
+        // gone must not go on asking the core.
+        chat.feed?.stop()
         chat.host.removeFromSuperview()
         Ghostty.logger.notice("control room: chat for \(chat.group, privacy: .public) closed: \(why, privacy: .public)")
     }
 
-    /// Whether `view` is one of the chats.
+    /// Whether `view` is one of the chats. **A native chat has no view**,
+    /// so it is never one of them, and a surface arriving here is not it.
     func owns(_ view: NSView?) -> Bool {
         guard let view else { return false }
         return chats.contains { $0.view === view }

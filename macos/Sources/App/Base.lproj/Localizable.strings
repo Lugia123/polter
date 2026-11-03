@@ -1447,3 +1447,11 @@
    out is the log's. The other six keys below it are the log's side. */
 "This preview plugin is not available." = "This preview plugin is not available.";
 "This plugin shows the file in a browser view, which is not available here yet." = "This plugin shows the file in a browser view, which is not available here yet.";
+
+/* 总控台：群聊页的输入框与发送按钮（task 2791）。⌘↩ 才发送，单独的 Return
+   是输入法的候选确认，不发送 */
+"Message" = "Message";
+"Send" = "Send";
+"Not sent: %@" = "Not sent: %@";
+"It may or may not have been sent. Check the conversation before sending it again." = "It may or may not have been sent. Check the conversation before sending it again.";
+"It may or may not have been sent (%@). Check the conversation before sending it again." = "It may or may not have been sent (%@). Check the conversation before sending it again.";

@@ -83,6 +83,12 @@
       "macos/Sources/Features/ControlRoom/ControlRoomResources.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomTasks.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatRules.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatData.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift",
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift",
+        "why": "the chat's message list as a SwiftUI view over values it is handed (task 2791): no core, no window and no terminal, so the package compiles it; what it draws is a later slice's business"
+      },
       "macos/Sources/Features/ControlRoom/ControlRoomSidebar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomAnswerReader.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomRetentionNotice.swift",
@@ -254,6 +260,10 @@
         "why": "imports GhosttyKit: it makes the chat page's real terminals, a surface a group, and tells the core which are in sight; what it decides without a view is ControlRoomChatRules.swift, which is in"
       },
       {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomChatCoreAdapter.swift",
+        "why": "imports GhosttyKit: it is the one place that asks the core for a group's chat (ghostty_app_chat_read, #2778). What the answer means -- which group it is about, what is already held, what to pass as since -- is ControlRoomChatFeed.swift, which is in; this file is only the call"
+      },
+      {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomPerfPage.swift",
         "why": "imports GhosttyKit: it asks the core for the performance page (ghostty_app_control_page); its numbers and its reading are ControlRoomResources.swift, which is in"
       },
@@ -304,6 +314,7 @@
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatRulesTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomChatFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomSidebarTests.swift",
       "macos/Tests/ControlRoom/ControlRoomEveryKeyTests.swift",
       "macos/Tests/ControlRoom/ControlRoomPageStripTests.swift",

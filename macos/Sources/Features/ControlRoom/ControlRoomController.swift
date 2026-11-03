@@ -151,6 +151,17 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // as every surface's close does, and only the container knows it
         // is one (task 2015, M4a).
         let chats = ControlRoomChatContainer(ghostty)
+        // **And the door the native chat reads through** (task 2791): with
+        // it the container makes the core's own message list and no
+        // terminal, and without it -- which is how this page has always
+        // worked -- the `polter +chat` terminal. The core's half landed as
+        // `0db7ea854` (task 2778): `ghostty_app_chat_read` in
+        // `include/ghostty.h`, exported from `src/apprt/embedded.zig`.
+        chats.askCore = ControlRoomChatCoreAdapter.ask(ghostty)
+        // And the post door (task 2791, slice 2): the same three states the
+        // header names, so that "it may have gone" is never read here as
+        // "it did not".
+        chats.sendCore = ControlRoomChatCoreAdapter.send(ghostty)
         chats.onEnded = { [weak self] ended in self?.model.chatEnded = ended }
         // Out of a chat, the keyboard goes to the list, as on Windows the
         // panel takes it: arrow keys move among the groups at once.
