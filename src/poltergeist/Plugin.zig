@@ -565,6 +565,222 @@ pub const Manifest = struct {
     }
 };
 
+/// One plugin the caller has already resolved, and whether the user has it
+/// switched on (task 2743 S5).
+///
+/// **`enabled` is the caller's reading of `Settings`, not this file's.**
+/// Which plugin is on is a fact about `$XDG_CONFIG_HOME/polter/plugins/
+/// <key>.json` plus whatever a release ships beside it, and only the caller
+/// that found the plugin knows which one it found -- so the selector is
+/// handed the answer rather than going and looking. A hand-listed candidate
+/// carries its own.
+pub const Candidate = struct {
+    manifest: *const Manifest,
+    enabled: bool,
+};
+
+/// What the caller is asking to preview. Not a path on disk: nothing here
+/// reads a file or touches the file system.
+pub const Target = struct {
+    /// The file's path, as the caller has it. Only its name and its last dot
+    /// are read; `/` and `\` both end the name.
+    path: []const u8,
+
+    /// The sniffed type, when the host has one. **Optional, and it is an
+    /// alternative to the extension rather than a requirement** -- a host
+    /// that has not sniffed anything passes null and the extension decides.
+    mime: ?[]const u8 = null,
+
+    /// The key a person chose by hand, when they chose one. An empty string
+    /// is read as "nobody chose", which is what an optional argument
+    /// naturally carries; see `previewFor`.
+    preferred: ?[]const u8 = null,
+};
+
+/// Which plugin shows this file, or -- when a person asked for one by name
+/// -- why the one they asked for is not it.
+///
+/// **The four refusals are four different sentences and none of them is a
+/// silent substitution.** `PLUGIN.md`'s rule is that the plugin a person
+/// chose by hand beats every priority; the other half of that rule is that
+/// when the plugin they chose cannot show this file, they are told which of
+/// the four things went wrong rather than being shown somebody else's work
+/// wearing its name.
+pub const Choice = union(enum) {
+    /// Borrowed from the candidate the caller handed in; nothing here is
+    /// allocated and nothing is copied out of it.
+    match: *const Manifest,
+
+    /// Nothing is installed, switched on and claiming a file of this kind.
+    none,
+
+    /// A key was named and no candidate has it.
+    specified_not_found: []const u8,
+
+    /// The named plugin is installed and switched off.
+    specified_disabled: []const u8,
+
+    /// The named plugin is on, and does not preview this kind of file --
+    /// either it has no `preview` at all (it is a resident plugin) or its
+    /// extensions and types do not cover this one.
+    specified_unsupported: []const u8,
+};
+
+/// The plugin that shows `target`, or why the one asked for by name is not
+/// it (task 2743 S5).
+///
+/// **The one place this rule is written**, so the two hosts cannot come to
+/// answer it differently -- the same reason `test/fixtures/preview-routes.tsv`
+/// exists for the route.
+///
+/// Read-only and allocating nothing: the answer borrows from `candidates`
+/// and from `target`, both of which the caller outlives.
+///
+/// The rules, in the order they apply:
+///
+///   1. **A key asked for by name is answered on its own.** The candidate
+///      with that key is found and judged; nothing else is considered, so a
+///      refusal is never quietly replaced by a different plugin that could
+///      have matched.
+///   2. Otherwise a candidate is in the running only when the caller says it
+///      is **enabled** and it **declares a `preview`**. A plugin that is
+///      switched off is not a candidate, and neither is a resident one: a
+///      plugin whose manifest has no preview section has said nothing about
+///      files, which is not the same as saying it shows none.
+///   3. It is in the running when the file's **extension** or its **MIME**
+///      matches -- either one, not both. A host that sniffed a type does not
+///      thereby require the manifest to name it.
+///   4. The highest `priority` wins. A tie goes to the **lower key**, byte
+///      for byte, so the choice does not depend on the order the caller
+///      listed plugins in -- two callers with the same set in different
+///      orders must answer the same.
+///
+/// **An empty `preferred` is no preference, not an illegal key.** A host
+/// passing a form field, a config value or an optional argument has `""` for
+/// "nobody chose one", and refusing every file because a field was left
+/// blank is the failure that reads as a bug in the picker. A non-empty key
+/// keeps the strict meaning below; only `""` is read this way.
+pub fn previewFor(candidates: []const Candidate, target: Target) Choice {
+    const ext = extensionOf(target.path);
+
+    const wanted: ?[]const u8 = if (target.preferred) |key|
+        (if (key.len == 0) null else key)
+    else
+        null;
+
+    if (wanted) |key| {
+        for (candidates) |c| {
+            if (!std.mem.eql(u8, c.manifest.key, key)) continue;
+            if (!c.enabled) return .{ .specified_disabled = key };
+            const preview = c.manifest.preview orelse return .{ .specified_unsupported = key };
+            if (!previewClaims(preview, ext, target.mime)) return .{ .specified_unsupported = key };
+            return .{ .match = c.manifest };
+        }
+        return .{ .specified_not_found = key };
+    }
+
+    var best: ?*const Manifest = null;
+    for (candidates) |c| {
+        if (!c.enabled) continue;
+        const preview = c.manifest.preview orelse continue;
+        if (!previewClaims(preview, ext, target.mime)) continue;
+        if (best) |b| {
+            const bp = b.preview.?;
+            if (!beats(preview.priority, c.manifest.key, bp.priority, b.key)) continue;
+        }
+        best = c.manifest;
+    }
+
+    return if (best) |m| .{ .match = m } else .none;
+}
+
+/// Whether `a` comes before `b`: higher priority first, and the lower key
+/// when the two are level. **The tie is broken by the key and not by the
+/// order the caller listed them in** -- an answer that depended on that
+/// order would differ between two callers holding the same plugins.
+fn beats(priority: i32, key: []const u8, than_priority: i32, than_key: []const u8) bool {
+    if (priority != than_priority) return priority > than_priority;
+    return std.mem.lessThan(u8, key, than_key);
+}
+
+/// Whether this preview answers for a file of this extension or type.
+///
+/// `ext` is without its dot (`"md"`), as `extensionOf` gives it; a
+/// declaration is spelled with one (`.md`), as `extensionList` stores it.
+fn previewClaims(preview: Preview, ext: []const u8, mime: ?[]const u8) bool {
+    if (ext.len > 0) {
+        for (preview.extensions) |declared| {
+            if (declared.len < 2 or declared[0] != '.') continue;
+            if (std.ascii.eqlIgnoreCase(declared[1..], ext)) return true;
+        }
+    }
+
+    if (mime) |actual| {
+        if (actual.len > 0) {
+            for (preview.mime) |declared| {
+                if (typeMatches(declared, actual)) return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/// One declared type against the sniffed one, `type/subtype` either side,
+/// with `*` standing for a whole side -- the spellings `mimeList` accepts.
+///
+/// ⚠️ **What is compared is the type, and a parameter after `;` is not part
+/// of it.** `text/plain; charset=utf-8` is how a *response header* is
+/// spelled (`test/fixtures/preview-types.tsv` is full of them) and a host
+/// that sniffs a file has the bare type; a rule that refused to match across
+/// that difference would make a declaration and a sniff disagree over a
+/// charset neither of them is arguing about. Both sides are cut at their
+/// first `;` and the surrounding blanks are dropped.
+fn typeMatches(declared: []const u8, actual: []const u8) bool {
+    const dt = typeOnly(declared);
+    const at = typeOnly(actual);
+    const d = std.mem.indexOfScalar(u8, dt, '/') orelse return false;
+    const a = std.mem.indexOfScalar(u8, at, '/') orelse return false;
+    return sideMatches(dt[0..d], at[0..a]) and
+        sideMatches(dt[d + 1 ..], at[a + 1 ..]);
+}
+
+/// The type with any `;` parameter and the blanks around it removed.
+fn typeOnly(s: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, s, ';') orelse s.len;
+    return std.mem.trim(u8, s[0..cut], " \t");
+}
+
+fn sideMatches(declared: []const u8, actual: []const u8) bool {
+    if (std.mem.eql(u8, declared, "*")) return true;
+    return std.ascii.eqlIgnoreCase(declared, actual);
+}
+
+/// The extension of the file named in `path`, without its dot, or `""` for
+/// a file that has none.
+///
+/// **As the caller spelled it and not lowered**: this borrows out of `path`
+/// and allocates nothing, and the comparison it is fed to is without case
+/// (`previewClaims`), so lower-casing here would be a copy that changes no
+/// answer.
+///
+/// **The name is taken first and the last dot after it**, which is the rule
+/// `test/fixtures/preview-types.tsv` states for the hosts and is why a
+/// directory called `a.d` does not hand `b` an extension. Both separators
+/// end the name: a manifest is one file shared with Windows, and a path
+/// arriving with `\` in it is not on that account a name with no dot in it.
+///
+/// The shapes that have no extension, all of them checked against
+/// `NSString.pathExtension`: no dot at all (`notes`), a dotfile
+/// (`.gitignore`), a trailing dot (`notes.`), and an empty path.
+fn extensionOf(path: []const u8) []const u8 {
+    var name = path;
+    if (std.mem.lastIndexOfAny(u8, name, "/\\")) |i| name = name[i + 1 ..];
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
+    if (dot == 0) return "";
+    return name[dot + 1 ..];
+}
+
 /// What a CLI says about itself in its terminal's title (task 1656).
 ///
 /// ```json
@@ -5968,4 +6184,269 @@ test "2021: declined_says that leaves a key out is not read at all" {
         \\{"declined_says":{"contains":["Interrupted · What should Claude do instead?"],"turn_from":"❯ ","box":["Esc to cancel"]}}
     , .{})).object;
     try testing.expect(!(try declinedSaysOf(a, "x", no_done)).declared());
+}
+
+// ---- 2743 S5: which plugin previews a file ------------------------------
+//
+// The four helpers below are the whole fixture: a manifest with the fields
+// this rule reads stood up by hand, and two ways of asking `previewFor` and
+// reading the one thing the test cares about out of the answer. `enabled`
+// is spelled at every call site rather than defaulted, because "switched
+// off" is one of the branches being measured and a default would let a test
+// measure it without writing it down.
+
+fn previewManifest(
+    key: []const u8,
+    priority: i32,
+    extensions: []const []const u8,
+    mime: []const []const u8,
+) Manifest {
+    return .{
+        .key = key,
+        .preview = .{
+            .extensions = extensions,
+            .mime = mime,
+            .reads = .file,
+            .priority = priority,
+        },
+        .exec = null,
+    };
+}
+
+/// A resident plugin: an `exec` and no `preview` at all.
+fn residentManifest(key: []const u8) Manifest {
+    return .{ .key = key, .exec = "/bin/true" };
+}
+
+/// The key that won, or `"<none>"` when nothing matched.
+///
+/// **A sentinel rather than an optional on purpose**: `.?` on a mutation that
+/// makes nothing match would crash the test runner instead of printing the
+/// two sides, and a floor whose failure is a null unwrap says less than one
+/// whose failure is a diff.
+fn pickKey(candidates: []const Candidate, target: Target) []const u8 {
+    return switch (previewFor(candidates, target)) {
+        .match => |m| m.key,
+        else => "<none>",
+    };
+}
+
+fn refusal(candidates: []const Candidate, target: Target) Choice {
+    return previewFor(candidates, target);
+}
+
+test "2743 S5: the answer does not depend on the order the plugins were listed" {
+    var low = previewManifest("aaa", 10, &.{".txt"}, &.{});
+    var high = previewManifest("zzz", 90, &.{".txt"}, &.{});
+
+    const forwards = [_]Candidate{
+        .{ .manifest = &low, .enabled = true },
+        .{ .manifest = &high, .enabled = true },
+    };
+    const backwards = [_]Candidate{
+        .{ .manifest = &high, .enabled = true },
+        .{ .manifest = &low, .enabled = true },
+    };
+
+    const target: Target = .{ .path = "notes.txt" };
+    try testing.expectEqualStrings("zzz", pickKey(&forwards, target));
+    try testing.expectEqualStrings("zzz", pickKey(&backwards, target));
+}
+
+test "2743 S5: a tie is broken by the lower key, whatever order they came in" {
+    var a = previewManifest("aaa", 50, &.{".md"}, &.{});
+    var z = previewManifest("zzz", 50, &.{".md"}, &.{});
+
+    const forwards = [_]Candidate{
+        .{ .manifest = &a, .enabled = true },
+        .{ .manifest = &z, .enabled = true },
+    };
+    const backwards = [_]Candidate{
+        .{ .manifest = &z, .enabled = true },
+        .{ .manifest = &a, .enabled = true },
+    };
+
+    const target: Target = .{ .path = "README.md" };
+    try testing.expectEqualStrings("aaa", pickKey(&forwards, target));
+    try testing.expectEqualStrings("aaa", pickKey(&backwards, target));
+}
+
+test "2743 S5: a switched-off plugin is not a candidate, however well it matches" {
+    var off = previewManifest("off", 99, &.{".txt"}, &.{});
+    var on = previewManifest("on", 1, &.{".txt"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &off, .enabled = false },
+        .{ .manifest = &on, .enabled = true },
+    };
+    try testing.expectEqualStrings("on", pickKey(&candidates, .{ .path = "a.txt" }));
+
+    // And when nothing is on, the answer is `none` -- not the disabled one.
+    const all_off = [_]Candidate{.{ .manifest = &off, .enabled = false }};
+    try testing.expectEqual(Choice.none, refusal(&all_off, .{ .path = "a.txt" }));
+}
+
+test "2743 S5: a plugin with no preview is never chosen for a file" {
+    var resident = residentManifest("claude-code");
+    var page = previewManifest("text", 50, &.{".txt"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &resident, .enabled = true },
+        .{ .manifest = &page, .enabled = true },
+    };
+    try testing.expectEqualStrings("text", pickKey(&candidates, .{ .path = "a.txt" }));
+
+    // A plugin that is on and has no preview leaves the answer empty, and
+    // that is not the same as the file being unshowable by anybody.
+    const only_resident = [_]Candidate{.{ .manifest = &resident, .enabled = true }};
+    try testing.expectEqual(Choice.none, refusal(&only_resident, .{ .path = "a.txt" }));
+}
+
+test "2743 S5: the extension is compared without case, both ways round" {
+    var upper = previewManifest("upper", 50, &.{".PNG"}, &.{});
+    var lower = previewManifest("lower", 50, &.{".txt"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &upper, .enabled = true },
+        .{ .manifest = &lower, .enabled = true },
+    };
+    // The declaration was upper and the file lower.
+    try testing.expectEqualStrings("upper", pickKey(&candidates, .{ .path = "logo.png" }));
+    // And the other way round: the file is upper, the declaration lower.
+    try testing.expectEqualStrings("lower", pickKey(&candidates, .{ .path = "NOTES.TXT" }));
+}
+
+test "2743 S5: a path is its name first, so a dotted directory is not an extension" {
+    var dot = previewManifest("dot", 50, &.{".b"}, &.{});
+    var txt = previewManifest("txt", 50, &.{".txt"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &dot, .enabled = true },
+        .{ .manifest = &txt, .enabled = true },
+    };
+
+    // `a.d/b` has no extension: the last dot is in the directory.
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "a.d/b" }));
+    // And the same path with a Windows separator, where the dot is likewise
+    // in the directory and not in the name.
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "a.d\\b" }));
+    // The name after the separator is the one that counts.
+    try testing.expectEqualStrings("txt", pickKey(&candidates, .{ .path = "a.d/b.txt" }));
+    try testing.expectEqualStrings("txt", pickKey(&candidates, .{ .path = "a.d\\b.txt" }));
+}
+
+test "2743 S5: the shapes with no extension get no match" {
+    var txt = previewManifest("txt", 50, &.{".txt"}, &.{});
+    var git = previewManifest("git", 50, &.{".gitignore"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &txt, .enabled = true },
+        .{ .manifest = &git, .enabled = true },
+    };
+
+    // No dot, a dotfile and a trailing dot all have no extension. A
+    // `.gitignore` declaration is therefore never matched -- the extension
+    // of that file is the empty string, which is the rule the hosts state.
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "notes" }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = ".gitignore" }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "notes." }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "" }));
+}
+
+test "2743 S5: MIME is an alternative to the extension, not a second requirement" {
+    var by_mime = previewManifest("image", 50, &.{".png"}, &.{"image/*"});
+    var by_ext = previewManifest("text", 50, &.{".txt"}, &.{});
+    var both = [_]Candidate{
+        .{ .manifest = &by_mime, .enabled = true },
+        .{ .manifest = &by_ext, .enabled = true },
+    };
+
+    // The extension matches and no MIME was sniffed at all.
+    try testing.expectEqualStrings("text", pickKey(&both, .{ .path = "a.txt" }));
+    // The MIME matches while the extension does not.
+    try testing.expectEqualStrings("image", pickKey(&both, .{
+        .path = "blob.bin",
+        .mime = "image/png",
+    }));
+    // Neither matches, with a MIME along.
+    try testing.expectEqual(Choice.none, refusal(&both, .{
+        .path = "blob.bin",
+        .mime = "application/zip",
+    }));
+}
+
+test "2743 S5: a MIME parameter is not part of the type" {
+    var text = previewManifest("text", 50, &.{".txt"}, &.{"text/plain"});
+    const candidates = [_]Candidate{.{ .manifest = &text, .enabled = true }};
+
+    // A header with a charset is still `text/plain`, and a declaration with
+    // one matches a bare sniff.
+    try testing.expectEqualStrings("text", pickKey(&candidates, .{
+        .path = "blob.bin",
+        .mime = "text/plain; charset=utf-8",
+    }));
+    try testing.expectEqualStrings("text", pickKey(&candidates, .{
+        .path = "blob.bin",
+        .mime = "TEXT/PLAIN",
+    }));
+}
+
+test "2743 S5: a key asked for by name is answered on its own, or refused" {
+    var chosen = previewManifest("mine", 1, &.{".txt"}, &.{});
+    var loud = previewManifest("loud", 99, &.{".txt"}, &.{});
+    var resident = residentManifest("cli");
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &chosen, .enabled = true },
+        .{ .manifest = &loud, .enabled = true },
+    };
+
+    // 1. Chosen, even though a higher-priority plugin would otherwise win.
+    try testing.expectEqualStrings("mine", pickKey(&candidates, .{
+        .path = "a.txt",
+        .preferred = "mine",
+    }));
+    // 2. Not installed at all.
+    try testing.expectEqualStrings(
+        "ghost",
+        refusal(&candidates, .{ .path = "a.txt", .preferred = "ghost" }).specified_not_found,
+    );
+    // 3. Installed and switched off: not a quiet fallback to `loud`.
+    const off = [_]Candidate{
+        .{ .manifest = &chosen, .enabled = false },
+        .{ .manifest = &loud, .enabled = true },
+    };
+    try testing.expectEqualStrings(
+        "mine",
+        refusal(&off, .{ .path = "a.txt", .preferred = "mine" }).specified_disabled,
+    );
+    // 4a. Installed, on, and not a preview plugin at all.
+    const only_cli = [_]Candidate{.{ .manifest = &resident, .enabled = true }};
+    try testing.expectEqualStrings(
+        "cli",
+        refusal(&only_cli, .{ .path = "a.txt", .preferred = "cli" }).specified_unsupported,
+    );
+    // 4b. Installed, on, has a page, and does not claim this kind of file.
+    try testing.expectEqualStrings(
+        "mine",
+        refusal(&candidates, .{ .path = "a.zip", .preferred = "mine" }).specified_unsupported,
+    );
+}
+
+test "2743 S5: an empty key is nobody having chosen, and a blank file is not refused" {
+    var chosen = previewManifest("mine", 50, &.{".txt"}, &.{});
+    const candidates = [_]Candidate{.{ .manifest = &chosen, .enabled = true }};
+
+    // `""` is what an optional argument or a form field carries when nothing
+    // was picked, so it is read as no preference rather than as a key nobody
+    // has -- which would refuse every file the moment a field was left blank.
+    try testing.expectEqualStrings("mine", pickKey(&candidates, .{
+        .path = "a.txt",
+        .preferred = "",
+    }));
+    // And a non-empty key keeps its strict meaning: this one is not installed.
+    try testing.expectEqualStrings(
+        "other",
+        refusal(&candidates, .{ .path = "a.txt", .preferred = "other" }).specified_not_found,
+    );
 }
