@@ -1451,3 +1451,73 @@ extension ControlRoomWorkdirs {
         return out
     }
 }
+
+// MARK: - How wide the left column is
+
+extension ControlRoomWorkdirs {
+    /// The width of the working-directories page's left column: how wide a
+    /// drag may ask it to be, and how wide it is drawn when the window is
+    /// too narrow to hold that (task 2719 S3; `polter-artifacts/2713/v1/index.html`,
+    /// the approved design: `.sidebar { width: 280px; min-width: 180px;
+    /// max-width: 600px }` and `.resizer-v`, an 8pt hit area on a hairline).
+    ///
+    /// **Two values, and that is the whole point.** `asked` is what the
+    /// person dragged to and is what the page remembers; `drawn` is that
+    /// width squeezed into the room this window actually has. They are kept
+    /// apart because a window narrowed once must not eat the width the
+    /// person chose: when the window is widened again the column comes back
+    /// to what it was, rather than having been silently reset to the
+    /// squeeze.
+    ///
+    /// ⚠️ **The squeeze is the side's, never the workbench's.** The right
+    /// side is where the file is read, so `minRight` is reserved first and
+    /// whatever is left over is the side's ceiling -- which is allowed to
+    /// fall under `minSide`, and to zero, on a window too narrow for both.
+    /// Something has to give, and the column holding the tree is the one
+    /// that can.
+    ///
+    /// No view, no container, no measurement in here: every rule below is
+    /// worth a test on numbers (`ControlRoomWorkdirsPage.swift` is a
+    /// `sources.out` file -- nothing in it can be reached by a test -- so
+    /// the arithmetic lives here and the page only wires gestures to it).
+    enum Split {
+        /// What the column is to begin with (`files4.css`, `.sb-w` 296).
+        static let width: CGFloat = 296
+        /// The narrowest the column may be dragged to (the design's
+        /// `.sidebar { min-width: 180px }`).
+        static let minSide: CGFloat = 180
+        /// The narrowest the workbench may be left. Not the design's: the
+        /// design's sidebar is beside a workbench that can be squeezed to
+        /// `min-width: 320`, which is wider than this window's least width
+        /// leaves it, so this is the smaller number the window can keep.
+        static let minRight: CGFloat = 240
+        /// The widest the column may be dragged to (the design's
+        /// `.sidebar { max-width: 600px }`).
+        static let maxSide: CGFloat = 600
+        /// **How wide the handle's grab area is, and not just its line**
+        /// (the approved design `polter-artifacts/2713/v1/index.html`,
+        /// `.resizer-v { width: 8px; margin: 0 -4px }`, so the 1pt line sits
+        /// in the middle of an 8pt target). The design's own hover measure is
+        /// kept: 8 is what the person's pointer has to find.
+        static let handle: CGFloat = 8
+
+        /// The width a drag has asked for: inside the range a drag may
+        /// reach, whatever the window was doing at the time. **This is what
+        /// the page keeps**, so a drag on a narrow window is not lost.
+        static func asked(_ width: CGFloat) -> CGFloat {
+            min(max(width, minSide), maxSide)
+        }
+
+        /// The column's width as drawn in a container this wide: `wanted`
+        /// squeezed so that it and `minRight` fit, and never over `maxSide`.
+        ///
+        /// The order is the point -- the ceiling is applied first, so a
+        /// window wide enough to hold `wanted` gets exactly it, and the
+        /// workbench's `minRight` is taken out of the column's ceiling
+        /// rather than out of the workbench.
+        static func drawn(wanted: CGFloat, container: CGFloat) -> CGFloat {
+            let ceiling = max(0, container - minRight)
+            return min(min(max(wanted, minSide), maxSide), ceiling)
+        }
+    }
+}

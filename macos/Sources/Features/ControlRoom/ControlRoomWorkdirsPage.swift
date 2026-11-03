@@ -50,6 +50,7 @@ struct ControlRoomWorkdirsPage: View {
     typealias Levels = ControlRoomWorkdirs.Levels
     typealias Node = ControlRoomWorkdirs.Node
     typealias Search = ControlRoomWorkdirs.Search
+    typealias Split = ControlRoomWorkdirs.Split
 
     let group: String
     @ObservedObject var model: ControlRoomModel
@@ -83,6 +84,23 @@ struct ControlRoomWorkdirsPage: View {
     /// file could not be opened. Said on the page, in the core's own words
     /// where the core gave any.
     @State private var refusal: String?
+
+    /// **The width the person dragged the left column to**, and the width of
+    /// the box this page was given. Two, because they are two different
+    /// things: the column is drawn at `Split.drawn(wanted: asked, …)` -- the
+    /// first squeezed into what the second can hold -- and it is `asked`
+    /// that is kept, so narrowing the window does not eat the width that was
+    /// chosen (`ControlRoomWorkdirs.Split` says why that matters).
+    @State private var asked: CGFloat = ControlRoomWorkdirs.Split.width
+    @State private var containerWidth: CGFloat = 0
+    /// Whether the pointer is on the divider, and whether it is being
+    /// dragged: the two things the line is drawn differently for.
+    @State private var dividerHovered = false
+    @State private var dividerDragging = false
+    /// Whether this view pushed a resize cursor and has not popped it. Only
+    /// ever set on the systems that predate `pointerStyle` (macOS 14 and
+    /// below); on 15 and up nothing is pushed and this stays false.
+    @State private var cursorPushed = false
 
     private var theme: Look.Theme { Look.theme(scheme) }
 
@@ -133,10 +151,39 @@ struct ControlRoomWorkdirsPage: View {
     var body: some View {
         HStack(spacing: 0) {
             bar
-            if activity.open { side }
+            if activity.open {
+                side
+            }
             right
         }
+        // The page's own box, which is what a drag's x is read against (the
+        // handle is offset from the page's leading edge, so its own local
+        // space would be 8pt wide and say nothing about where the column is).
+        .coordinateSpace(name: Self.pageSpace)
+        // **The handle is drawn over the boundary, and only when there is
+        // one.** An overlay and not a child of the `HStack`: an 8pt grab area
+        // is a hit target, not a column, so it must take no width out of the
+        // layout (the approved design `polter-artifacts/2713/v1/index.html`,
+        // `.resizer-v`: 8 wide with -4 either side, so it is centred on the
+        // boundary). Over the whole page rather than on the side, because a
+        // handle drawn as part of the side would have the
+        // workbench's own background laid across its right half.
+        .overlay(alignment: .leading) {
+            if activity.open, drawnSide > 0 {
+                divider.offset(x: Tile.actWidth + drawnSide - Split.handle / 2)
+            }
+        }
         .background(theme.terminalBackground.color)
+        // **The container's own width, for the squeeze only.** A
+        // `GeometryReader` in the background reports the box this page was
+        // given and draws nothing; it is deliberately *not* wrapped round the
+        // page, which is a reader that would take the whole window's layout
+        // into its own hands (`ControlRoomWorkdirs.Split.drawn` is where the
+        // number is used, and it is a rule a test can read).
+        .background(GeometryReader { place in
+            Color.clear.preference(key: ContainerWidth.self, value: place.size.width)
+        })
+        .onPreferenceChange(ContainerWidth.self) { containerWidth = $0 }
         .onAppear {
             model.refreshWorkdirs()
             readOpenDirectories()
@@ -334,10 +381,112 @@ struct ControlRoomWorkdirsPage: View {
                 searchPanel
             }
         }
-        .frame(width: Tile.leftWidth)
+        .frame(width: drawnSide)
         .frame(maxHeight: .infinity, alignment: .top)
+        // **A zero-width column draws nothing, and clips what it would
+        // have.** At a window too narrow for the column and the workbench
+        // both, `drawnSide` is 0 -- and a `VStack` whose own frame is zero
+        // still draws its children, so the tree would be laid over the
+        // workbench. Clipping is what keeps the zero case at zero.
+        .clipped()
         .overlay(alignment: .trailing) {
             Rectangle().fill(theme.line.color).frame(width: CGFloat(Look.Line.hairline))
+        }
+    }
+
+    /// The column's width as drawn: `asked` squeezed into the room this
+    /// window has (`ControlRoomWorkdirs.Split.drawn`). **Not `asked`**, which
+    /// is what is remembered -- see `Split` for why the two are apart.
+    ///
+    /// ⚠️ **`containerWidth` is the whole page's width, and the activity bar
+    /// is not the column's room.** The bar is a fixed `Tile.actWidth` at the
+    /// leading edge, so what the column may take out of the container is what
+    /// is left after it -- pass the container whole and the squeeze grants
+    /// the column 48pt that are not there, which is exactly the width that
+    /// then comes off `minRight`.
+    private var drawnSide: CGFloat {
+        Split.drawn(wanted: asked, container: max(0, containerWidth - Tile.actWidth))
+    }
+
+    /// **The vertical divider between the column and the workbench** (task
+    /// 2719 S3; the design's `.resizer-v`).
+    ///
+    /// The line is the design's: a hairline, and the whole 8pt around it is
+    /// the grab area, so the thing is drawn `Split.handle` wide with the line
+    /// down its middle. Under the pointer, and while it is being dragged, the
+    /// line takes the accent -- `.resizer-v:hover::after, .resizer-v.dragging::after
+    /// { background: var(--resizer-hover); width: 2px }`, drawn here at a
+    /// hairline's weight, since a 2pt line next to the other hairlines would
+    /// read as a different kind of edge.
+    private var divider: some View {
+        let lit = dividerHovered || dividerDragging
+        return ZStack {
+            // The grab area, and the hit shape the pointer style and the
+            // drag both need: without it the clear box is not hit-tested.
+            Color.clear.contentShape(Rectangle())
+            Rectangle()
+                .fill(lit ? theme.attention.color : theme.line.color)
+                .frame(width: CGFloat(Look.Line.hairline))
+        }
+        .frame(width: Split.handle)
+        .frame(maxHeight: .infinity)
+        // The resize cursor, the same way the split divider does it: the
+        // backported pointer style where it exists (macOS 15+), and a
+        // push/pop either side of the hover on the systems that predate it.
+        // **The pop is what matters**: a push with nothing to match it leaves
+        // the resize cursor on everything under the pointer for the rest of
+        // the run.
+        .backport.pointerStyle(.resizeLeftRight)
+        .onHover { inside in
+            dividerHovered = inside
+            resizeCursor(inside)
+        }
+        // **Every way the pointer can leave the handle, and the view with
+        // it.** `onHover(false)` is not sent when the view goes away under a
+        // pointer that is on it -- a folded column takes the handle with it --
+        // so disappearing pops too. Both go through one setter, and it is
+        // guarded on what was actually pushed, so the balance is a property
+        // of the flag rather than of how many of these ran.
+        .onDisappear { resizeCursor(false) }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.pageSpace))
+                .onChanged { drag in
+                    // **`asked` and not `drawn`**: the width is taken from the
+                    // pointer's own x, so the column follows the handle rather
+                    // than the squeeze it happens to be drawn at. `x` is
+                    // measured from the page's leading edge, so the activity
+                    // bar's 48 is taken off to get the column's own width --
+                    // **the column starts after the bar**, not at the page's
+                    // edge.
+                    dividerDragging = true
+                    asked = Split.asked(drag.location.x - Tile.actWidth)
+                }
+                .onEnded { _ in dividerDragging = false }
+        )
+    }
+
+    /// The name the divider's drag reads its x against: the page's own box.
+    private static let pageSpace = "ControlRoomWorkdirsPage"
+
+    /// Hold the resize cursor on for as long as the pointer is on the handle,
+    /// and let it go exactly once.
+    ///
+    /// ⚠️ **On macOS 15 and up this does nothing**, because
+    /// `.backport.pointerStyle` above is the whole of it there and it does not
+    /// leak -- the two are the same idiom `SplitView.Divider` uses, for the
+    /// same reason. What it is here for are the systems that predate
+    /// `pointerStyle`, where the cursor is a stack this code maintains by
+    /// hand: one push, one pop, and neither twice.
+    private func resizeCursor(_ on: Bool) {
+        if #available(macOS 15, *) { return }
+        if on {
+            guard !cursorPushed else { return }
+            NSCursor.resizeLeftRight.push()
+            cursorPushed = true
+        } else {
+            guard cursorPushed else { return }
+            NSCursor.pop()
+            cursorPushed = false
         }
     }
 
@@ -1413,6 +1562,23 @@ struct ControlRoomWorkdirsPage: View {
     }
 }
 
+/// The width of the box the page was given, reported up from a background
+/// `GeometryReader` so that the column can be squeezed to fit it without the
+/// reader wrapping the page (`ControlRoomWorkdirs.Split.drawn`).
+///
+/// ⚠️ **Deliberately not `GeometryReader { … }` round the page's body.** A
+/// reader is a view that takes the size it is offered and proposes nothing,
+/// so wrapping the page in one is how a page ends up laying itself out by the
+/// whole window's numbers instead of its own. The background form measures the
+/// box the page already has.
+private struct ContainerWidth: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// **Whether the pointer is inside the thing it wraps**, handed to that thing
 /// so it can draw its own hover state -- the flat ground the design puts under
 /// a row (`.tr-row:hover`, `.sec-row:hover`, `.act-btn:hover`,
@@ -1498,7 +1664,9 @@ private struct MarkView: Shape {
 /// them; until then they belong to the one host that draws the page.
 private enum Tile {
     // `files4.css`: `.wdl { width: 296px }`, and `.wdl .tree`'s padding.
-    static let leftWidth: CGFloat = 296
+    // ⚠️ **The column's own width is not here**: it is dragged, so it lives
+    // with the rules that clamp it -- `ControlRoomWorkdirs.Split.width` --
+    // and the page reads it from there like any other rule.
     static let bodyPadX: CGFloat = 8
     static let bodyPadY: CGFloat = 4
     static let rootsPadBottom: CGFloat = 16

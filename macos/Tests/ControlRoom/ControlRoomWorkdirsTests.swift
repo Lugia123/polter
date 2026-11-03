@@ -1371,3 +1371,66 @@ struct ControlRoomWorkdirsNodeTests {
         #expect(rows.map(\.name) == ["zeta.md", "alpha.md", "mid.md"])
     }
 }
+
+/// How wide the left column is, and what a drag may ask for (task 2719 S3).
+///
+/// The two values are tested apart on purpose: `asked` is what the person
+/// dragged to, `drawn` is what a window of a given width can hold. A rule
+/// that kept only one of them would pass a drag test and then reset the
+/// person's width the first time they narrowed the window.
+struct ControlRoomWorkdirsSplitTests {
+    typealias Split = ControlRoomWorkdirs.Split
+
+    // MARK: What a drag may ask for
+
+    @Test func aDragInsideTheRangeIsKeptAsItIs() {
+        #expect(Split.asked(300) == 300)
+    }
+
+    @Test func aDragUnderTheNarrowestIsTheNarrowest() {
+        #expect(Split.asked(100) == Split.minSide)
+    }
+
+    @Test func aDragPastTheWidestIsTheWidest() {
+        #expect(Split.asked(900) == Split.maxSide)
+    }
+
+    /// A container wide enough to hold what was asked for draws exactly it.
+    @Test func aWideWindowDrawsWhatWasAskedFor() {
+        #expect(Split.drawn(wanted: 296, container: 1200) == 296)
+    }
+
+    /// **The workbench keeps its least width**, and the column gives up the
+    /// rest: 500 - 240 = 260.
+    @Test func aNarrowWindowSqueezesTheColumnAndNotTheWorkbench() {
+        #expect(Split.drawn(wanted: 296, container: 500) == 260)
+        #expect(Split.drawn(wanted: 296, container: 500) + Split.minRight == 500)
+    }
+
+    /// A window too narrow for both gives the workbench its least width and
+    /// the column what is left -- **including nothing**.
+    @Test func aWindowTooNarrowForBothDrawsNoColumnRatherThanOverflowing() {
+        #expect(Split.drawn(wanted: 296, container: 200) == 0)
+        #expect(Split.drawn(wanted: 296, container: 240) == 0)
+    }
+
+    /// The squeeze is applied to whatever was asked for, so a column already
+    /// dragged narrow is not made wider by a small window.
+    @Test func aSqueezeNeverWidensAColumnThatWasAskedToBeNarrow() {
+        #expect(Split.drawn(wanted: 180, container: 500) == 180)
+    }
+
+    /// **The width asked for survives the squeeze.** The same value is drawn
+    /// at 260 in a 500-wide window and at its full 296 in a wide one again:
+    /// this is what stops a narrowed window from eating the person's choice.
+    @Test func theWidthAskedForComesBackWhenTheWindowIsWideAgain() {
+        let asked = Split.asked(296)
+        #expect(Split.drawn(wanted: asked, container: 500) == 260)
+        #expect(Split.drawn(wanted: asked, container: 1200) == 296)
+    }
+
+    /// Nothing is drawn past the design's widest, however much room there is.
+    @Test func aVeryWideWindowStillStopsAtTheWidest() {
+        #expect(Split.drawn(wanted: 600, container: 5000) == Split.maxSide)
+    }
+}
