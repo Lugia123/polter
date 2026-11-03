@@ -326,10 +326,14 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
     var closed: std.ArrayListUnmanaged(Row) = .empty;
     var closed_count: usize = 0;
 
+    // The newest first -- the task just made is the one being looked for -- and
+    // **the number, not the last time anything happened to it**: a task whose
+    // progress was reported a minute ago must not jump above one made after it.
+    // The id is the order it was made in, so it is the order drawn.
     const sorted = try arena.dupe(Task, in.tasks);
     std.mem.sort(Task, sorted, {}, struct {
         fn lt(_: void, a: Task, b: Task) bool {
-            return a.id < b.id;
+            return a.id > b.id;
         }
     }.lt);
 
@@ -365,8 +369,9 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
         if (in.open_task == t.id) row.detail = try detail(arena, in, t);
         try (if (shut) &closed else &open).append(arena, row);
     }
-    // The newest closed first: what was just finished is what is looked for.
-    std.mem.reverse(Row, closed.items);
+    // The closed ones come off the same walk as the open ones, so they are
+    // already newest first -- the reverse that used to be here is what put
+    // them back the other way once the walk's order changed.
 
     const n_closed = try num(arena, closed_count);
     const filtering = q.len > 0;
@@ -787,26 +792,82 @@ test "2060: a goal of several lines is handed over a line to an item, none of th
     try testing.expectEqual(@as(usize, 0), none.root.object.get("goal_lines").?.array.items.len);
 }
 
-test "2015: the open tasks in number order, each with its state, owner and how long it has been quiet" {
+test "2015: the open tasks newest first, each with its state, owner and how long it has been quiet" {
     var got = try rendered(baseIn());
     defer got.deinit();
     const open = got.root.object.get("open").?.array.items;
     try testing.expectEqual(@as(usize, 3), open.len);
-    try testing.expectEqual(@as(i64, 214), open[0].object.get("id").?.integer);
-    try testing.expectEqualStrings("done", str(open[0], "glyph"));
-    try testing.expectEqualStrings("Done, to close", str(open[0], "state"));
-    try testing.expectEqualStrings("17 min", str(open[0], "idle"));
+    // Newest first: #218 was made last, so it is the row on top -- and #214,
+    // made first, is at the foot even though it is the one most recently
+    // moved (17 min against #218's never).
+    try testing.expectEqual(@as(i64, 218), open[0].object.get("id").?.integer);
+    // Nobody has it, and the record never mentions it.
+    try testing.expectEqualStrings("Nobody yet", str(open[0], "owner"));
+    try testing.expectEqualStrings("—", str(open[0], "idle"));
+    try testing.expectEqual(@as(i64, 215), open[1].object.get("id").?.integer);
     try testing.expectEqualStrings("working", str(open[1], "glyph"));
     try testing.expectEqualStrings("2 min", str(open[1], "idle"));
-    // Nobody has it, and the record never mentions it.
-    try testing.expectEqualStrings("Nobody yet", str(open[2], "owner"));
-    try testing.expectEqualStrings("—", str(open[2], "idle"));
+    try testing.expectEqual(@as(i64, 214), open[2].object.get("id").?.integer);
+    try testing.expectEqualStrings("done", str(open[2], "glyph"));
+    try testing.expectEqualStrings("Done, to close", str(open[2], "state"));
+    try testing.expectEqualStrings("17 min", str(open[2], "idle"));
     // Closed and cancelled are counted, not listed, until asked for.
     try testing.expectEqual(@as(i64, 3), got.root.object.get("closed_count").?.integer);
     try testing.expectEqualStrings("3 closed or cancelled tasks hidden", str(got.root, "closed_title"));
     try testing.expectEqual(@as(usize, 0), got.root.object.get("closed").?.array.items.len);
     try testing.expectEqualStrings("Bulk editing for the task list.", str(got.root, "goal"));
     try testing.expectEqualStrings("Open its story", str(got.root.object.get("hints").?.array.items[1], "text"));
+}
+
+test "2777: a jumbled input comes out newest first, and neither partition moves a task on its own" {
+    // The fixture is already out of number order (215, 214, 218...) so the
+    // sort is what puts it right; these two are worse, and one of them is
+    // the case the old ascending sort hid -- a low number whose record was
+    // touched most recently.
+    const jumbled = [_]Task{
+        .{ .id = 30, .title = "third made", .state = .open, .progress = .working, .owner = "a" },
+        .{ .id = 10, .title = "first made", .state = .open, .progress = .done, .owner = "b" },
+        .{ .id = 20, .title = "second made", .state = .closed, .progress = .done, .owner = "a" },
+        .{ .id = 5, .title = "older still", .state = .cancelled, .progress = .queued, .owner = "" },
+        .{ .id = 28, .title = "made after 20", .state = .closed, .progress = .done, .owner = "b" },
+    };
+    // #5 is the one moved last; by id it still sits at the bottom, which is
+    // the whole point of ordering by number rather than by the record.
+    const events = [_]Event{
+        .{ .at_ms = noon - 9 * minute, .op = .created, .task = 30, .progress = .queued, .owner = "" },
+        .{ .at_ms = noon - 1 * minute, .op = .progressed, .task = 5, .progress = .working, .owner = "" },
+    };
+    var in = baseIn();
+    in.tasks = &jumbled;
+    in.events = &events;
+    in.closed = true;
+    var got = try rendered(in);
+    defer got.deinit();
+
+    const open = got.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 2), open.len);
+    try testing.expectEqual(@as(i64, 30), open[0].object.get("id").?.integer);
+    try testing.expectEqual(@as(i64, 10), open[1].object.get("id").?.integer);
+
+    const closed = got.root.object.get("closed").?.array.items;
+    try testing.expectEqual(@as(usize, 3), closed.len);
+    try testing.expectEqual(@as(i64, 28), closed[0].object.get("id").?.integer);
+    try testing.expectEqual(@as(i64, 20), closed[1].object.get("id").?.integer);
+    try testing.expectEqual(@as(i64, 5), closed[2].object.get("id").?.integer);
+
+    // The filter keeps the same order rather than the order the rows were
+    // walked in: "made" matches a row in each partition.
+    in.filter = "made";
+    var filtered = try rendered(in);
+    defer filtered.deinit();
+    const f_open = filtered.root.object.get("open").?.array.items;
+    try testing.expectEqual(@as(usize, 2), f_open.len);
+    try testing.expectEqual(@as(i64, 30), f_open[0].object.get("id").?.integer);
+    try testing.expectEqual(@as(i64, 10), f_open[1].object.get("id").?.integer);
+    const f_closed = filtered.root.object.get("closed").?.array.items;
+    try testing.expectEqual(@as(usize, 2), f_closed.len);
+    try testing.expectEqual(@as(i64, 28), f_closed[0].object.get("id").?.integer);
+    try testing.expectEqual(@as(i64, 20), f_closed[1].object.get("id").?.integer);
 }
 
 test "2015: the open task's story says who did what, marks the long quiet, and ends on the latest" {
