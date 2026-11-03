@@ -5791,6 +5791,14 @@ pub fn ensurePlugins(self: *App) void {
 const Installed = struct {
     manifest: poltergeistpkg.Plugin.Manifest,
     settings: poltergeistpkg.Plugin.Settings,
+    /// The directory this plugin was found in, absolute, as this scan built
+    /// it (task 2789). **The same `path` the load was done from**, carried
+    /// through so that the host that loads a preview page is handed the root
+    /// the manager chose rather than working one out again: the page inside
+    /// a plugin is `preview.page` and it is only meaningful against this
+    /// directory, and a second derivation of "where does this plugin live"
+    /// is a second answer to a question that has one.
+    dir: []const u8,
     /// Its directory, when it is in the bundle's plugin directory and that
     /// directory's `SHIPPED` does not name it (task 1683): left over from
     /// another release. Null for a shipped plugin, for one in the user's
@@ -5929,6 +5937,7 @@ fn scanPlugins(
                 .manifest = manifest,
                 .settings = settings,
                 .stray = stray,
+                .dir = path,
             }) catch continue;
         }
     }
@@ -14597,6 +14606,10 @@ fn poltergeistPreviewCandidates(
     for (installed, out) |*item, *c| c.* = .{
         .manifest = &item.manifest,
         .enabled = item.settings.enabled,
+        // Where the scan found it, carried through to the answer (task
+        // 2789): the host loads `preview.page` against this root, and this
+        // is the only place that root is known.
+        .dir = item.dir,
     };
     return out;
 }

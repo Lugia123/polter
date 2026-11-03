@@ -577,6 +577,30 @@ pub const Manifest = struct {
 pub const Candidate = struct {
     manifest: *const Manifest,
     enabled: bool,
+
+    /// The directory this plugin was found in, absolute, as the manager that
+    /// scanned it built the path (task 2789) -- **handed in, never derived**.
+    /// A `preview.page` is relative and is only meaningful against the
+    /// directory it was read from, so the host that loads the page is given
+    /// the root by the one that found the plugin rather than working one out
+    /// from the key: a second derivation of "where does this plugin live" is
+    /// a second answer, and the one that guesses is the one that can be
+    /// wrong.
+    ///
+    /// **`""` is a third state and not an empty directory.** A plugin found
+    /// on disk always has a directory (`<base>/<name>`, never empty); `""`
+    /// is the caller saying it does not know, which is what a fixture that
+    /// hands `previewFor` a manifest and nothing else says on purpose.
+    ///
+    /// ⚠️ **No default, and that is the point** (`AGENTS.md`: when the
+    /// failure takes the form of a silence somewhere, make the silence fail
+    /// to compile). A producer that forgets to carry the root over would,
+    /// with a default, hand `previewAnswer` an empty string and the host
+    /// would be told `plugin_dir: null` -- a plugin that is perfectly well
+    /// installed reported as one whose directory nobody knows, which reads
+    /// exactly like the honest "not said". Leaving the value out is a
+    /// compile error naming the field instead.
+    dir: []const u8,
 };
 
 /// What the caller is asking to preview. Not a path on disk: nothing here
@@ -692,6 +716,29 @@ pub fn previewFor(candidates: []const Candidate, target: Target) Choice {
     }
 
     return if (best) |m| .{ .match = m } else .none;
+}
+
+/// Where the plugin behind a `Choice.match` was found, or `null` when the
+/// batch does not say (task 2789).
+///
+/// **The lookup is by identity and not by key**, because the manifest a
+/// `match` carries is *the caller's own candidate* -- the choice borrows one
+/// of the `Candidate` values it was handed rather than copying it out -- so
+/// the candidate that produced this choice is the one whose `manifest` is
+/// this pointer. Matching on `key` instead would answer for a same-key
+/// candidate the rule never considered, which is how a directory gets
+/// attached to a plugin that did not win.
+///
+/// `null` and not `""`: `Candidate.dir`'s empty string means "the caller did
+/// not say", and a caller reading this has to be able to tell that from a
+/// directory, the same way the answer's `plugin_dir` is null and not a path
+/// nobody should join against.
+pub fn dirOf(candidates: []const Candidate, m: *const Manifest) ?[]const u8 {
+    for (candidates) |c| {
+        if (c.manifest != m) continue;
+        return if (c.dir.len == 0) null else c.dir;
+    }
+    return null;
 }
 
 /// Whether `a` comes before `b`: higher priority first, and the lower key
@@ -6235,17 +6282,44 @@ fn refusal(candidates: []const Candidate, target: Target) Choice {
     return previewFor(candidates, target);
 }
 
+test "2789: the root is found by identity, not by key" {
+    var a = previewManifest("same", 1, &.{".md"}, &.{});
+    var b = previewManifest("same", 1, &.{".md"}, &.{});
+
+    const candidates = [_]Candidate{
+        .{ .manifest = &a, .enabled = true, .dir = "/first" },
+        .{ .manifest = &b, .enabled = true, .dir = "/second" },
+    };
+
+    // `Choice.match` borrows one of the caller's own candidates, so the
+    // pointer is what says which directory belongs to the manifest that won.
+    // A lookup by key would answer `/first` for `b`'s choice as well, and the
+    // host would load `b`'s page out of `a`'s directory.
+    try testing.expectEqualStrings("/first", dirOf(&candidates, &a).?);
+    try testing.expectEqualStrings("/second", dirOf(&candidates, &b).?);
+
+    // A manifest the batch does not hold has no directory -- null, and never
+    // a path inferred from its key.
+    var stranger = previewManifest("same", 1, &.{".md"}, &.{});
+    try testing.expectEqual(@as(?[]const u8, null), dirOf(&candidates, &stranger));
+
+    // A candidate the caller handed in without saying where it lives is
+    // "not said" and not "the empty directory".
+    const silent = [_]Candidate{.{ .manifest = &a, .enabled = true, .dir = "" }};
+    try testing.expectEqual(@as(?[]const u8, null), dirOf(&silent, &a));
+}
+
 test "2743 S5: the answer does not depend on the order the plugins were listed" {
     var low = previewManifest("aaa", 10, &.{".txt"}, &.{});
     var high = previewManifest("zzz", 90, &.{".txt"}, &.{});
 
     const forwards = [_]Candidate{
-        .{ .manifest = &low, .enabled = true },
-        .{ .manifest = &high, .enabled = true },
+        .{ .manifest = &low, .enabled = true, .dir = "" },
+        .{ .manifest = &high, .enabled = true, .dir = "" },
     };
     const backwards = [_]Candidate{
-        .{ .manifest = &high, .enabled = true },
-        .{ .manifest = &low, .enabled = true },
+        .{ .manifest = &high, .enabled = true, .dir = "" },
+        .{ .manifest = &low, .enabled = true, .dir = "" },
     };
 
     const target: Target = .{ .path = "notes.txt" };
@@ -6258,12 +6332,12 @@ test "2743 S5: a tie is broken by the lower key, whatever order they came in" {
     var z = previewManifest("zzz", 50, &.{".md"}, &.{});
 
     const forwards = [_]Candidate{
-        .{ .manifest = &a, .enabled = true },
-        .{ .manifest = &z, .enabled = true },
+        .{ .manifest = &a, .enabled = true, .dir = "" },
+        .{ .manifest = &z, .enabled = true, .dir = "" },
     };
     const backwards = [_]Candidate{
-        .{ .manifest = &z, .enabled = true },
-        .{ .manifest = &a, .enabled = true },
+        .{ .manifest = &z, .enabled = true, .dir = "" },
+        .{ .manifest = &a, .enabled = true, .dir = "" },
     };
 
     const target: Target = .{ .path = "README.md" };
@@ -6276,13 +6350,13 @@ test "2743 S5: a switched-off plugin is not a candidate, however well it matches
     var on = previewManifest("on", 1, &.{".txt"}, &.{});
 
     const candidates = [_]Candidate{
-        .{ .manifest = &off, .enabled = false },
-        .{ .manifest = &on, .enabled = true },
+        .{ .manifest = &off, .enabled = false, .dir = "" },
+        .{ .manifest = &on, .enabled = true, .dir = "" },
     };
     try testing.expectEqualStrings("on", pickKey(&candidates, .{ .path = "a.txt" }));
 
     // And when nothing is on, the answer is `none` -- not the disabled one.
-    const all_off = [_]Candidate{.{ .manifest = &off, .enabled = false }};
+    const all_off = [_]Candidate{.{ .manifest = &off, .enabled = false, .dir = "" }};
     try testing.expectEqual(Choice.none, refusal(&all_off, .{ .path = "a.txt" }));
 }
 
@@ -6291,14 +6365,14 @@ test "2743 S5: a plugin with no preview is never chosen for a file" {
     var page = previewManifest("text", 50, &.{".txt"}, &.{});
 
     const candidates = [_]Candidate{
-        .{ .manifest = &resident, .enabled = true },
-        .{ .manifest = &page, .enabled = true },
+        .{ .manifest = &resident, .enabled = true, .dir = "" },
+        .{ .manifest = &page, .enabled = true, .dir = "" },
     };
     try testing.expectEqualStrings("text", pickKey(&candidates, .{ .path = "a.txt" }));
 
     // A plugin that is on and has no preview leaves the answer empty, and
     // that is not the same as the file being unshowable by anybody.
-    const only_resident = [_]Candidate{.{ .manifest = &resident, .enabled = true }};
+    const only_resident = [_]Candidate{.{ .manifest = &resident, .enabled = true, .dir = "" }};
     try testing.expectEqual(Choice.none, refusal(&only_resident, .{ .path = "a.txt" }));
 }
 
@@ -6307,8 +6381,8 @@ test "2743 S5: the extension is compared without case, both ways round" {
     var lower = previewManifest("lower", 50, &.{".txt"}, &.{});
 
     const candidates = [_]Candidate{
-        .{ .manifest = &upper, .enabled = true },
-        .{ .manifest = &lower, .enabled = true },
+        .{ .manifest = &upper, .enabled = true, .dir = "" },
+        .{ .manifest = &lower, .enabled = true, .dir = "" },
     };
     // The declaration was upper and the file lower.
     try testing.expectEqualStrings("upper", pickKey(&candidates, .{ .path = "logo.png" }));
@@ -6321,8 +6395,8 @@ test "2743 S5: a path is its name first, so a dotted directory is not an extensi
     var txt = previewManifest("txt", 50, &.{".txt"}, &.{});
 
     const candidates = [_]Candidate{
-        .{ .manifest = &dot, .enabled = true },
-        .{ .manifest = &txt, .enabled = true },
+        .{ .manifest = &dot, .enabled = true, .dir = "" },
+        .{ .manifest = &txt, .enabled = true, .dir = "" },
     };
 
     // `a.d/b` has no extension: the last dot is in the directory.
@@ -6340,8 +6414,8 @@ test "2743 S5: the shapes with no extension get no match" {
     var git = previewManifest("git", 50, &.{".gitignore"}, &.{});
 
     const candidates = [_]Candidate{
-        .{ .manifest = &txt, .enabled = true },
-        .{ .manifest = &git, .enabled = true },
+        .{ .manifest = &txt, .enabled = true, .dir = "" },
+        .{ .manifest = &git, .enabled = true, .dir = "" },
     };
 
     // No dot, a dotfile and a trailing dot all have no extension. A
@@ -6357,8 +6431,8 @@ test "2743 S5: MIME is an alternative to the extension, not a second requirement
     var by_mime = previewManifest("image", 50, &.{".png"}, &.{"image/*"});
     var by_ext = previewManifest("text", 50, &.{".txt"}, &.{});
     var both = [_]Candidate{
-        .{ .manifest = &by_mime, .enabled = true },
-        .{ .manifest = &by_ext, .enabled = true },
+        .{ .manifest = &by_mime, .enabled = true, .dir = "" },
+        .{ .manifest = &by_ext, .enabled = true, .dir = "" },
     };
 
     // The extension matches and no MIME was sniffed at all.
@@ -6377,7 +6451,7 @@ test "2743 S5: MIME is an alternative to the extension, not a second requirement
 
 test "2743 S5: a MIME parameter is not part of the type" {
     var text = previewManifest("text", 50, &.{".txt"}, &.{"text/plain"});
-    const candidates = [_]Candidate{.{ .manifest = &text, .enabled = true }};
+    const candidates = [_]Candidate{.{ .manifest = &text, .enabled = true, .dir = "" }};
 
     // A header with a charset is still `text/plain`, and a declaration with
     // one matches a bare sniff.
@@ -6397,8 +6471,8 @@ test "2743 S5: a key asked for by name is answered on its own, or refused" {
     var resident = residentManifest("cli");
 
     const candidates = [_]Candidate{
-        .{ .manifest = &chosen, .enabled = true },
-        .{ .manifest = &loud, .enabled = true },
+        .{ .manifest = &chosen, .enabled = true, .dir = "" },
+        .{ .manifest = &loud, .enabled = true, .dir = "" },
     };
 
     // 1. Chosen, even though a higher-priority plugin would otherwise win.
@@ -6413,15 +6487,15 @@ test "2743 S5: a key asked for by name is answered on its own, or refused" {
     );
     // 3. Installed and switched off: not a quiet fallback to `loud`.
     const off = [_]Candidate{
-        .{ .manifest = &chosen, .enabled = false },
-        .{ .manifest = &loud, .enabled = true },
+        .{ .manifest = &chosen, .enabled = false, .dir = "" },
+        .{ .manifest = &loud, .enabled = true, .dir = "" },
     };
     try testing.expectEqualStrings(
         "mine",
         refusal(&off, .{ .path = "a.txt", .preferred = "mine" }).specified_disabled,
     );
     // 4a. Installed, on, and not a preview plugin at all.
-    const only_cli = [_]Candidate{.{ .manifest = &resident, .enabled = true }};
+    const only_cli = [_]Candidate{.{ .manifest = &resident, .enabled = true, .dir = "" }};
     try testing.expectEqualStrings(
         "cli",
         refusal(&only_cli, .{ .path = "a.txt", .preferred = "cli" }).specified_unsupported,
@@ -6435,7 +6509,7 @@ test "2743 S5: a key asked for by name is answered on its own, or refused" {
 
 test "2743 S5: an empty key is nobody having chosen, and a blank file is not refused" {
     var chosen = previewManifest("mine", 50, &.{".txt"}, &.{});
-    const candidates = [_]Candidate{.{ .manifest = &chosen, .enabled = true }};
+    const candidates = [_]Candidate{.{ .manifest = &chosen, .enabled = true, .dir = "" }};
 
     // `""` is what an optional argument or a form field carries when nothing
     // was picked, so it is read as no preference rather than as a key nobody

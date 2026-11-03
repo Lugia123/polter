@@ -9343,10 +9343,27 @@ fn isObject(v: ?std.json.Value) bool {
 /// add one to. `reads` is what the manifest declared, which is metadata and
 /// not a permission: the ticket's scope is the caller's and is what
 /// `Access.resolve` enforces.
+///
+/// **A `matched` answer also says which page shows the file and where the
+/// plugin lives** (task 2789): `render` is the manifest's own tag, `page` is
+/// the relative path it declared -- refused at load by `isInsidePlugin` when
+/// it was anything but a plain path inside the plugin, so nothing is
+/// re-checked here and nothing is joined here -- and `plugin_dir` is the
+/// directory the manager found the plugin in, looked up in `candidates` by
+/// the identity of the manifest that won. **None of the three comes from the
+/// request**: a caller cannot name a page or a directory, and the only way
+/// `plugin_dir` is a path is that the manager that scanned the plugins put
+/// it in the batch this request was answered from.
+///
+/// ⚠️ **A `browser` render is sent as `browser`, with `page` null** -- the
+/// manifest declared no page because the file being previewed is served
+/// rather than the plugin's own html -- so that a host reading this cannot
+/// take every match for a page and then fail to load one.
 fn previewAnswer(
     alloc: std.mem.Allocator,
     opened: []const u8,
     choice: Plugin.Choice,
+    candidates: []const Plugin.Candidate,
 ) std.mem.Allocator.Error!wire.Response {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, alloc, opened, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -9390,10 +9407,29 @@ fn previewAnswer(
     if (!first) w.writeAll(",") catch return error.OutOfMemory;
     w.writeAll("\"plugin\":") catch return error.OutOfMemory;
     switch (choice) {
-        .match => |m| w.print("{{\"status\":\"matched\",\"key\":{f},\"reads\":\"{s}\"}}", .{
-            std.json.fmt(m.key, .{}),
-            @tagName(m.preview.?.reads),
-        }) catch return error.OutOfMemory,
+        // **Which page shows this file, and where it lives** (task 2789):
+        // `render` is the manifest's own tag, `page` is the relative path the
+        // manifest declared -- already refused at load when it was anything
+        // but a plain path inside the plugin -- and `plugin_dir` is the
+        // directory the manager found the plugin in. The three are what a
+        // host needs to load a page and nothing else: it is not told to go
+        // looking, and no part of this is taken from the caller's request.
+        //
+        // ⚠️ **A `browser` render is not called a page.** `page` is null for
+        // it because the manifest has none -- the file being previewed is
+        // served, not the plugin's own html -- and sending the tag it really
+        // declared is what keeps a host from loading a page that does not
+        // exist.
+        .match => |m| {
+            const preview = m.preview.?;
+            w.print("{{\"status\":\"matched\",\"key\":{f},\"reads\":\"{s}\",\"render\":\"{s}\",\"page\":{f},\"plugin_dir\":{f}}}", .{
+                std.json.fmt(m.key, .{}),
+                @tagName(preview.reads),
+                @tagName(preview.render),
+                std.json.fmt(preview.page, .{}),
+                std.json.fmt(Plugin.dirOf(candidates, m), .{}),
+            }) catch return error.OutOfMemory;
+        },
         .none => w.writeAll("{\"status\":\"none\",\"key\":null}") catch return error.OutOfMemory,
         .specified_not_found => |key| w.print("{{\"status\":\"specified_not_found\",\"key\":{f}}}", .{std.json.fmt(key, .{})}) catch return error.OutOfMemory,
         .specified_disabled => |key| w.print("{{\"status\":\"specified_disabled\",\"key\":{f}}}", .{std.json.fmt(key, .{})}) catch return error.OutOfMemory,
@@ -9443,7 +9479,7 @@ fn filesArm(
             });
 
             const opened = try host.filesTickets().open(alloc, wd, p.path, p.scope);
-            break :blk try previewAnswer(alloc, opened, choice);
+            break :blk try previewAnswer(alloc, opened, choice, candidates);
         },
         .files_resolve => |p| .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
         .files_list => |p| .{ .json = try host.filesTickets().list(alloc, p.token, p.rel) },
@@ -13654,7 +13690,7 @@ const fake_roots = [_][]const u8{"/tmp/polter-fake-config/polter"};
 const FilesWorkdir = struct { id: []const u8, dir: files.Tickets.Workdir };
 /// One installed plugin, as a fixture: the fake holds the manifest itself so
 /// that `previewCandidates` can hand out a pointer to it (task 2758).
-const FakePreview = struct { manifest: Plugin.Manifest, enabled: bool };
+const FakePreview = struct { manifest: Plugin.Manifest, enabled: bool, dir: []const u8 };
 
 const FakeHost = struct {
     /// What `filesTickets` hands out (task 2573); a test that opens one
@@ -15188,7 +15224,7 @@ const FakeHost = struct {
     ) anyerror![]const Plugin.Candidate {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         const out = try alloc.alloc(Plugin.Candidate, self.previews.len);
-        for (self.previews, out) |*p, *c| c.* = .{ .manifest = &p.manifest, .enabled = p.enabled };
+        for (self.previews, out) |*p, *c| c.* = .{ .manifest = &p.manifest, .enabled = p.enabled, .dir = p.dir };
         return out;
     }
 
@@ -21298,6 +21334,25 @@ fn rigPreview(
             .exec = null,
         },
         .enabled = enabled,
+        // Which plugin wins does not turn on where one lives, so these
+        // fixtures say "not said" -- the empty string `Candidate.dir`
+        // spells it with -- rather than inventing a path. Where the root is
+        // what is being measured, `rigPagePreview` says one.
+        .dir = "",
+    };
+}
+
+/// A page plugin as `plugin_list` would find it: `render` and `page` as the
+/// manifest declared them, and the directory it was found in (task 2789).
+fn rigPagePreview(key: []const u8, render: Plugin.Preview.Render, page: ?[]const u8, dir: []const u8) FakePreview {
+    return .{
+        .manifest = .{
+            .key = key,
+            .preview = .{ .extensions = &.{".md"}, .reads = .file, .render = render, .page = page },
+            .exec = null,
+        },
+        .enabled = true,
+        .dir = dir,
     };
 }
 
@@ -21352,6 +21407,64 @@ test "2758 S6: files_open names the preview plugin that won, and says none when 
     try r.put("w/a.zip", "z");
     const unclaimed = try r.open("a.zip", "file");
     try testing.expectEqualStrings("none", unclaimed.object.get("plugin").?.object.get("status").?.string);
+}
+
+test "2789: a matched plugin carries the page a host loads, and the directory it came from" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/a.md", "a\n");
+
+    // A page plugin that is installed, switched on, and declares both.
+    var views = [_]FakePreview{
+        rigPagePreview("text", .page, "view/index.html", "/plugins/text"),
+    };
+    r.fake.previews = &views;
+
+    const got = try r.open("a.md", "file");
+    const plugin = got.object.get("plugin").?.object;
+    try testing.expectEqualStrings("matched", plugin.get("status").?.string);
+    try testing.expectEqualStrings("text", plugin.get("key").?.string);
+    // The two fields 2779 could not load a page without: the relative page
+    // the manifest declared, and the absolute root the manager found the
+    // plugin in. **Relative and root separately**, and not one joined path:
+    // joining is the host's, and doing it here would be a second
+    // implementation of "what is inside a plugin's own directory".
+    try testing.expectEqualStrings("page", plugin.get("render").?.string);
+    try testing.expectEqualStrings("view/index.html", plugin.get("page").?.string);
+    try testing.expectEqualStrings("/plugins/text", plugin.get("plugin_dir").?.string);
+
+    // The same answer through the host's own door: one `previewAnswer`, so a
+    // door that could disagree with `dispatch` about the plugin's directory
+    // would be a second rule.
+    const door = try r.askHost(
+        \\{"method":"files_open","params":{"workdir_id":"abcd","path":"a.md","scope":"file"}}
+    );
+    const d = door.object.get("plugin").?.object;
+    try testing.expectEqualStrings("view/index.html", d.get("page").?.string);
+    try testing.expectEqualStrings("/plugins/text", d.get("plugin_dir").?.string);
+
+    // **A `browser` render is not called a page.** The manifest declared no
+    // page -- the file being previewed is served, not the plugin's own html
+    // -- so `page` is null and the tag says so, rather than every match
+    // being reported as a page a host would then fail to load.
+    views[0] = rigPagePreview("browser", .browser, null, "/plugins/browser");
+    const shown = try r.open("a.md", "file");
+    const b = shown.object.get("plugin").?.object;
+    try testing.expectEqualStrings("browser", b.get("render").?.string);
+    try testing.expect(isJsonNull(b.get("page").?));
+    try testing.expectEqualStrings("/plugins/browser", b.get("plugin_dir").?.string);
+
+    // **A caller that did not say where the plugin lives gets null, never a
+    // path worked out from the key.** The batch is the only source of a
+    // root, and guessing one is how a host loads somebody else's page.
+    var quiet = [_]FakePreview{rigPagePreview("text", .page, "view/index.html", "")};
+    r.fake.previews = &quiet;
+    const nowhere = try r.open("a.md", "file");
+    try testing.expect(isJsonNull(nowhere.object.get("plugin").?.object.get("plugin_dir").?));
+    // The page itself is still the manifest's: what is unknown is where the
+    // plugin is, not what it declares.
+    try testing.expectEqualStrings("view/index.html", nowhere.object.get("plugin").?.object.get("page").?.string);
 }
 
 test "2758 S6: a plugin asked for by name is answered on its own, and is never quietly replaced" {
