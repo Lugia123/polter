@@ -17187,6 +17187,252 @@ fn chatRead(
     return .{ .lines = out, .more = batch.more };
 }
 
+/// A chat tab's **read**: one JSON request in, JSON out (task 2778, slice 3).
+///
+/// **The method is the socket's, and nothing here is a second protocol.**
+/// `req` is the envelope `wire.parseRequestLeaky` already reads off the
+/// socket -- `{"method":"group_read","params":{…}}` -- and the answer
+/// carries the same field names the socket carries, so a tab and an agent
+/// cannot disagree about what a message is. This door exists only to give
+/// that one request a **caller**.
+///
+/// **Only `group_read`, named here and not with a catch-all.** This is a
+/// chat tab's door; a `switch` whose `else` dispatched everything would make
+/// it a second way for the host to call every tool an agent has, with the
+/// person's authority attached. Anything else is refused by name.
+///
+/// **Who is asking is the person at the keyboard, not a terminal.** This is
+/// reached only from the C ABI, and an agent has none -- reaching it at all
+/// is being the host, which is the rule `ghostty_app_control_act` states.
+/// So the reader is `Chat.user_id`, always, and never the surface: a
+/// control-room chat pane sits on whatever terminal the group's card was
+/// drawn on, most often **the supervisor's own**, and reading as that would
+/// file the person's own words as the supervisor's. `Chat.user_id` is in
+/// every group (`Chat.create`) and reads every channel (`rpc.scopeFor`).
+/// There is no field in `req` that can name a caller, so a tab cannot read
+/// as somebody else -- the same rule `ControlAct` writes as "who is asking
+/// is not in the request".
+///
+/// **A window is not a member**, so this does *not* move the person's
+/// cursor: it reads with `readAfter` from `cursorFor`, which is what
+/// `Chat.readAfter`'s note asks of a control-room pane. The reply carries
+/// `cursor` (what was read), `since` (what was passed in), `next` (what to
+/// pass next time) and `more`.
+pub fn chatReadAnswer(
+    self: *App,
+    arena: Allocator,
+    req: []const u8,
+) Allocator.Error![]const u8 {
+    const reader = poltergeistpkg.Chat.user_id;
+
+    const parsed = poltergeistpkg.wire.parseRequestLeaky(arena, req) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "{\"error\":\"BadRequest\"}",
+    };
+    const p = switch (parsed) {
+        .group_read => |p| p,
+        // Named, not a catch-all: see the note above. `method` back is what
+        // a host reads to know it asked the wrong door rather than that the
+        // group was empty.
+        else => return "{\"error\":\"NotARead\"}",
+    };
+
+    if (!self.chat.exists(p.group)) return "{\"error\":\"NoSuchGroup\"}";
+
+    const scope = poltergeistHost(self).scopeFor(arena, &self.poltergeist, reader, p.group);
+
+    const cursor = self.chat.cursorFor(p.group, reader) catch |err| switch (err) {
+        error.NotAMember => return "{\"error\":\"NotAMember\"}",
+        else => return "{\"error\":\"NoSuchGroup\"}",
+    };
+    const after = p.since orelse cursor;
+
+    const pass = self.chat.readAfter(arena, p.group, reader, after, .{
+        .bytes = poltergeistpkg.rpc.read_budget_bytes,
+        .per_line = poltergeistpkg.rpc.read_line_overhead_bytes,
+    }, scope) catch |err| switch (err) {
+        error.NotAMember => return "{\"error\":\"NotAMember\"}",
+        else => return "{\"error\":\"NoSuchGroup\"}",
+    };
+
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const w = &out.writer;
+    w.print("{{\"ok\":true,\"group\":{f},\"cursor\":{d},\"since\":{d},\"next\":{d},\"more\":{},\"messages\":[", .{
+        std.json.fmt(p.group, .{}),
+        cursor,
+        after,
+        pass.passed,
+        pass.more,
+    }) catch return error.OutOfMemory;
+
+    for (pass.messages, 0..) |m, i| {
+        if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+        // **`from_self` is worked out here, from the reader this door
+        // resolved the caller to.** It is never read off the request: a tab
+        // that could send it would be a tab that could draw somebody else's
+        // words as its own. Same rule as the reader above.
+        w.print("{{\"seq\":{d},\"log_seq\":{d},\"from\":\"0x{x:0>16}\",\"from_self\":{},\"author\":{f},\"at_ms\":{d},\"summary\":{},\"channel\":{d},\"text\":{f},\"mentions\":[", .{
+            m.seq,
+            m.log_seq,
+            m.from,
+            m.from == reader,
+            std.json.fmt(try self.chatMemberTitle(arena, m.from), .{}),
+            m.at_ms,
+            m.summary,
+            m.channel,
+            std.json.fmt(m.text, .{}),
+        }) catch return error.OutOfMemory;
+        for (m.mentions, 0..) |n, j| {
+            if (j > 0) w.writeAll(",") catch return error.OutOfMemory;
+            w.print("{{\"id\":\"0x{x:0>16}\",\"title\":{f}}}", .{ n.id, std.json.fmt(n.title, .{}) }) catch return error.OutOfMemory;
+        }
+        w.writeAll("],\"role\":") catch return error.OutOfMemory;
+        w.print("{f}}}", .{std.json.fmt(m.role, .{})}) catch return error.OutOfMemory;
+    }
+    w.writeAll("]}") catch return error.OutOfMemory;
+
+    return out.written();
+}
+
+/// A chat tab's **post**: one JSON request in, the socket's own answer out
+/// (task 2778, slice 3).
+///
+/// **Sent once, and that is why the door is shaped the way it is.** A post
+/// writes to the group and types into terminals; a caller that asked "how
+/// long is the answer" before asking for it would post twice, so there is no
+/// size probe here at all -- the exported call carries this out once and
+/// hands back an answer the caller owns. The read next door can be asked
+/// twice safely because a read changes nothing.
+///
+/// **Only `group_post`, named and not with a catch-all**, for
+/// `chatReadAnswer`'s reason: this is a chat tab's door, not a second way to
+/// call every tool with the person's authority on it.
+///
+/// **The author is the person at the keyboard**, always
+/// (`Chat.user_id`), for the reason the read's note gives: the pane stands
+/// on whatever terminal the group's card was drawn on, most often the
+/// supervisor's, and posting as that would put the person's words in the
+/// group under the supervisor's name. The request carries no author field.
+///
+/// Every rule the tool's own post keeps still holds -- the channel a
+/// `params.task` picks, a name that is not a member refusing the whole post,
+/// per-name delivery -- because the request goes through `rpc.dispatch`,
+/// the same door the socket uses.
+///
+/// **What came back is one of three states, not a yes or a no.** Two states
+/// were the whole of the defect this replaces: the answer was a `bool`, so
+/// everything that was not a clean success was reported as "nothing was
+/// posted" -- including a failure *after* the post had gone, which a caller
+/// read as "send it again" and sent it twice. So the outcome is
+/// `ChatSend.Result`, and the state in it is worked out here, where the post
+/// happens, rather than recovered by a caller reading the answer's words.
+pub fn chatSend(
+    self: *App,
+    arena: Allocator,
+    req: []const u8,
+) Allocator.Error!ChatSend.Result {
+    const caller: poltergeistpkg.Bus.Caller = .{ .terminal = poltergeistpkg.Chat.user_id };
+
+    const parsed = poltergeistpkg.wire.parseRequestLeaky(arena, req) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // **Refused, and not a guess.** The request never became a post, so
+        // there is nothing that could have been written; sending it again is
+        // safe, and that is exactly what `refused` promises.
+        else => return .{
+            .state = .refused,
+            .answer = "{\"error\":\"BadRequest\"}",
+            .why = "BadRequest",
+        },
+    };
+    switch (parsed) {
+        .group_post => {},
+        else => return .{
+            .state = .refused,
+            .answer = "{\"error\":\"NotAPost\"}",
+            .why = "NotAPost",
+        },
+    }
+
+    // **`rpc.dispatch` and not `dispatchOne`**: it is the same door the
+    // server calls, so a refusal, a `LogsClosed` explanation and the note
+    // that a post shows an agent arrived are all the ones that already
+    // exist. ⚠️ `arrived` is called inside `dispatchOne`; calling it here as
+    // well would tell the bus an agent arrived twice for one request.
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const res = poltergeistpkg.rpc.dispatch(arena, &self.poltergeist, poltergeistHost(self), caller, parsed) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    poltergeistpkg.wire.writeResponse(&out.writer, res) catch return error.OutOfMemory;
+
+    // **Past `dispatch` this door cannot say "nothing was written".** It did
+    // not see the write, so a failure now is `unknown` rather than a claim
+    // about what happened: the message may be in the group, and a caller
+    // that sent it again would post it twice. Whether any particular refusal
+    // out of `chatFailure` is side-effect-free is deliberately not asked --
+    // the reason a refusal looked harmless the last time is the reason this
+    // got it wrong, and "I cannot tell you" is the honest answer here.
+    //
+    // **Only the answers a post can actually succeed with are `confirmed`.**
+    // A shape this call does not expect falls to `unknown` rather than being
+    // read as success, so a variant added later cannot silently become one.
+    const state: ChatSend.State = switch (res) {
+        .ok, .text, .posted => .confirmed,
+        else => .unknown,
+    };
+    return .{ .state = state, .answer = out.written(), .why = ChatSend.no_why };
+}
+
+/// A chat tab's post, as a post and not as a `bool` (task 2778, slice 3).
+///
+/// **The two states a `bool` has are not the states a post has.** "It did
+/// not go" and "I cannot tell you whether it went" are different facts, and
+/// only the first is safe to act on by sending again -- the second is how a
+/// message gets posted twice. So the outcome is named, and the naming is
+/// done where the post happens, not recovered by a caller reading words.
+pub const ChatSend = struct {
+    /// What became of one post. **The values are the header's**
+    /// (`ghostty_chat_send_result_e`, `GHOSTTY_CHAT_SEND_*`): the C ABI
+    /// passes them as integers, so the order here is part of the contract
+    /// and must not be rearranged.
+    pub const State = enum(c_int) {
+        /// Nothing was sent and nothing ever will be: the request was
+        /// refused before anything could be written. Sending it again is
+        /// safe.
+        refused = 0,
+
+        /// It went.
+        confirmed = 1,
+
+        /// **It may or may not have gone.** Something failed past the point
+        /// where this door could call the post off. The interface must not
+        /// send it again on its own.
+        unknown = 2,
+    };
+
+    /// One outcome: the state, the socket's own answer, and the refusal's
+    /// name when there is one.
+    pub const Result = struct {
+        state: State,
+
+        /// The answer in the shape the socket writes, whether it succeeded
+        /// or was refused -- a refusal is a `.failed` response and is
+        /// carried the same way, so a reader has one shape to read.
+        answer: []const u8,
+
+        /// The refusal's name, empty when the state is not `refused`.
+        ///
+        /// **Empty is a value here, not a missing one**: a post that was not
+        /// refused has no name to give, and distinguishing that from "not
+        /// filled in" is what `no_why` writes down.
+        why: []const u8,
+    };
+
+    /// No refusal to name. Written out as a named constant rather than left
+    /// as `""` at the call sites, so that a reader sees a decision where
+    /// there would otherwise be an empty literal.
+    pub const no_why: []const u8 = "";
+};
+
 /// Read further back than the group still holds, out of the log on disk.
 /// `record_*` and `log_*`: who the caller is, as `RecordTools` needs it,
 /// and the state directory. The rule is all `RecordTools`'s.

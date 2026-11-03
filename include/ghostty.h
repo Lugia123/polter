@@ -1808,6 +1808,66 @@ GHOSTTY_API uintptr_t ghostty_app_control_page(ghostty_app_t, const char*, uintp
 // somebody else's shape. Refusals come back as {"refused":...,"why":...},
 // which is what the ticket itself answers with. App thread only.
 GHOSTTY_API uintptr_t ghostty_app_files(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// A chat tab's read (task 2778, slice 3): `req` is one JSON request in the
+// shape the socket carries -- {"method":"group_read","params":{…}} -- and the
+// answer is JSON. Same buffer rule as ghostty_app_files, and a second call
+// with the same request gives the same answer, so asking the size first with
+// cap 0 is safe: **a read changes nothing.** Only `group_read` is accepted
+// here; anything else is refused rather than served -- this is a chat tab's
+// door, not a second way to call every tool an agent has.
+//
+// **An app-level door, taking no surface.** A person's group chat is not a
+// property of any terminal: there may be no supervisor and no terminal in
+// sight at all, and a door that named one would make the window's own chat
+// depend on a terminal that may not exist. So this hangs off ghostty_app_t,
+// as the door above does. Who is asking is **the person at the keyboard** --
+// only the host can call it (an agent has no C ABI), the rule
+// ghostty_app_control_act states -- and the request carries no field naming a
+// caller, so a tab cannot read as somebody else. `group_read` here does not
+// move that person's cursor -- a window is not a member -- and the reply
+// carries `cursor`, `since`, `next` and `more`.
+GHOSTTY_API uintptr_t ghostty_app_chat_read(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
+// What became of a chat tab's post. **Three states, because the two a bool
+// has do not cover it.**
+//
+// A post writes to the group and types into terminals, so a failure *after*
+// the write has begun cannot be reported as "nothing happened" -- that is
+// what a `false` says, and a caller that believed it would send again, which
+// is the duplicate this replaces. So:
+//
+//   GHOSTTY_CHAT_SEND_REFUSED    nothing was sent, and that is certain: the
+//                                request was refused before anything was
+//                                written. Sending it again is safe.
+//   GHOSTTY_CHAT_SEND_CONFIRMED  it went. The answer in `out` says what
+//                                happened.
+//   GHOSTTY_CHAT_SEND_UNKNOWN    it may or may not have gone -- something
+//                                failed after the point where the post could
+//                                still be called off. The interface must not
+//                                send it again on its own.
+//
+// The values are part of the ABI: existing ones must never be renumbered.
+typedef enum {
+  GHOSTTY_CHAT_SEND_REFUSED,
+  GHOSTTY_CHAT_SEND_CONFIRMED,
+  GHOSTTY_CHAT_SEND_UNKNOWN,
+} ghostty_chat_send_result_e;
+
+// A chat tab's post (task 2778, slice 3): `req` is {"method":"group_post",
+// "params":{…}}. **Sent once and never probed**: the answer is written into
+// `out`/`out_len` and is the caller's to release with ghostty_app_chat_free.
+// Pass NULL for both to be told only what became of it; one without the
+// other is refused, with nothing sent. The refusal's name is in `err` when
+// the result is REFUSED. Not a bool because "it did not go" and "I cannot
+// tell you whether it went" are different, and only one of them is safe to
+// send again -- `ghostty_chat_send_result_e`. A buffer shape would be worse
+// still: a size probe would be a second post.
+//
+// Who is asking is the person at the keyboard, as above, and for the same
+// reason this takes no surface. App thread only.
+GHOSTTY_API ghostty_chat_send_result_e ghostty_app_chat_send(ghostty_app_t, const char*, uintptr_t, char**, uintptr_t*, char*, uintptr_t);
+// Release what ghostty_app_chat_send handed out. {NULL, 0} is fine and does
+// nothing. App thread only.
+GHOSTTY_API void ghostty_app_chat_free(ghostty_app_t, char*, uintptr_t);
 // Where the person is, as far as the control room goes: whether it is in
 // front, and which groups' cards it has on screen, as JSON
 // {"in_front":bool,"cards":["group",...]}. Said whenever either changes; the

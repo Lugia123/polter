@@ -2258,6 +2258,144 @@ pub const CAPI = struct {
         \\{"refused":"unavailable","why":"the core could not answer"}
     ;
 
+    /// A chat tab's **read**, as JSON (task 2778, slice 3). `req` is one
+    /// JSON request in the shape the socket carries
+    /// (`{"method":"group_read",…}`), and the answer is JSON by the
+    /// files buffer rule: the real length back, one NUL after it when it
+    /// fits, and the same answer on a second call with the same request --
+    /// **so asking the size first is safe here, because a read changes
+    /// nothing.**
+    ///
+    /// **Not a surface.** A person's chat is not a property of a terminal:
+    /// there may be no supervisor and no terminal in sight, and a door that
+    /// named one would make the window's own chat depend on one that may not
+    /// exist. Same shape as `ghostty_app_files` above, for the same reason.
+    ///
+    /// **Only `group_read`.** Anything else is refused rather than served:
+    /// this is a chat tab's door, not a second way for a host to call every
+    /// tool an agent has. That is `App.chatReadAnswer`'s rule, where the
+    /// only accepted method is named.
+    ///
+    /// **Who is asking is the person at the keyboard**: an agent has no C
+    /// ABI, so reaching this at all is being the host, and the request
+    /// carries no caller field to claim otherwise (the rule
+    /// `ghostty_app_control_act` states). App thread only.
+    export fn ghostty_app_chat_read(
+        app: *App,
+        req: [*]const u8,
+        len: usize,
+        buf: ?[*]u8,
+        cap: usize,
+    ) usize {
+        const core = app.core_app;
+        var arena: std.heap.ArenaAllocator = .init(core.alloc);
+        defer arena.deinit();
+        const answer = core.chatReadAnswer(arena.allocator(), req[0..len]) catch
+            return copyJsonOut(chat_fallback, buf, cap);
+        return copyJsonOut(answer, buf, cap);
+    }
+
+    /// A chat tab's **post** (task 2778, slice 3): one JSON request in,
+    /// `{"method":"group_post",…}`, carried out once. Returns
+    /// `CoreApp.ChatSend.State`, which is `ghostty_chat_send_result_e` in
+    /// `ghostty.h`: **the refusal and the uncertainty are told apart**,
+    /// because a caller that confused them would send the message twice.
+    ///
+    /// **Sent once and never probed, which is why this is not another
+    /// buffer call.** A "how long is the answer" call would post a second
+    /// message, so the answer is handed out owned instead, by the
+    /// `ghostty_surface_read_text` / `ghostty_surface_free_text` pair: the
+    /// caller gets `out`/`out_len` and releases them. Passing null for both
+    /// is allowed and means "tell me what became of it"; a call that passes
+    /// one and not the other is refused (`REFUSED`, nothing written).
+    ///
+    /// **`out` and `out_len` are cleared first and filled together.** They
+    /// are read on every path, including the ones that hand nothing back,
+    /// and a slot still holding the previous call's pointer would be freed
+    /// twice; a slot filled without its pair is a pointer with no length.
+    ///
+    /// **Two ways to say it did not go, and only one of them is `REFUSED`.**
+    /// Before `App.chatSend` reaches `rpc.dispatch`, nothing has been
+    /// written and nothing ever will be -- that is `REFUSED`, and sending
+    /// again is safe. Past that point this cannot prove the post did not
+    /// happen, so a failure here is `UNKNOWN`, including one raised while
+    /// copying the answer out: the message may already be in the group, and
+    /// the caller must not send it again on its own.
+    export fn ghostty_app_chat_send(
+        app: *App,
+        req: [*]const u8,
+        len: usize,
+        out: ?*?[*]u8,
+        out_len: ?*usize,
+        err: ?[*]u8,
+        cap: usize,
+    ) c_int {
+        if (out) |slot| slot.* = null;
+        if (out_len) |n| n.* = 0;
+
+        // **Neither or both, and nothing has happened yet.** The pair is one
+        // answer in two slots; half of it is not a smaller answer but a
+        // caller that cannot read what it asked for -- `out` set and
+        // `out_len` null is a pointer with no length, and the reverse is a
+        // length with nowhere to point. Refused here, before the post.
+        if ((out == null) != (out_len == null)) {
+            copyNameOut("UnpairedOut", err, cap);
+            return @intFromEnum(CoreApp.ChatSend.State.refused);
+        }
+
+        const core = app.core_app;
+        var arena: std.heap.ArenaAllocator = .init(core.alloc);
+        defer arena.deinit();
+
+        const res = core.chatSend(arena.allocator(), req[0..len]) catch {
+            // The core could not allocate, and it may have done so before or
+            // after the post: `UNKNOWN` rather than a claim either way.
+            copyErrorOut(error.OutOfMemory, err, cap);
+            return @intFromEnum(CoreApp.ChatSend.State.unknown);
+        };
+        if (res.why.len > 0) copyNameOut(res.why, err, cap);
+
+        // Copied out of the call's arena onto the allocator the caller
+        // frees with, because the arena dies with this call. A failure to
+        // copy is **not** "it did not go" -- the post has already run.
+        if (out) |slot| if (out_len) |n| {
+            const owned = global.alloc().dupe(u8, res.answer) catch {
+                copyErrorOut(error.OutOfMemory, err, cap);
+                return @intFromEnum(CoreApp.ChatSend.State.unknown);
+            };
+            slot.* = owned.ptr;
+            n.* = owned.len;
+        };
+        return @intFromEnum(res.state);
+    }
+
+    /// Release what `ghostty_app_chat_send` handed out. A null pointer with
+    /// a zero length is fine and does nothing.
+    export fn ghostty_app_chat_free(_: *App, ptr: ?[*]u8, len: usize) void {
+        const p = ptr orelse return;
+        if (len == 0) return;
+        global.alloc().free(p[0..len]);
+    }
+
+    /// Say why a chat post was refused, in the shape `copyErrorOut` writes:
+    /// the name alone, NUL-terminated, cut to fit. A name rather than a
+    /// sentence, for the same reason -- the sentence is the interface's, in
+    /// the user's language.
+    fn copyNameOut(name: []const u8, buf: ?[*]u8, cap: usize) void {
+        const b = buf orelse return;
+        if (cap == 0) return;
+        const n = @min(name.len, cap - 1);
+        @memcpy(b[0..n], name[0..n]);
+        b[n] = 0;
+    }
+
+    /// What a chat request that could not be answered at all says. Named
+    /// rather than empty, as `files_fallback` is: a host reads neither as a
+    /// conversation.
+    const chat_fallback =
+        \\{"error":"unavailable"}
+    ;
+
     /// The group a click on a notification raised from terminal `id` (a
     /// `ghostty_surface_poltergeist_id`) opens the control room at: the
     /// group it supervises, else the first it is in, in the control room's
