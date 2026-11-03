@@ -81,6 +81,22 @@ enum PreviewSlot {
         /// a slot that draws its own emptiness rather than asking for a
         /// file it has no right to read.
         var token: String = ""
+
+        /// What the pane should show for this file (task 2779 S7B).
+        ///
+        /// **Not an optional `pluginPage`.** Nil would carry three different
+        /// answers at once -- no plugin claims the file, a plugin claims it
+        /// and its page could not be located, and a core that predates the
+        /// field -- and the host would have to pick one, which is how an
+        /// unloadable plugin page gets drawn as the file. The three cases are
+        /// `PreviewTicket.Presentation`'s and the default is the one a preview
+        /// had before plugins existed.
+        ///
+        /// **Held beside the ticket and never derived from it.** The two are
+        /// different capabilities: the ticket reaches one file through the
+        /// core, and a plugin page reaches one installed directory through a
+        /// fence.
+        var presentation: PreviewTicket.Presentation = .file
     }
 
     /// Every cell's state. There is no second place a cell's open flag
@@ -164,10 +180,19 @@ enum PreviewSlot {
         /// Handed in together because a `rel` with no ticket is a file the
         /// slot cannot open: one call, so the two cannot come apart for a
         /// frame.
-        mutating func setFile(_ key: String, rel: String, token: String) {
+        ///
+        /// `presentation` is the core's answer about what shows this file
+        /// (`.file` for a file no plugin claims). It is **a parameter with no
+        /// default**: a caller that has never heard of it has to write one
+        /// down, and the day a preview can be drawn by a plugin is not a day
+        /// a forgotten call site silently draws the file instead.
+        mutating func setFile(
+            _ key: String, rel: String, token: String, presentation: PreviewTicket.Presentation
+        ) {
             var s = state(key)
             s.rel = rel
             s.token = token
+            s.presentation = presentation
             states[key] = s
         }
 

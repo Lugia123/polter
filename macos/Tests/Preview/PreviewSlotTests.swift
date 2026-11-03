@@ -46,7 +46,7 @@ struct PreviewSlotTests {
         var store = Slot.Store()
         store.set("cell", open: true)
         store.setDraggedW("cell", 500)
-        store.setFile("cell", rel: "docs/a.md", token: String(repeating: "ab", count: 16))
+        store.setFile("cell", rel: "docs/a.md", token: String(repeating: "ab", count: 16), presentation: .file)
         store.set("cell", open: false)
 
         let s = store.state("cell")
@@ -171,7 +171,7 @@ struct PreviewSlotTests {
         store.set("cell", open: true)
         store.setDraggedW("cell", 700)
         let token = String(repeating: "cd", count: 16)
-        store.setFile("cell", rel: "a.md", token: token)
+        store.setFile("cell", rel: "a.md", token: token, presentation: .file)
 
         // ⚠️ **The token is the return value, and it is the only reason
         // `forget` returns anything at all.** A caller that drops it never

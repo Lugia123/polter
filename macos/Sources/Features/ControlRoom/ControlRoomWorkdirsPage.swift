@@ -1369,8 +1369,31 @@ struct ControlRoomWorkdirsPage: View {
     private var workBody: some View {
         let state = ghostty.previewStore.state(cell)
         if !state.token.isEmpty {
-            PreviewWebView(token: state.token)
+            switch state.presentation {
+            case .unavailable, .browser:
+                // The plugin claims this file and there is nothing to draw in
+                // its place; the file itself is **not** rendered here
+                // (task 2779 S7B). Which sentence is `PreviewTicket`'s, so
+                // this page and the pane cannot say two different things.
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: Tile.emptyGlyphSize))
+                        .foregroundStyle(theme.textSecondary.color.opacity(Tile.emptyGlyphOpacity))
+                    Text(state.presentation == .browser
+                         ? PreviewTicket.browserPreviewNotYet
+                         : PreviewTicket.pluginUnavailable)
+                        .font(.system(size: Tile.wordsSize))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, Tile.emptyWordsGap)
+                    Spacer(minLength: 0)
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .file, .pluginPage:
+                PreviewWebView(token: state.token, presentation: state.presentation)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         } else {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -1531,15 +1554,16 @@ struct ControlRoomWorkdirsPage: View {
         switch PreviewTicket.open(source, workdirId: dir.id, path: node.path) {
         case .success(let answer):
             refusal = nil
-            // **This page's own cell, for the group in front** (task 2775):
-            // opening a file here no longer reaches the chat page's sidebar.
-            // The cell's own `open` flag is still set -- it is this page's
-            // memory, not another page's, which is the whole of the change.
-            ghostty.previewStore.setFile(cell, rel: node.rel, token: answer.token)
+            // **`answer.presentation`, not an optional plugin page.** A plugin
+            // that claims the file with a page the host cannot locate is
+            // `.unavailable` and is drawn as itself -- never as the file,
+            // which is what nil used to mean (task 2779 S7B).
+            ghostty.previewStore.setFile(
+                cell, rel: node.rel, token: answer.token, presentation: answer.presentation)
             ghostty.previewStore.set(cell, open: true)
         case .failure(let why):
             refusal = ticketWords(why)
-            ghostty.previewStore.setFile(cell, rel: "", token: "")
+            ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
         }
     }
 

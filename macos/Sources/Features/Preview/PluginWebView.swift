@@ -81,6 +81,15 @@ enum WebViewShell {
         /// What the page is loaded from.
         var entryURL: URL? { get }
 
+        /// Any scheme besides `scheme` this page's own resources come over.
+        ///
+        /// A preview of a file the core showed through a plugin has two kinds
+        /// of bytes: the ticket's (`scheme`, judged by the core on every
+        /// read) and the plugin's own installed page
+        /// (`PreviewPluginPage.scheme`, fenced to that plugin's directory).
+        /// The settings page has neither and takes the default.
+        var extraSchemes: [String] { get }
+
         /// The `Content-Security-Policy` sent with every response this
         /// page's bridge serves. Per page rather than per shell because a
         /// preview's policy names one ticket's origin and a settings page has
@@ -88,12 +97,13 @@ enum WebViewShell {
         var policy: String { get }
     }
 
-    /// Every scheme a page of this kind may be loaded from: its own, and
-    /// nothing else. Named as a list because that is the shape the content
-    /// rule list and the navigation delegate both take, so the two cannot be
-    /// compiled from different answers.
+    /// Every scheme a page of this kind may be loaded from: its own and any
+    /// it declares, and nothing else. Named as a list because that is the
+    /// shape the content rule list, the scheme handlers and the navigation
+    /// delegate all take, so none of them can be compiled from a different
+    /// answer.
     static func allowedSchemes(_ page: some Page) -> [String] {
-        [type(of: page).scheme]
+        [type(of: page).scheme] + page.extraSchemes
     }
 
     /// A page, its web view, and the delegate objects that have to outlive
@@ -149,7 +159,13 @@ enum WebViewShell {
         // somebody's file.
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        configuration.setURLSchemeHandler(page, forURLScheme: type(of: page).scheme)
+        // **Every scheme the page declares, not only its own** (task 2779
+        // S7B): a preview of a file shown by a plugin has the ticket's
+        // `polter-file:` bytes *and* the plugin's own installed page, and
+        // both have to have a handler or the second one never loads.
+        for scheme in allowedSchemes(page) {
+            configuration.setURLSchemeHandler(page, forURLScheme: scheme)
+        }
 
         let controller = WKUserContentController()
         controller.addScriptMessageHandler(
@@ -263,4 +279,13 @@ enum WebViewShell {
             nil
         }
     }
+}
+
+/// **No second scheme unless a page says it has one.** The settings page
+/// serves everything out of one scheme and this is what keeps it that way --
+/// a page that wants a second one has to declare it, so the answer to "what
+/// may this page be loaded from" is never accidentally wider than the page
+/// itself needs.
+extension WebViewShell.Page {
+    var extraSchemes: [String] { [] }
 }

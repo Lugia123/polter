@@ -293,7 +293,7 @@ struct ControlRoomSidebarTests {
         let api = Sidebar.key(group: "api")
         let frontend = Sidebar.key(group: "frontend")
         #expect(api != frontend)
-        store.setFile(api, rel: "src/api.zig", token: String(repeating: "a", count: 32))
+        store.setFile(api, rel: "src/api.zig", token: String(repeating: "a", count: 32), presentation: .file)
         _ = store.toggleSidebar(api)
         // The other group's cell is untouched: closed, with no file.
         #expect(store.state(frontend).open == false)
@@ -310,7 +310,7 @@ struct ControlRoomSidebarTests {
         #expect(Sidebar.key(group: group) != Slot.workdirsKey(group: group))
         var store = Slot.Store()
         store.setFile(Slot.workdirsKey(group: group), rel: "docs/a.md",
-                      token: String(repeating: "b", count: 32))
+                      token: String(repeating: "b", count: 32), presentation: .file)
         // The chat's sidebar for the same group is unmoved.
         #expect(store.state(Sidebar.key(group: group)).rel == "")
         #expect(store.state(Sidebar.key(group: group)).token == "")
@@ -332,7 +332,7 @@ struct ControlRoomSidebarTests {
     @Test func theToggleLeavesTheFileWhereItWas() {
         var store = Slot.Store()
         let key = Sidebar.key(group: "api")
-        store.setFile(key, rel: "src/a.zig", token: String(repeating: "a", count: 32))
+        store.setFile(key, rel: "src/a.zig", token: String(repeating: "a", count: 32), presentation: .file)
         _ = store.toggleSidebar(key)
         _ = store.toggleSidebar(key)
         #expect(store.state(key).rel == "src/a.zig")

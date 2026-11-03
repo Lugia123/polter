@@ -98,6 +98,265 @@ struct PreviewTicketTests {
         }
     }
 
+    // MARK: Who shows the file
+
+    /// The core says which plugin answers for this file, beside the ticket
+    /// (`previewAnswer`, task 2758), and -- with contract 2789 -- where that
+    /// plugin's page is. The host reads all of it rather than deciding any
+    /// of it for itself.
+    @Test func aMatchedChoiceIsReadWithItsScope() throws {
+        let text = """
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","encoding":"utf8","eol":"lf",
+        "editable":true,"not_editable":null,"version":"v1"},
+        "plugin":{"status":"matched","key":"edit-text","reads":"file"}}
+        """
+        let answer = try Ticket.read(text).get()
+        #expect(answer.plugin == .matched(.init(
+            key: "edit-text", reads: "file", render: nil, page: nil, pluginDir: nil)))
+    }
+
+    // MARK: Where the page is
+
+    /// The three location fields are read as the core sends them, and the
+    /// join is the core's `plugin_dir` plus the manifest's `page`.
+    @Test func aMatchedPageIsLocatedFromWhatTheCoreSent() throws {
+        let text = """
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true},
+        "plugin":{"status":"matched","key":"edit-text","reads":"file",
+        "render":"page","page":"page/index.html","plugin_dir":"/opt/polter/plugins/edit-text"}}
+        """
+        guard case .success(let answer) = Ticket.read(text),
+              case .matched(let matched)? = answer.plugin
+        else {
+            Issue.record("a full matched row did not read")
+            return
+        }
+        #expect(matched.render == "page")
+        #expect(matched.page == "page/index.html")
+        #expect(matched.pluginDir == "/opt/polter/plugins/edit-text")
+        guard case .success(let where_) = Ticket.pageLocation(of: matched) else {
+            Issue.record("a page that is all there was not located")
+            return
+        }
+        #expect(where_ == PreviewPluginPage.Location(
+            key: "edit-text", root: "/opt/polter/plugins/edit-text", page: "page/index.html"))
+        #expect(where_.url?.path == "/page/index.html")
+        #expect(where_.url?.host == "edit-text")
+    }
+
+    /// **A missing field is "the page is not known", never a path this host
+    /// invents.** The three location fields are new, so a core that predates
+    /// them leaves a matched row with none of them -- and the honest answer
+    /// is that nothing here knows where to load a page from.
+    @Test func notBeingToldWhereThePageIsIsNotAGuess() throws {
+        let cases: [(String, Ticket.PageRefusal)] = [
+            (#"{"status":"matched","key":"edit-text","reads":"file"}"#, .renderUnknown),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":""}"#, .renderUnknown),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"browser","page":"x.html","plugin_dir":"/p"}"#, .notAPagePlugin),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","plugin_dir":"/p"}"#, .pageUnknown),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"x.html"}"#, .pluginDirUnknown),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"x.html","plugin_dir":""}"#, .pluginDirUnknown),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"x.html","plugin_dir":"relative/dir"}"#, .pluginDirNotAbsolute),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"../x.html","plugin_dir":"/p"}"#, .pageNotRelative),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"/etc/x.html","plugin_dir":"/p"}"#, .pageNotRelative),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"a/../../x.html","plugin_dir":"/p"}"#, .pageNotRelative),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"c:\\x.html","plugin_dir":"/p"}"#, .pageNotRelative),
+            (#"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"a:b/x.html","plugin_dir":"/p"}"#, .pageNotRelative),
+        ]
+        for (plugin, want) in cases {
+            let text = """
+            {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+            "mtime_ns":"1700000000000000000","editable":true},"plugin":\(plugin)}
+            """
+            guard case .success(let answer) = Ticket.read(text),
+                  case .matched(let matched)? = answer.plugin
+            else {
+                Issue.record("did not read a matched row: \(plugin)")
+                continue
+            }
+            #expect(Ticket.pageLocation(of: matched) == .failure(want), "at \(plugin)")
+            // **One sentence whatever the cause**, and it is the product's:
+            // which field the core left out is deliberately not said to a
+            // person (`PageRefusal` has no words of its own).
+            #expect(Ticket.pluginUnavailable == String(
+                localized: "This preview plugin is not available."))
+        }
+    }
+
+    /// **The must-not of S7B.** A plugin that claims the file with a page the
+    /// host cannot locate must never be read as "show the file" -- that is
+    /// the silent fallback where an unloadable plugin page is drawn as the
+    /// file and looks exactly like success.
+    ///
+    /// A `browser` plugin is its own case and not the broken one: nothing is
+    /// wrong with it, the host has not built that path.
+    @Test func anUnloadablePluginPageIsNotTheFile() throws {
+        func presentation(_ plugin: String) throws -> Ticket.Presentation {
+            let text = """
+            {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+            "mtime_ns":"1700000000000000000","editable":true},"plugin":\(plugin)}
+            """
+            return try Ticket.read(text).get().presentation
+        }
+
+        // No plugin claimed it, and a core that did not say: the file.
+        #expect(try presentation(#"{"status":"none","key":null}"#) == .file)
+        #expect(try Ticket.read("""
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true}}
+        """).get().presentation == .file)
+
+        // A page plugin, located: the page.
+        #expect(try presentation(
+            #"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"page/index.html","plugin_dir":"/opt/p"}"#)
+            == .pluginPage(.init(key: "edit-text", root: "/opt/p", page: "page/index.html")))
+
+        // A page plugin whose page will not load: **not `.file`**.
+        for plugin in [
+            #"{"status":"matched","key":"edit-text","reads":"file"}"#,
+            #"{"status":"matched","key":"edit-text","reads":"file","render":"page","plugin_dir":"/p"}"#,
+            #"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"x.html"}"#,
+            #"{"status":"matched","key":"edit-text","reads":"file","render":"page","page":"../x.html","plugin_dir":"/p"}"#,
+        ] {
+            #expect(try presentation(plugin) == .unavailable, "at \(plugin)")
+        }
+
+        // `browser` is its own case, and says so; the log gets no refusal for
+        // it, because nothing was refused.
+        let browser = try Ticket.read("""
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true},
+        "plugin":{"status":"matched","key":"archive","reads":"file","render":"browser","page":"x.html","plugin_dir":"/p"}}
+        """).get()
+        #expect(browser.presentation == .browser)
+        #expect(Ticket.browserPreviewNotYet != Ticket.pluginUnavailable)
+    }
+
+    /// The page path rule is the core's (`Plugin.zig`'s `pageRefusal`: no
+    /// `..`, nothing absolute, no colon, no NUL). A `..` **substring** is an
+    /// ordinary name and must not be refused.
+    @Test func aPagePathIsPlainAndRelative() {
+        for good in ["index.html", "page/index.html", "a..b/x.html", "场景/x.html", "./x.html"] {
+            #expect(Ticket.isRelativePagePath(good), "at \(good)")
+        }
+        for bad in ["", "/x.html", "../x.html", "a/../b.html", "..", "a\\b.html", "x\u{0}y", "c:/x.html"] {
+            #expect(!Ticket.isRelativePagePath(bad), "at \(bad.debugDescription)")
+        }
+    }
+
+    /// **`nil` and `Choice.none` are two different answers.** `nil` is a core
+    /// that never carried the key; `Choice.none` is a core that looked and
+    /// said nothing answers for this file.
+    ///
+    /// ⚠️ **The right-hand side has to be spelled `Ticket.Answer.Choice.none`.**
+    /// Written as a bare `.none` in a comparison against an optional, Swift
+    /// resolves it to `Optional.none` -- i.e. `nil` -- so the assertion would
+    /// pass on a decoder that reported "nothing chose this file" as "not
+    /// told", which is the exact confusion this test exists to catch.
+    @Test func notBeingToldIsNotTheSameAsNothingChoseIt() throws {
+        // The `answer()` fixture above has no `plugin` key at all.
+        let untold = try Ticket.read(answer()).get()
+        #expect(untold.plugin == nil)
+
+        let none = try Ticket.read("""
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true},
+        "plugin":{"status":"none","key":null}}
+        """).get()
+        #expect(none.plugin == Ticket.Answer.Choice.none)
+        #expect(none.plugin != nil, "`Claim none` was read as `not told`")
+        #expect(none.plugin != untold.plugin)
+    }
+
+    /// The four ways a named plugin does not get used, each kept apart: a
+    /// caller asking for a plugin that is not there, one that is switched
+    /// off, and one that is not a preview at all are three different
+    /// sentences on the host's side, and collapsing them loses the one that
+    /// says what to do about it.
+    @Test func aNamedPluginThatIsNotUsedSaysWhichWay() throws {
+        for (status, want) in [
+            ("specified_not_found", Ticket.Answer.Choice.specifiedNotFound(key: "nope")),
+            ("specified_disabled", .specifiedDisabled(key: "codex")),
+            ("specified_unsupported", .specifiedUnsupported(key: "archive")),
+        ] {
+            let text = """
+            {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+            "mtime_ns":"1700000000000000000","editable":true},
+            "plugin":{"status":"\(status)","key":\(status == "specified_disabled" ? "\"codex\"" : status == "specified_unsupported" ? "\"archive\"" : "\"nope\"")}}
+            """
+            let answer = try Ticket.read(text).get()
+            #expect(answer.plugin == want, "at \(status)")
+        }
+    }
+
+    /// **A choice nobody here knows does not take the ticket with it.** A
+    /// status a later core adds is a field this build cannot read, and the
+    /// ticket beside it is still a ticket the file can be read through --
+    /// so it is `nil` ("not told"), not an unreadable answer.
+    @Test func anUnknownStatusLeavesTheTicketReadable() throws {
+        let text = """
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true},
+        "plugin":{"status":"something_new","key":"x"}}
+        """
+        let answer = try Ticket.read(text).get()
+        #expect(answer.token == goodToken)
+        #expect(answer.plugin == nil)
+    }
+
+    /// `matched` without its `reads` is half a row, and half a row is not
+    /// filled in with a guess -- there is no default scope here, because a
+    /// default would be this file inventing a permission.
+    @Test func aMatchedChoiceWithNoScopeIsNotFilledIn() throws {
+        let text = """
+        {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+        "mtime_ns":"1700000000000000000","editable":true},
+        "plugin":{"status":"matched","key":"edit-text"}}
+        """
+        let answer = try Ticket.read(text).get()
+        #expect(answer.plugin == nil)
+    }
+
+    /// **A `matched` that names no plugin is not a match.** The core cannot
+    /// write one -- it would not have loaded a manifest with such a key
+    /// (`Plugin.isPlainName`) -- so a `matched` with a missing, empty or
+    /// impossible key is this host reading its own answer wrong, and reading
+    /// it as a match would open the preview against a plugin that does not
+    /// exist. It is "not told" instead.
+    @Test func aMatchThatNamesNoPluginIsNotAMatch() throws {
+        // Every one of these is JSON a core could not have written; the
+        // reader must not turn any of them into a plugin named something.
+        for key in [#"null"#, #""""#, #"" ""#, #""a/b""#, #""../x""#,
+                    #""has space""#, #""中文""#, #"42"#,
+                    "\"" + String(repeating: "a", count: 65) + "\""] {
+            let text = """
+            {"token":"\(goodToken)","info":{"name":"a.md","kind":"file","size":12,
+            "mtime_ns":"1700000000000000000","editable":true},
+            "plugin":{"status":"matched","key":\(key),"reads":"file"}}
+            """
+            let answer = try Ticket.read(text).get()
+            #expect(answer.plugin == nil, "at key \(key)")
+            // The ticket itself is untouched: a choice that could not be
+            // read is not a reason to lose the file.
+            #expect(answer.token == goodToken)
+        }
+    }
+
+    /// The key rule is `Plugin.isPlainName`'s: 1...64 of `[A-Za-z0-9._-]`,
+    /// and not `.` or `..`. Both sides read the same manifests, so a key
+    /// this refuses is one the core would not have loaded.
+    @Test func aPluginKeyIsWhatTheCoreWouldLoad() {
+        for good in ["edit-text", "codex", "opencode-v2", "a", ".hidden", "A_b-9."] {
+            #expect(Ticket.isPluginKey(good), "at \(good)")
+        }
+        for bad in ["", ".", "..", "a/b", "a b", "../x", "中文", "a\n",
+                    String(repeating: "a", count: 65)] {
+            #expect(!Ticket.isPluginKey(bad), "at \(bad.debugDescription)")
+        }
+    }
+
     // MARK: What may be a token
 
     /// 32 lower-case hex digits: what the core mints and what

@@ -1514,3 +1514,8 @@
 /* 侧栏的刷新按钮（task 2699）—— 设计稿自己的两个词，所以是两个键 */
 "Refresh files" = "刷新文件";
 "Refresh search" = "刷新搜索";
+
+/* 预览：插件认领了这个文件，但宿主加载不了它的页面（task 2779 S7B）。
+   给用户只一句；缺的是哪个字段属于日志 */
+"This preview plugin is not available." = "这个预览插件暂不可用";
+"This plugin shows the file in a browser view, which is not available here yet." = "这个插件在浏览器视图里显示文件，这里还没有这条路径";

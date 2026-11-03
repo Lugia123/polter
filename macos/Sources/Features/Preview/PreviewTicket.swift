@@ -27,6 +27,132 @@ enum PreviewTicket {
         var token: String
         var info: Info
 
+        /// Which plugin the core chose to show this file
+        /// (`previewAnswer`, task 2758).
+        ///
+        /// **`nil` is "not told"; `Choice.none` is "told, and nothing
+        /// answers".** One is a question that was never asked.
+        ///
+        /// ⚠️ **`== .none` on this optional means `== nil`.** `Optional` has
+        /// its own `.none`, so spell the comparison `Choice.none` (or
+        /// `.some(.none)`) at every call site.
+        var plugin: Choice?
+
+        private enum CodingKeys: String, CodingKey {
+            case token, info, plugin
+        }
+
+        /// `plugin` is read leniently: a status or key this build cannot
+        /// make sense of is `nil`, not a thrown error. Losing the ticket
+        /// over a field beside it would lose the file.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            token = try c.decode(String.self, forKey: .token)
+            info = try c.decode(Info.self, forKey: .info)
+            plugin = try? c.decodeIfPresent(Choice.self, forKey: .plugin)
+        }
+
+        /// The five cases `previewAnswer` writes. Anything else throws, and
+        /// `Answer.init(from:)` turns that back into `nil`.
+        enum Choice: Decodable, Equatable {
+            /// A plugin answers for this file.
+            case matched(Matched)
+            /// The core looked and no plugin answers.
+            case none
+            /// Asked for by name: no such plugin installed.
+            case specifiedNotFound(key: String)
+            /// Asked for by name: installed and switched off.
+            case specifiedDisabled(key: String)
+            /// Asked for by name: installed, but not a preview plugin.
+            case specifiedUnsupported(key: String)
+
+            /// A `matched` row (task 2779 S7B, contract 2789).
+            ///
+            /// **The three location fields are optional, and a missing one
+            /// is "where the page is is not known" -- never a reason to
+            /// guess.** `plugin_dir` is the absolute root the plugin manager
+            /// scanned, `page` is a relative path inside it, and `render` is
+            /// the manifest's own tag. A host with any of them absent has no
+            /// page to load and must say so.
+            struct Matched: Decodable, Equatable {
+                /// The plugin's key: `Plugin.isPlainName`.
+                var key: String
+                /// The scope the manifest declared. A declaration, not a
+                /// permission: the ticket beside it was opened with the
+                /// caller's own scope.
+                var reads: String
+                /// The manifest's `preview.render`: `page` or `browser`.
+                var render: String?
+                /// The manifest's `preview.page`, relative to `pluginDir`.
+                /// Present for a `page` plugin only.
+                var page: String?
+                /// The plugin's directory, absolute, as the manager found
+                /// it. Where `page` is relative to.
+                var pluginDir: String?
+
+                private enum CodingKeys: String, CodingKey {
+                    case key, reads, render, page
+                    case pluginDir = "plugin_dir"
+                }
+            }
+
+            private enum CodingKeys: String, CodingKey {
+                case status, key, reads, render, page
+                case pluginDir = "plugin_dir"
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                let status = try c.decode(String.self, forKey: .status)
+
+                // `none` is the only status with no key. The other four name
+                // a plugin, and a name the core could not have loaded
+                // (`Plugin.isPlainName`) is not a choice to act on -- an
+                // empty key from a missing field must not read as a match.
+                switch status {
+                case "none": self = .none
+                case "matched":
+                    guard let key = try c.decodeIfPresent(String.self, forKey: .key),
+                          PreviewTicket.isPluginKey(key)
+                    else { throw Self.notAChoice(c, "matched with no usable key") }
+                    self = .matched(Matched(
+                        key: key,
+                        // A `matched` with no scope is half a row, and there
+                        // is no default: a default would be this file
+                        // inventing a permission.
+                        reads: try c.decode(String.self, forKey: .reads),
+                        render: try c.decodeIfPresent(String.self, forKey: .render),
+                        page: try c.decodeIfPresent(String.self, forKey: .page),
+                        pluginDir: try c.decodeIfPresent(String.self, forKey: .pluginDir)))
+                case "specified_not_found":
+                    self = .specifiedNotFound(key: try Self.named(c, status))
+                case "specified_disabled":
+                    self = .specifiedDisabled(key: try Self.named(c, status))
+                case "specified_unsupported":
+                    self = .specifiedUnsupported(key: try Self.named(c, status))
+                default:
+                    throw Self.notAChoice(c, "unknown status")
+                }
+            }
+
+            private static func named(
+                _ c: KeyedDecodingContainer<CodingKeys>, _ status: String
+            ) throws -> String {
+                guard let key = try c.decodeIfPresent(String.self, forKey: .key),
+                      PreviewTicket.isPluginKey(key)
+                else { throw notAChoice(c, "\(status) with no usable key") }
+                return key
+            }
+
+            private static func notAChoice(
+                _ c: KeyedDecodingContainer<CodingKeys>, _ said: String
+            ) -> DecodingError {
+                .dataCorrupted(.init(
+                    codingPath: c.codingPath,
+                    debugDescription: "not a preview choice: \(said)"))
+            }
+        }
+
         struct Info: Decodable, Equatable {
             /// The file's own name, not the path.
             var name: String
@@ -44,7 +170,76 @@ enum PreviewTicket {
             var not_editable: String?
             var version: String?
         }
+
+        /// **What the host should put in the pane.** The one product-facing
+        /// reading of `plugin`, and deliberately four cases rather than the
+        /// two an optional gives: "no plugin page", "a `browser` plugin the
+        /// host has not built", and "a page plugin whose page will not load"
+        /// must not be one value, because one of them is a successful answer
+        /// and another is a refusal that would otherwise be drawn as success
+        /// -- **the file rendered as though the plugin had loaded**.
+        ///
+        /// Which of the six ways the location was unusable is
+        /// `PageRefusal`'s and is deliberately not said to a person, who gets
+        /// one sentence (`PreviewTicket.pluginUnavailable`).
+        var presentation: Presentation {
+            guard case .matched(let matched)? = plugin else {
+                // Nothing claimed this file -- no plugin answers for it
+                // (`.none`), or the answer did not say (a core that predates
+                // the field). Either way the file is shown as it was before
+                // plugins could claim one, which is not a guess: nothing
+                // promised a page.
+                return .file
+            }
+            switch PreviewTicket.pageLocation(of: matched) {
+            case .success(let at): return .pluginPage(at)
+            // **A `browser` plugin is not a broken page.** The core said how
+            // this file is shown and the answer is "the file itself, in a view
+            // of its own, scripts and network allowed" -- a different thing
+            // from a page plugin whose page is missing. Drawing the two as one
+            // sentence would tell a person their plugin is broken when it is
+            // configured exactly as it meant to be.
+            case .failure(.notAPagePlugin): return .browser
+            case .failure: return .unavailable
+            }
+        }
     }
+
+    /// What the pane shows. **The four cases are the whole of the must-not**:
+    /// an unavailable plugin page must never be drawn as the file, and a
+    /// `browser` plugin must never be drawn as a broken one.
+    enum Presentation: Equatable {
+        /// The file itself, through the ticket. What a preview was before
+        /// plugins, and what it stays for a file no plugin claims.
+        case file
+        /// The plugin's own page, at a location the core named.
+        case pluginPage(PreviewPluginPage.Location)
+        /// The plugin declared `render: browser`: the file itself, in a view
+        /// with no bridge. **Its own case rather than `.unavailable`** --
+        /// nothing is wrong with the plugin and nothing is missing from the
+        /// core's answer; this host has not built that path yet.
+        case browser
+        /// A page plugin whose page could not be located: the host says so.
+        /// **Not `.file`** -- the file is there and could be drawn, and
+        /// drawing it is exactly the silent fallback this case exists to
+        /// prevent.
+        case unavailable
+    }
+
+    /// The one sentence a person sees when a page plugin claims the file and
+    /// the host cannot load its page. **One, not six**: which field the core
+    /// left out is `PageRefusal`'s, and saying it to the person would be
+    /// handing them the inside of the protocol.
+    static let pluginUnavailable = String(
+        localized: "This preview plugin is not available.",
+        comment: "预览：插件认领了这个文件但页面加载不了时，给用户看的那一句")
+
+    /// The sentence for a plugin that asked to be shown as the file itself in
+    /// a view of its own, which this host does not serve yet. **Not the
+    /// sentence above**: this plugin is working as declared.
+    static let browserPreviewNotYet = String(
+        localized: "This plugin shows the file in a browser view, which is not available here yet.",
+        comment: "预览：插件声明 render=browser，宿主还没做这条路径时，给用户看的那一句")
 
     /// The core said no, in the one shape the core refuses in.
     struct Refusal: Decodable, Equatable {
@@ -144,6 +339,89 @@ enum PreviewTicket {
     static func isToken(_ s: String) -> Bool {
         guard s.count == 32 else { return false }
         return s.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    /// A plugin key, as the core loads one (`Plugin.isPlainName`): 1...64
+    /// characters of `[A-Za-z0-9._-]`, and never `.` or `..`.
+    ///
+    /// Used to refuse a `matched` choice that names nothing. The core cannot
+    /// emit one -- it would not have loaded a manifest with such a key -- so
+    /// this is about the host's own reading, where an empty key out of a
+    /// missing field would otherwise become a plugin called "".
+    static func isPluginKey(_ s: String) -> Bool {
+        guard !s.isEmpty, s.count <= 64 else { return false }
+        guard s != ".", s != ".." else { return false }
+        return s.allSatisfy { c in
+            c.isASCII && (c.isLetter || c.isNumber || c == "-" || c == "_" || c == ".")
+        }
+    }
+
+    // MARK: Where a matched plugin's page is
+
+    /// Why a matched plugin has no page the host may load. **Every one of
+    /// these is "the page is not known", and not one of them is a path
+    /// invented to cover the gap.**
+    enum PageRefusal: Error, Equatable {
+        /// The core did not say how the file is shown.
+        case renderUnknown
+        /// `render` is `browser`: the file itself is loaded, in a separate
+        /// web view with no bridge. There is no plugin page in that case.
+        case notAPagePlugin
+        /// A page plugin whose page the core did not name.
+        case pageUnknown
+        /// The core did not say which directory the plugin is in.
+        case pluginDirUnknown
+        /// A root that is not an absolute path is not a root this host can
+        /// join anything onto.
+        case pluginDirNotAbsolute
+        /// The page is not a plain relative path inside the plugin.
+        case pageNotRelative
+    }
+
+    /// Where the page for a matched plugin is, or why it is not known.
+    ///
+    /// **A missing field is `pluginDirUnknown`/`pageUnknown`, never a guess.**
+    /// The three location fields are new (contract 2789) and a core that
+    /// predates them, or a manifest that names none, leaves the host with
+    /// nothing to load -- which it says out loud rather than falling back to
+    /// a path of its own invention.
+    ///
+    /// The answer is a `PreviewPluginPage.Location` -- the type the loader
+    /// and the scheme handler already take -- rather than a second type that
+    /// means the same thing. The key comes from the choice, so the page is
+    /// its own origin.
+    static func pageLocation(
+        of matched: Answer.Choice.Matched
+    ) -> Result<PreviewPluginPage.Location, PageRefusal> {
+        guard let render = matched.render, !render.isEmpty else { return .failure(.renderUnknown) }
+        guard render == "page" else { return .failure(.notAPagePlugin) }
+        guard let page = matched.page, !page.isEmpty else { return .failure(.pageUnknown) }
+        guard let root = matched.pluginDir, !root.isEmpty else { return .failure(.pluginDirUnknown) }
+        guard root.hasPrefix("/") else { return .failure(.pluginDirNotAbsolute) }
+        guard isRelativePagePath(page) else { return .failure(.pageNotRelative) }
+        return .success(PreviewPluginPage.Location(key: matched.key, root: root, page: page))
+    }
+
+    /// Whether `path` is a plain relative path inside a plugin directory:
+    /// no `..` component, nothing absolute, no drive letter or scheme colon,
+    /// no NUL, no backslash.
+    ///
+    /// ⚠️ **Deliberately the same rule as the core's** (`Plugin.zig`'s
+    /// `pageRefusal`, which refuses `..`, a leading `/`, a `:` and NUL): the
+    /// host is the second reader of the same field, and a page the core
+    /// would refuse must not become loadable just because this host was the
+    /// one that read it.
+    ///
+    /// A `..` *substring* is not a `..` *component* -- `a..b/x.html` is an
+    /// ordinary name -- which is why this splits rather than searching.
+    static func isRelativePagePath(_ path: String) -> Bool {
+        if path.isEmpty || path.hasPrefix("/") { return false }
+        if path.contains("\\") || path.contains("\0") { return false }
+        // A colon is a drive letter or a scheme; the core refuses it and so
+        // does this.
+        if path.contains(":") { return false }
+        return !path.split(separator: "/", omittingEmptySubsequences: false)
+            .contains { $0 == ".." }
     }
 
     // MARK: Handing the ticket back

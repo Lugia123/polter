@@ -235,22 +235,72 @@ struct PanePreviewPanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.windowBase.color)
             } else {
-                PreviewWebView(token: state.token)
+                switch state.presentation {
+                case .unavailable, .browser:
+                    // **A plugin claims this file and its page did not load.**
+                    // The file itself is right there and could be drawn -- and
+                    // drawing it is the silent fallback this branch exists to
+                    // prevent (task 2779 S7B). The two cases get different
+                    // sentences: a `browser` plugin is working as declared and
+                    // the host has not built its path.
+                    VStack(spacing: 6) {
+                        Spacer()
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(theme.textSecondary.color)
+                        Text(words(state.presentation))
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.textSecondary.color)
+                            .multilineTextAlignment(.center)
+                        Spacer()
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(theme.windowBase.color)
+                case .file, .pluginPage:
+                    PreviewWebView(token: state.token, presentation: state.presentation)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .background(theme.windowBase.color)
     }
+
+    /// The sentence for the two ways there is nothing to draw. Shared, so the
+    /// pane and the working-directories page cannot come to say two different
+    /// things about one plugin (task 2779 S7B).
+    private func words(_ p: PreviewTicket.Presentation) -> String {
+        switch p {
+        case .browser: return PreviewTicket.browserPreviewNotYet
+        case .unavailable: return PreviewTicket.pluginUnavailable
+        case .file, .pluginPage: return ""
+        }
+    }
 }
 
 /// Give each preview ticket its own web view and document handlers.
+///
+/// When the core named a plugin page for this file, that page is what loads
+/// -- the plugin's own HTML, in this same shell, drawing the file through
+/// the eight `window.polter` calls. `.file` loads the ticket's own file, as
+/// before. `.unavailable` never reaches here: the panel draws its own words
+/// rather than a web view, because there is no page to load.
 @MainActor
 struct PreviewWebView: View {
     let token: String
+    var presentation: PreviewTicket.Presentation = .file
+
+    private var identity: String {
+        switch presentation {
+        case .file: return token
+        case .unavailable: return "\(token)|unavailable"
+        case .browser: return "\(token)|browser"
+        case .pluginPage(let at): return "\(token)|\(at.key)|\(at.root)|\(at.page)"
+        }
+    }
 
     var body: some View {
-        PreviewDocumentView(token: token)
-            .id(token)
+        PreviewDocumentView(token: token, presentation: presentation)
+            .id(identity)
     }
 }
 
@@ -258,9 +308,10 @@ struct PreviewWebView: View {
 @MainActor
 private struct PreviewDocumentView: NSViewRepresentable {
     let token: String
+    var presentation: PreviewTicket.Presentation = .file
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(token: token)
+        Coordinator(token: token, presentation: presentation)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -268,7 +319,8 @@ private struct PreviewDocumentView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        // A new ticket changes the view identity; ordinary redraws keep its document.
+        // A new ticket or a new plugin page changes the view identity;
+        // ordinary redraws keep its document.
 
     }
 
@@ -277,9 +329,15 @@ private struct PreviewDocumentView: NSViewRepresentable {
         let token: String
         let bridge: PreviewBridge
 
-        init(token: String) {
+        init(token: String, presentation: PreviewTicket.Presentation) {
             self.token = token
-            self.bridge = PreviewBridge(token: token)
+            // `.unavailable` and `.browser` have no page to load: the panel
+            // draws its own words and never makes this view. If one is made
+            // anyway, the bridge gets no plugin page and the ticket's file
+            // loads -- the one fallback that is safe to be wrong about.
+            self.bridge = PreviewBridge(
+                token: token,
+                pluginPage: { if case .pluginPage(let at) = presentation { return at } else { return nil } }())
         }
     }
 }

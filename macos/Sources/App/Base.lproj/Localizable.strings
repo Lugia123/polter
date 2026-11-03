@@ -1441,3 +1441,9 @@
    which is why they are two keys and not one. */
 "Refresh files" = "Refresh files";
 "Refresh search" = "Refresh search";
+
+/* The preview: a plugin claimed the file and the host could not load its
+   page (task 2779 S7B). One sentence, not six -- which field the core left
+   out is the log's. The other six keys below it are the log's side. */
+"This preview plugin is not available." = "This preview plugin is not available.";
+"This plugin shows the file in a browser view, which is not available here yet." = "This plugin shows the file in a browser view, which is not available here yet.";

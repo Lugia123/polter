@@ -53,6 +53,17 @@ final class PreviewBridge: NSObject {
     /// here tries.
     let token: String
 
+    /// The plugin page that shows this file, when the core said which plugin
+    /// answers for it and where that plugin's page is (task 2779 S7B, the
+    /// contract in #2789).
+    ///
+    /// **`nil` is "no plugin page", and it is never guessed at.** A file no
+    /// plugin claims, a match whose location fields the core did not send,
+    /// and a `browser` plugin all leave this nil -- and with it nil the view
+    /// loads the ticket's own file, which is what a preview was before
+    /// plugins could claim one.
+    let pluginPage: PreviewPluginPage.Location?
+
     /// Told when the page says there are unsaved changes, so the host can draw
     /// its own "you have unsaved changes" question. Nothing is written.
     var onDirty: ((Bool) -> Void)?
@@ -68,8 +79,9 @@ final class PreviewBridge: NSObject {
     /// gets a window.
     private var shell: WebViewShell.Shell<PreviewBridge>?
 
-    init(token: String) {
+    init(token: String, pluginPage: PreviewPluginPage.Location? = nil) {
         self.token = token
+        self.pluginPage = pluginPage
     }
 
     /// The web view for this file, making the shell the first time.
@@ -88,9 +100,26 @@ extension PreviewBridge: WebViewShell.Page {
     static var handlerName: String { "polter" }
     static var bridgeScript: String { Self.previewBridgeScript }
 
-    /// The ticket's own file: an empty `rel` is the anchor
-    /// (`Tickets.resolve`), which is what previewing a file means.
+    /// The plugin's own page, when there is one: the same web view, the same
+    /// eight calls, and the page is the one the plugin shipped. Its resources
+    /// come over `PreviewPluginPage.scheme`, which is the second scheme this
+    /// page declares; the ticket's bytes still come through `window.polter`
+    /// and never over a URL.
+    var extraSchemes: [String] { pluginPage == nil ? [] : [PreviewPluginPage.scheme] }
+
+    /// What the view loads: **the plugin's page when the core named one, and
+    /// the ticket's own file otherwise.**
+    ///
+    /// ⚠️ **The plugin page is an absolute path the core gave**, fenced at
+    /// serve time (`PreviewPluginPage.fencedFile`) to the plugin's own
+    /// directory. Nothing here builds a path from the plugin's key -- the
+    /// whole reason `pluginPage` is a value the core sent rather than
+    /// something worked out from a name is that a host guessing where a
+    /// plugin lives is a host reading whatever is at the guess.
     var entryURL: URL? {
+        if let pluginPage { return pluginPage.url }
+        // The ticket's own file: an empty `rel` is the anchor
+        // (`Tickets.resolve`), which is what previewing a file means.
         var components = URLComponents()
         components.scheme = Self.scheme
         components.host = token
@@ -102,7 +131,17 @@ extension PreviewBridge: WebViewShell.Page {
     /// preview may load from, and a settings page has no ticket to name. The
     /// text is `PreviewRoutes.policy`'s so the mac and Windows hosts send the
     /// same one.
-    var policy: String { PreviewRoutes.policy(token: token) }
+    ///
+    /// ⚠️ **A plugin page's policy is `PreviewPluginPage.policy`, and the
+    /// difference is deliberate.** The ticket's policy names
+    /// `polter-file://<token>` because a previewed file's own `<img src>` is
+    /// a request for a ticket path. A plugin page's resources are its own
+    /// directory's, and it must not be able to name the ticket's route at
+    /// all -- that would be a second way for the page to read a file, past
+    /// the eight calls that are the whole surface.
+    var policy: String {
+        pluginPage == nil ? PreviewRoutes.policy(token: token) : PreviewPluginPage.policy
+    }
 
     /// What the page finds on `window`.
     ///
@@ -313,18 +352,63 @@ extension PreviewBridge: WKURLSchemeHandler {
         // in flight to cancel.
     }
 
+    /// Serve one request the page made.
+    ///
+    /// **Two schemes, two kinds of bytes, and they are judged by different
+    /// rules.** Which one a request is on is the first thing decided, because
+    /// the rule that makes the ticket safe (the core judges every path
+    /// against the ticket) is not the rule that makes a plugin page safe (the
+    /// path must resolve inside the one directory the core named) -- and a
+    /// request that fell through to the other rule would be reading under a
+    /// fence nobody put there.
+    private func serve(_ task: WKURLSchemeTask) {
+        guard let url = task.request.url else {
+            fail(task, status: 403)
+            return
+        }
+        if url.scheme == PreviewPluginPage.scheme {
+            servePluginPage(task, url)
+            return
+        }
+        serveTicket(task, url)
+    }
+
+    /// Serve one request the plugin's own page made, out of the plugin's own
+    /// directory and nowhere else.
+    ///
+    /// ⚠️ **The authority has to be *this* plugin's key.** A page asking for
+    /// `polter-plugin-page://other/…` is asking for somebody else's
+    /// installed directory, and this view was never given that plugin.
+    private func servePluginPage(_ task: WKURLSchemeTask, _ url: URL) {
+        guard let page = pluginPage, url.host == page.key, url.user == nil, url.password == nil,
+              url.port == nil, url.query == nil, url.fragment == nil,
+              // Percent-escapes are decoded before the fence looks at the
+              // path: `%2e%2e` is `..` and a fence that checked the raw
+              // string would let it past.
+              let decoded = url.path.removingPercentEncoding,
+              let file = PreviewPluginPage.fencedFile(root: page.root, path: decoded)
+        else {
+            Self.logger.warning(
+                "preview \(self.token, privacy: .public): a plugin page request was refused for its scheme, host or path")
+            fail(task, status: 403)
+            return
+        }
+        guard let data = try? Data(contentsOf: file) else {
+            fail(task, status: 403)
+            return
+        }
+        reply(task, url, data: data, type: PreviewPluginPage.contentType(of: file),
+              policy: PreviewPluginPage.policy)
+    }
+
     /// Serve one request the page made over `polter-file://`.
     ///
     /// **The route says which ticket and which `rel`; the core says whether and
     /// where.** Nothing here builds a path, and there is no branch in which it
     /// could: it hands `(token, rel)` to the core's `files_resolve` and writes
     /// what came back.
-    private func serve(_ task: WKURLSchemeTask) {
-        guard let url = task.request.url,
-              // `resolve` answers a `Result` rather than throwing, so this
-              // unwraps it: `try?` over a non-throwing call would wrap the
-              // `Result` itself and leave `route` a `Result` with no `.token`.
-              case .success(let route) = PreviewRoutes.resolve(url.absoluteString),
+    private func serveTicket(_ task: WKURLSchemeTask, _ url: URL) {
+        guard case .success(let route) = PreviewRoutes.resolve(url.absoluteString),
               // A page may only ask about the ticket it was served from: a
               // second token in the URL is another file's capability, and this
               // view was never given it.
@@ -344,12 +428,22 @@ extension PreviewBridge: WKURLSchemeHandler {
             return
         }
 
+        reply(task, url, data: data, type: PreviewRoutes.contentType(of: path),
+              policy: PreviewRoutes.policy(token: token))
+    }
+
+    /// One answer, in the shape both schemes send: the bytes, what they are,
+    /// the policy, and the three headers a page served out of somebody's own
+    /// directory wants.
+    private func reply(
+        _ task: WKURLSchemeTask, _ url: URL, data: Data, type: String, policy: String
+    ) {
         let response = HTTPURLResponse(
             url: url,
             statusCode: 200,
             httpVersion: "HTTP/1.1",
             headerFields: [
-                "Content-Type": PreviewRoutes.contentType(of: path),
+                "Content-Type": type,
                 "Content-Length": String(data.count),
                 "Content-Security-Policy": policy,
 

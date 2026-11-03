@@ -182,6 +182,7 @@
       },
       "macos/Sources/Features/Projects/ProjectPaneSizes.swift",
       "macos/Sources/Features/Preview/PluginWebView.swift",
+      "macos/Sources/Features/Preview/PreviewPluginPage.swift",
       "macos/Sources/Features/Preview/PreviewRoutes.swift",
       "macos/Sources/Features/Preview/PreviewSlot.swift",
       "macos/Sources/Features/Preview/PreviewTicket.swift",
@@ -368,6 +369,7 @@
       "macos/Tests/Settings/AgentCliRulesTests.swift",
       "macos/Tests/Settings/SettingsRulesTests.swift",
       "macos/Tests/Squads/SquadLibraryTests.swift",
+      "macos/Tests/Preview/PreviewPluginPageTests.swift",
       "macos/Tests/Preview/PreviewRoutesTests.swift",
       "macos/Tests/Preview/PreviewSlotTests.swift",
       "macos/Tests/Preview/PreviewTicketTests.swift"
