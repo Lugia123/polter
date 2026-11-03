@@ -2534,8 +2534,16 @@ fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
 /// `note` with `preface` after its first sentence, "Task N closed." The
 /// reply to a close says what became of the members first and of the tree
 /// next, and the tree's sentence begins with that header.
+/// **The returned slice is always the arena's, including when there is
+/// nothing to add.** `note` belongs to whoever made it -- in the close path
+/// it is a `worktree.Job`'s, freed by `Job.destroy` the moment the parked
+/// reply has been assembled -- so handing it back as it is gives the caller
+/// a slice that dies before it is written: the reply is serialized on the
+/// connection thread, after the job is gone (#2783). Copying costs one
+/// sentence's worth of bytes and makes every return here have the same
+/// owner.
 pub fn withPreface(arena: Allocator, note: []const u8, preface: []const u8, task: u64, mode: CloseMode) Allocator.Error![]const u8 {
-    if (preface.len == 0) return note;
+    if (preface.len == 0) return arena.dupe(u8, note);
     const header = try std.fmt.allocPrint(arena, "Task {d} {s}.", .{ task, switch (mode) {
         .closed => "closed",
         .cancelled => "cancelled",
@@ -4966,6 +4974,29 @@ test "worktree: withPreface 把成员的话放在第一句之后；开头对不�
     try testing.expectEqualStrings("Task 5 closed. X", try withPreface(a, "Task 5 closed. X", "", 5, .closed));
     // A header that is not the one asked for: the preface goes first, nothing is lost.
     try testing.expectEqualStrings(" Z.Task 6 closed. X", try withPreface(a, "Task 6 closed. X", " Z.", 5, .closed));
+}
+
+test "worktree: withPreface 空 preface 也要复制 —— note 是 job 的 arena，回包在它被销毁之后才写" {
+    // **The floor is the mutation**, not the string: `note` comes out of
+    // another owner's arena (`worktree.Job`), which `Job.destroy` frees
+    // before the connection thread serializes the reply (#2783). A returned
+    // slice that merely *equals* the note passes every string assertion
+    // here; only writing through the original buffer afterwards tells the
+    // two apart.
+    var own: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer own.deinit();
+    var other: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer other.deinit();
+
+    const note = try other.allocator().dupe(u8, "Task 2702 closed. It has no worktree.");
+    const got = try withPreface(own.allocator(), note, "", 2702, .closed);
+
+    try testing.expectEqualStrings("Task 2702 closed. It has no worktree.", got);
+    // A copy in the caller's arena, not the caller's own slice.
+    try testing.expect(@intFromPtr(got.ptr) != @intFromPtr(note.ptr));
+
+    @memset(note, 'X');
+    try testing.expectEqualStrings("Task 2702 closed. It has no worktree.", got);
 }
 
 test "lease: releaseTask 放掉任何人的租约并记原因，没人持有时什么也没有" {
