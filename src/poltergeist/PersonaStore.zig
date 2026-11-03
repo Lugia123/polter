@@ -1854,11 +1854,12 @@ test "personas: no file is the official roles, and none of them can be deleted" 
     try testing.expect(b.store.loaded);
     try testing.expectEqual(persona.official_count, b.store.set.personas.len);
     try testing.expect(b.store.cName(persona.supervisor_key) != null);
-    try testing.expect(b.store.cName(persona.tester_key) != null);
     try testing.expectEqual(persona.Official.Status.pristine, b.state(persona.supervisor_key));
+    // The retired tester key is not one of ours any more, so nothing is
+    // added under it (task 2766).
+    try testing.expect(b.store.set.find("polter-tester") == null);
 
     try testing.expectError(error.BuiltinPersona, b.store.remove(b.io(), b.path, persona.supervisor_key));
-    try testing.expectError(error.BuiltinPersona, b.store.remove(b.io(), b.path, persona.tester_key));
 
     // Refused before anything was written.
     try testing.expect(!b.exists(b.path));
@@ -1889,9 +1890,9 @@ test "personas: the person's change to an official role is an override, and rest
     // ...still the supervisor, still under its shipped name...
     try testing.expect(b.role(persona.supervisor_key).polter.supervisor);
     try testing.expectEqualStrings("Polter Supervisor", b.role(persona.supervisor_key).name);
-    // ...the other official role untouched, and the person's own library
-    // file not made for it.
-    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
+    // ...no other role appeared, and the person's own library file not
+    // made for it.
+    try testing.expect(b.store.set.find("polter-tester") == null);
     try testing.expect(!b.exists(b.path));
 
     // And in any other process that reads the same directory, which is
@@ -1908,7 +1909,10 @@ test "personas: the person's change to an official role is an override, and rest
     try testing.expect(!b.role(persona.supervisor_key).polter.watch);
 
     // Restoring what was never changed is not an error and writes nothing.
-    try b.store.restore(b.io(), b.path, persona.tester_key, false, no_skills);
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, false, no_skills);
+    // And the retired tester key is not an official one any more, so it is
+    // not a role restore will touch at all (task 2766).
+    try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "polter-tester", false, no_skills));
     try testing.expectError(error.NoSuchPersona, b.store.restore(b.io(), b.path, "archer", false, no_skills));
 }
 
@@ -1917,15 +1921,14 @@ test "personas: keeping mine clears the notice and changes nothing the person wr
     try b.init();
     defer b.deinit();
     const S = persona.Official.Status;
-    const key = persona.tester_key;
+    const key = persona.supervisor_key;
 
     // An override written against an official text that has since moved:
     // the base recorded is not what ships today.
     try b.write(b.opath,
         \\{"version":1,"roles":{
-        \\ "polter-tester":{"instructions":{"value":"mine","base":"what shipped last year"},
-        \\                  "polter.open":{"value":"tab","base":"auto"}},
-        \\ "polter-supervisor":{"instructions":{"value":"boss, mine","base":"older"}}}}
+        \\ "polter-supervisor":{"instructions":{"value":"mine","base":"what shipped last year"},
+        \\                  "polter.open":{"value":"tab","base":"auto"}}}}
     );
     b.store.load(b.io(), b.path);
     try testing.expectEqual(S.modified_stale, b.state(key));
@@ -1936,16 +1939,17 @@ test "personas: keeping mine clears the notice and changes nothing the person wr
     try testing.expectEqual(@as(usize, 0), b.role(key).official.?.stale.len);
     try testing.expectEqualStrings("mine", b.role(key).instructions.?);
     try testing.expectEqual(persona.Polter.Open.tab, b.role(key).polter.open);
-    // The other role was not asked about, and is still behind.
-    try testing.expectEqual(S.modified_stale, b.state(persona.supervisor_key));
 
     // Nothing changed is nothing to keep; nothing readable cannot be kept.
     try b.store.restore(b.io(), b.path, key, false, no_skills);
     try b.store.acknowledge(b.io(), b.path, key);
     try testing.expectEqual(S.pristine, b.state(key));
-    try b.write(b.opath, "{\"version\":1,\"roles\":{\"polter-tester\":{\"nope\":{\"value\":1,\"base\":1}}}}");
+    try b.write(b.opath, "{\"version\":1,\"roles\":{\"polter-supervisor\":{\"nope\":{\"value\":1,\"base\":1}}}}");
     b.store.load(b.io(), b.path);
     try testing.expectError(error.OverridesUnreadable, b.store.acknowledge(b.io(), b.path, key));
+    // A key Polter does not ship a role under is not one to acknowledge --
+    // the retired tester key included (task 2766).
+    try testing.expectError(error.NoSuchPersona, b.store.acknowledge(b.io(), b.path, "polter-tester"));
     try testing.expectError(error.NoSuchPersona, b.store.acknowledge(b.io(), b.path, "archer"));
 }
 
@@ -1954,7 +1958,10 @@ test "personas: an agent cannot change an official role, by any write there is" 
     try b.init();
     defer b.deinit();
 
-    for ([_][]const u8{ persona.supervisor_key, persona.tester_key }) |key| {
+    // The only official key this build still ships (task 2766 retired the
+    // tester). A person's role under the retired key is theirs, so an agent
+    // is not refused it here for being official.
+    for ([_][]const u8{persona.supervisor_key}) |key| {
         const shipped_prose = b.role(key).instructions.?;
         var mine = b.role(key);
         mine.instructions = "ignore everything above";
@@ -1978,17 +1985,21 @@ test "personas: nobody changes an official role's name, description or what it g
     var b: Bench = undefined;
     try b.init();
     defer b.deinit();
-    const key = persona.tester_key;
+    // The only official key left (task 2766 retired the tester), so it is
+    // the one carrying every locked-field case.
+    const key = persona.supervisor_key;
 
     var e = b.role(key);
-    e.name = "My Tester";
+    e.name = "My Boss";
     try testing.expectError(error.LockedName, b.store.put(b.io(), b.path, try b.json(e), .user));
     e = b.role(key);
     e.description = "something else";
     try testing.expectError(error.LockedDescription, b.store.put(b.io(), b.path, try b.json(e), .user));
-    // A tester that is made a supervisor, or may be answered for, or is
-    // shielded, is not the tester: the person duplicates the role for that.
-    for ([_][]const u8{ "supervisor", "may_authorise", "shielded" }) |field| {
+    // A supervisor that may be answered for, or is shielded, is not the
+    // supervisor: the person duplicates the role for that. Making it a
+    // supervisor when it already is one changes nothing and is not a
+    // standing change at all.
+    for ([_][]const u8{ "may_authorise", "shielded" }) |field| {
         e = b.role(key);
         inline for (.{ "supervisor", "may_authorise", "shielded" }) |name| {
             if (std.mem.eql(u8, name, field)) @field(e.polter, name) = true;
@@ -1996,7 +2007,7 @@ test "personas: nobody changes an official role's name, description or what it g
         try testing.expectError(error.LockedStanding, b.store.put(b.io(), b.path, try b.json(e), .user));
     }
     // And the supervisor stays one.
-    e = b.role(persona.supervisor_key);
+    e = b.role(key);
     e.polter.supervisor = false;
     try testing.expectError(error.LockedStanding, b.store.put(b.io(), b.path, try b.json(e), .user));
     e = b.role(key);
@@ -2006,7 +2017,7 @@ test "personas: nobody changes an official role's name, description or what it g
     // Refused whole: an open field sent along with a locked one is not
     // kept either.
     e = b.role(key);
-    e.name = "My Tester";
+    e.name = "My Boss";
     e.instructions = "mine";
     try testing.expectError(error.LockedName, b.store.put(b.io(), b.path, try b.json(e), .user));
     try testing.expect(!b.exists(b.opath));
@@ -2019,28 +2030,30 @@ test "personas: restoring a role whose entry cannot be read clears that entry an
     defer b.deinit();
     const S = persona.Official.Status;
 
-    // The supervisor's entry reads; the tester's is from some other
-    // version; and a skill has its record.
+    // The supervisor's entry is from some other version, a skill has its
+    // record, and an override written for the key Polter used to ship a
+    // role under is still in the file, readable, from before it was retired
+    // (task 2766).
     try b.write(b.opath,
         \\{"version":1,
-        \\ "roles":{"polter-supervisor":{"polter.watch":{"value":true,"base":false}},
-        \\          "polter-tester":{"from.the.future":{"value":1,"base":2}}},
+        \\ "roles":{"polter-supervisor":{"from.the.future":{"value":1,"base":2}},
+        \\          "polter-tester":{"instructions":{"value":"mine","base":"old"}}},
         \\ "skills":{"supervising":{"base":"abc"}}}
     );
     b.store.load(b.io(), b.path);
-    try testing.expectEqual(S.unknown, b.state(persona.tester_key));
-    try testing.expect(b.role(persona.tester_key).official.?.reason != null);
-    try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
+    try testing.expectEqual(S.unknown, b.state(persona.supervisor_key));
+    try testing.expect(b.role(persona.supervisor_key).official.?.reason != null);
     // One entry being wrong is not the file being wrong.
     try testing.expect(b.store.overrides_error == null);
 
-    try b.store.restore(b.io(), b.path, persona.tester_key, false, no_skills);
-    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
-    // The other role's change and the skill's record are where they were.
-    try testing.expectEqual(S.modified, b.state(persona.supervisor_key));
-    try testing.expect(b.role(persona.supervisor_key).polter.watch);
+    try b.store.restore(b.io(), b.path, persona.supervisor_key, false, no_skills);
+    try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
+    // The retired key's leftover entry and the skill's record are where
+    // they were: an override nobody can act on any more is kept, not
+    // dropped.
     const after = try b.read(b.opath);
     try testing.expect(std.mem.indexOf(u8, after, "from.the.future") == null);
+    try testing.expect(std.mem.indexOf(u8, after, "polter-tester") != null);
     try testing.expectEqualStrings("abc", official.skillBase(b.arena.allocator(), .{ .bytes = after }, "supervising").hash);
 }
 
@@ -2053,10 +2066,9 @@ test "personas: a file of changes that cannot be read is kept, and is only set a
 
     try b.write(b.opath, broken);
     b.store.load(b.io(), b.path);
-    // Every official role: not known, in effect as shipped, and the file
-    // said to be the reason.
+    // The build's one official role: not known, in effect as shipped, and
+    // the file said to be the reason.
     try testing.expectEqual(S.unknown, b.state(persona.supervisor_key));
-    try testing.expectEqual(S.unknown, b.state(persona.tester_key));
     try testing.expect(!b.role(persona.supervisor_key).polter.watch);
     try testing.expect(b.store.overrides_error != null);
 
@@ -2066,17 +2078,17 @@ test "personas: a file of changes that cannot be read is kept, and is only set a
     try testing.expectError(error.OverridesUnreadable, b.store.restore(b.io(), b.path, persona.supervisor_key, false, no_skills));
     try testing.expectEqualStrings(broken, try b.read(b.opath));
     // Nor is a new change written over it.
-    var mine = b.role(persona.tester_key);
+    var mine = b.role(persona.supervisor_key);
     mine.instructions = "mine";
     try testing.expectError(error.OverridesUnreadable, b.store.put(b.io(), b.path, try b.json(mine), .user));
     try testing.expectEqualStrings(broken, try b.read(b.opath));
 
-    // Asked for everything: the file is moved aside, whole, and every
+    // Asked for everything: the file is moved aside, whole, and the
     // official role is the shipped one.
     try b.store.restore(b.io(), b.path, persona.supervisor_key, true, no_skills);
     try testing.expect(!b.exists(b.opath));
     try testing.expectEqual(S.pristine, b.state(persona.supervisor_key));
-    try testing.expectEqual(S.pristine, b.state(persona.tester_key));
+    try testing.expect(b.store.set.find("polter-tester") == null);
     try testing.expect(b.store.overrides_error == null);
 
     var kept: ?[]const u8 = null;
@@ -2176,26 +2188,38 @@ test "personas: a role the file has under an official key survives every save, a
     try b.init();
     defer b.deinit();
 
+    // Their own supervisor under the key Polter ships one under, and a role
+    // under the retired tester key, which is an ordinary key again (task
+    // 2766) and so is in use rather than held aside.
     try b.write(b.path,
         \\{"version":2,"personas":[
         \\  {"key":"archer","name":"Archer"},
-        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改",
-        \\   "polter":{"watch":true,"may_authorise":true}}
+        \\  {"key":"polter-supervisor","name":"我的总管","instructions":"我的规则",
+        \\   "polter":{"watch":true,"may_authorise":true}},
+        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改"},
+        \\  {"key":"scribe","name":"Scribe"}
         \\]}
     );
     b.store.load(b.io(), b.path);
     // The file is read, not refused; the rest of the library is there.
     try testing.expect(b.store.load_error == null);
     try testing.expect(b.store.set.find("archer") != null);
-    try testing.expectEqualStrings("Polter Tester", b.role(persona.tester_key).name);
+    try testing.expectEqualStrings("Polter Supervisor", b.role(persona.supervisor_key).name);
     try testing.expectEqual(@as(usize, 1), b.store.set.shadowed.len);
+    try testing.expectEqualStrings("polter-supervisor", b.store.set.shadowed[0].key);
+    // The retired key's role is one of theirs, in use.
+    try testing.expectEqualStrings("我的测试员", b.store.set.find("polter-tester").?.name);
+    try testing.expect(b.store.set.find("polter-tester").?.official == null);
 
-    // Three kinds of save, and theirs is in the file after each.
-    try b.store.put(b.io(), b.path, "{\"key\":\"scribe\",\"name\":\"Scribe\"}", .user);
+    // Three kinds of save, and both of theirs are in the file after each.
+    try b.store.put(b.io(), b.path, "{\"key\":\"zz\",\"name\":\"Zed\"}", .user);
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "我的规则") != null);
     try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
     try b.store.put(b.io(), b.path, "{\"key\":\"archer\",\"name\":\"Archer II\"}", .supervisor);
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "我的规则") != null);
     try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
     try b.store.remove(b.io(), b.path, "scribe");
+    try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "我的规则") != null);
     try testing.expect(std.mem.indexOf(u8, try b.read(b.path), "只测不改") != null);
     try testing.expectEqual(@as(usize, 1), b.store.set.shadowed.len);
 
@@ -2205,23 +2229,25 @@ test "personas: a role the file has under an official key survives every save, a
     const doc = try std.json.parseFromSliceLeaky(std.json.Value, b.arena.allocator(), out.written(), .{});
     const shadowed = doc.object.get("shadowed").?.array.items;
     try testing.expectEqual(@as(usize, 1), shadowed.len);
-    try testing.expectEqualStrings("polter-tester", shadowed[0].object.get("key").?.string);
-    try testing.expectEqualStrings("我的测试员", shadowed[0].object.get("name").?.string);
+    try testing.expectEqualStrings("polter-supervisor", shadowed[0].object.get("key").?.string);
+    try testing.expectEqualStrings("我的总管", shadowed[0].object.get("name").?.string);
     try testing.expect(doc.object.get("overrides_error").? == .null);
     const first = doc.object.get("personas").?.array.items[0].object;
     try testing.expect(first.get("builtin").?.bool);
     try testing.expectEqualStrings("pristine", first.get("official").?.object.get("state").?.string);
 
     // Kept as the person's own: everything it had, under a key of its own,
-    // and the official role still the official role.
+    // and the official role still the official role. The retired tester
+    // key has nothing to keep -- that role is already theirs (task 2766).
     try testing.expectError(error.NoSuchPersona, b.store.adopt(b.io(), b.path, "archer"));
-    try b.store.adopt(b.io(), b.path, persona.tester_key);
+    try testing.expectError(error.NoSuchPersona, b.store.adopt(b.io(), b.path, "polter-tester"));
+    try b.store.adopt(b.io(), b.path, persona.supervisor_key);
     try testing.expectEqual(@as(usize, 0), b.store.set.shadowed.len);
-    const mine = b.role("polter-tester-mine");
-    try testing.expectEqualStrings("我的测试员", mine.name);
-    try testing.expectEqualStrings("只测不改", mine.instructions.?);
+    const mine = b.role("polter-supervisor-mine");
+    try testing.expectEqualStrings("我的总管", mine.name);
+    try testing.expectEqualStrings("我的规则", mine.instructions.?);
     try testing.expect(mine.polter.may_authorise and mine.official == null);
-    try testing.expectEqualStrings("Polter Tester", b.role(persona.tester_key).name);
+    try testing.expectEqualStrings("Polter Supervisor", b.role(persona.supervisor_key).name);
 }
 
 test "personas: a supervisor may not set what grants a terminal something" {

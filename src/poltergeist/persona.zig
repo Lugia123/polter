@@ -442,10 +442,9 @@ pub fn memberBrief(
 // ------------------------------------------------------ the official roles
 
 /// The roles Polter ships are data, not code: `official.zig` has where they
-/// come from and how what a person changed in one is kept. Two keys are
-/// named here because code asks for those roles by name.
+/// come from and how what a person changed in one is kept. This one key is
+/// named here because code asks for that role by name.
 pub const supervisor_key = "polter-supervisor";
-pub const tester_key = "polter-tester";
 
 /// How many official roles this build carries. They come first in every
 /// set.
@@ -518,9 +517,9 @@ pub const Set = struct {
 
     /// Roles in the file under a key that is an official role's. They are
     /// not in `personas` -- the official one is -- and they are **written
-    /// back as they were read**, so that a key Polter starts shipping
-    /// (`polter-tester` was anybody's to use until it did) does not cost a
-    /// person the role they had under it the next time anything is saved.
+    /// back as they were read**, so that a key Polter starts shipping does
+    /// not cost a person the role they had under it the next time anything
+    /// is saved.
     shadowed: []const Persona = &.{},
 
     pub fn find(self: Set, key: []const u8) ?Persona {
@@ -1863,7 +1862,9 @@ test "persona: every set starts with the official roles" {
     // whichever of them this machine has.
     try testing.expectEqual(@as(usize, 3), boss.clis.len);
     try testing.expect(boss.cli("antigravity") != null);
-    try testing.expect(empty.find(tester_key).?.official != null);
+    // The retired tester key is not ours any more: nothing is added under
+    // it (task 2766).
+    try testing.expect(empty.find("polter-tester") == null);
     // With no file at all, the same.
     const none = try official.assemble(aa, null, &official.sources, .absent);
     try testing.expect(none.find(supervisor_key) != null);
@@ -1875,11 +1876,12 @@ test "persona: a role in the file under an official key is kept, unused, and wri
     defer arena.deinit();
     const aa = arena.allocator();
 
-    // `polter-tester` was anybody's key until Polter shipped a role under it.
+    // The person has their own role under the key Polter ships the
+    // supervisor under.
     const file =
         \\{"version":2,"personas":[
         \\  {"key":"archer","name":"Archer"},
-        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改"},
+        \\  {"key":"polter-supervisor","name":"我的总管","instructions":"我的规则"},
         \\  {"key":"scribe","name":"书记"}
         \\]}
     ;
@@ -1888,11 +1890,11 @@ test "persona: a role in the file under an official key is kept, unused, and wri
     try testing.expectEqual(official_count + 2, set.personas.len);
     try testing.expect(set.find("archer") != null and set.find("scribe") != null);
     // The official one is the one in use...
-    try testing.expectEqualStrings("Polter Tester", set.find(tester_key).?.name);
-    try testing.expect(set.find(tester_key).?.official != null);
+    try testing.expectEqualStrings("Polter Supervisor", set.find(supervisor_key).?.name);
+    try testing.expect(set.find(supervisor_key).?.official != null);
     // ...and theirs is held, whole.
     try testing.expectEqual(@as(usize, 1), set.shadowed.len);
-    try testing.expectEqualStrings("我的测试员", set.shadowed[0].name);
+    try testing.expectEqualStrings("我的总管", set.shadowed[0].name);
     try testing.expect(set.shadowed[0].official == null);
 
     // Saving anything else -- here, a new role -- does not lose it.
@@ -1900,24 +1902,55 @@ test "persona: a role in the file under an official key is kept, unused, and wri
     const fewer = (try withoutPersona(aa, edited, "archer")).?;
     var out: std.Io.Writer.Allocating = .init(aa);
     try writeSet(&out.writer, fewer);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "我的测试员") != null);
-    try testing.expect(std.mem.indexOf(u8, out.written(), "只测不改") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "我的总管") != null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "我的规则") != null);
     // The official role itself is still not written.
-    try testing.expect(std.mem.indexOf(u8, out.written(), "Polter Tester") == null);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "Polter Supervisor") == null);
 
     const again = try parseLeaky(aa, out.written());
     try testing.expectEqual(@as(usize, 1), again.shadowed.len);
-    try testing.expectEqualStrings("只测不改", again.shadowed[0].instructions.?);
+    try testing.expectEqualStrings("我的规则", again.shadowed[0].instructions.?);
 
     // Two of them under the one key is still two roles with one key.
     try testing.expectError(error.DuplicateKey, parseLeaky(aa,
-        \\{"version":2,"personas":[{"key":"polter-tester","name":"a"},{"key":"polter-tester","name":"b"}]}
+        \\{"version":2,"personas":[{"key":"polter-supervisor","name":"a"},{"key":"polter-supervisor","name":"b"}]}
     ));
 
     // One role arriving by itself under an official key parses: whether it
     // may be written is the store's to say, which knows who is asking.
     const one = try parsePersonaLeaky(aa, "{\"key\":\"polter-supervisor\",\"name\":\"mine\"}");
     try testing.expect(one.official == null);
+}
+
+test "2766: the retired tester key is an ordinary key, and its role is the person's" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // `polter-tester` was anybody's key while Polter shipped a role under
+    // it, and is anybody's again now that it does not. A person's role
+    // under it is an ordinary role: in use, not held aside, not official.
+    const file =
+        \\{"version":2,"personas":[
+        \\  {"key":"archer","name":"Archer"},
+        \\  {"key":"polter-tester","name":"我的测试员","instructions":"只测不改"},
+        \\  {"key":"scribe","name":"书记"}
+        \\]}
+    ;
+    const set = try parseLeaky(aa, file);
+    try testing.expectEqual(official_count + 3, set.personas.len);
+    try testing.expectEqual(@as(usize, 0), set.shadowed.len);
+    try testing.expectEqualStrings("我的测试员", set.find("polter-tester").?.name);
+    try testing.expect(set.find("polter-tester").?.official == null);
+    try testing.expect(!official.isKey("polter-tester"));
+
+    // And it is written back as one of theirs, like any other role.
+    var out: std.Io.Writer.Allocating = .init(aa);
+    try writeSet(&out.writer, set);
+    try testing.expect(std.mem.indexOf(u8, out.written(), "只测不改") != null);
+    const again = try parseLeaky(aa, out.written());
+    try testing.expectEqual(@as(usize, 0), again.shadowed.len);
+    try testing.expectEqualStrings("我的测试员", again.find("polter-tester").?.name);
 }
 
 test "persona: the Polter half reads, writes back, and the official roles are not written" {

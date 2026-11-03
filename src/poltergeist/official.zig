@@ -914,7 +914,7 @@ test "official: every shipped role reads, under its own file name, with its pros
     defer arena.deinit();
     const aa = arena.allocator();
 
-    try testing.expect(sources.len >= 2);
+    try testing.expect(sources.len >= 1);
     for (sources) |src| {
         const p = parseSource(aa, src) catch |err| {
             std.debug.print("\nroles/{s}.json failed to parse: {}\n", .{ src.key, err });
@@ -930,29 +930,32 @@ test "official: every shipped role reads, under its own file name, with its pros
         try testing.expectEqual(std.mem.eql(u8, p.key, persona.supervisor_key), p.polter.supervisor);
     }
     try testing.expect(isKey(persona.supervisor_key));
-    try testing.expect(isKey(persona.tester_key));
+    try testing.expect(!isKey("polter-tester"));
     try testing.expect(!isKey("archer"));
 }
 
-test "official: the tester is a watched worker with one skill and no MCP" {
+test "2766: retired tester is not shipped and its former key stays a user role" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
 
-    const roles = try effective(aa, &sources, .absent);
-    const t = for (roles) |p| {
-        if (std.mem.eql(u8, p.key, persona.tester_key)) break p;
-    } else return error.TestExpectedEqual;
-    try testing.expectEqualStrings("Polter Tester", t.name);
-    try testing.expect(t.polter.watch and !t.polter.supervisor);
-    try testing.expectEqual(Polter.Open.auto, t.polter.open);
-    try testing.expect(t.cli("claude-code") != null and t.cli("codex") != null);
-    try testing.expect(!t.cli_skills.default and !t.cli_mcp.default);
-    try testing.expectEqual(@as(usize, 1), t.cli_skills.except.len);
-    try testing.expectEqualStrings("skill:polter-operating-a-terminal", t.cli_skills.except[0]);
-    try testing.expectEqual(@as(usize, 0), t.cli_mcp.except.len);
-    try testing.expect(std.mem.indexOf(u8, t.instructions.?, "You test; you do not fix") != null);
-    try testing.expect(std.mem.indexOf(u8, t.instructions.?, "task_progress") != null);
+    // The retired key is no longer one of ours; the supervisor still is.
+    try testing.expect(!isKey("polter-tester"));
+    try testing.expect(isKey(persona.supervisor_key));
+
+    // With no file at all, nothing answers to it.
+    const none = try assemble(aa, null, &sources, .absent);
+    try testing.expect(none.find("polter-tester") == null);
+    try testing.expect(none.find(persona.supervisor_key) != null);
+
+    // A person's own role under that key is an ordinary role now: in use,
+    // not held aside, and not an official one.
+    const mine = try assemble(aa,
+        \\{"version":2,"personas":[{"key":"polter-tester","name":"Mine","instructions":"mine"}]}
+    , &sources, .absent);
+    try testing.expectEqualStrings("Mine", mine.find("polter-tester").?.name);
+    try testing.expect(mine.find("polter-tester").?.official == null);
+    try testing.expectEqual(@as(usize, 0), mine.shadowed.len);
 }
 
 test "official: a shipped file that is wrong is refused, each way it can be" {
