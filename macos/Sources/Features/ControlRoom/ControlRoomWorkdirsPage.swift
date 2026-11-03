@@ -223,30 +223,37 @@ struct ControlRoomWorkdirsPage: View {
             Spacer(minLength: 0)
 
             VStack(spacing: Tile.actGap) {
-                Button {
-                    activity.toggle()
-                    // **The two halves of a mark press**, because this button
-                    // is the same fold reached from the other end: a column
-                    // that has just gone takes the walk with it, and one that
-                    // has just come back carries an unfinished walk on rather
-                    // than leaving the page saying 「还在找」 for nothing.
-                    // The panel has to be the search's for that second half:
-                    // unfolding onto the explorer is still a panel nobody is
-                    // searching in.
-                    if activity.open && activity.icon == .search {
-                        resumeSearch()
-                    } else {
-                        generation &+= 1
+                RowHover { over in
+                    Button {
+                        activity.toggle()
+                        // **The two halves of a mark press**, because this button
+                        // is the same fold reached from the other end: a column
+                        // that has just gone takes the walk with it, and one that
+                        // has just come back carries an unfinished walk on rather
+                        // than leaving the page saying 「还在找」 for nothing.
+                        // The panel has to be the search's for that second half:
+                        // unfolding onto the explorer is still a panel nobody is
+                        // searching in.
+                        if activity.open && activity.icon == .search {
+                            resumeSearch()
+                        } else {
+                            generation &+= 1
+                        }
+                    } label: {
+                        icon(ControlRoomWorkdirs.Mark.collapseSidebar,
+                             ink: over ? theme.text : theme.textTertiary)
+                            .frame(width: Tile.actItem, height: Tile.actItem)
+                            .contentShape(Rectangle())
+                            .background(
+                                RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
+                                    .fill(over ? theme.windowTabHover.color : Color.clear)
+                            )
                     }
-                } label: {
-                    icon(ControlRoomWorkdirs.Mark.collapseSidebar,
-                         ink: theme.textTertiary)
-                        .frame(width: Tile.actItem, height: Tile.actItem)
+                    .buttonStyle(.plain)
+                    .help(activity.open
+                          ? String(localized: "Collapse the sidebar", comment: "工作目录页：活动栏底部，收起侧栏按钮的提示")
+                          : String(localized: "Expand the sidebar", comment: "工作目录页：活动栏底部，展开侧栏按钮的提示"))
                 }
-                .buttonStyle(.plain)
-                .help(activity.open
-                      ? String(localized: "Collapse the sidebar", comment: "工作目录页：活动栏底部，收起侧栏按钮的提示")
-                      : String(localized: "Expand the sidebar", comment: "工作目录页：活动栏底部，展开侧栏按钮的提示"))
             }
             .padding(.vertical, Tile.actPad)
         }
@@ -261,6 +268,14 @@ struct ControlRoomWorkdirsPage: View {
     /// One mark of the activity bar, with the bar down its left edge while it
     /// is the one in front (`files4.css`, `.act-item.sel::before`: 3 wide, 8
     /// in from the top and the bottom, rounded on its right).
+    ///
+    /// **With the pointer on it the mark takes the flat ground and its icon
+    /// comes up to the main text** (`.act-btn:hover { color: var(--t1);
+    /// background: var(--hover) }`) -- the same two things the design's own
+    /// CSS changes, and **the mark in front looks like that whether or not
+    /// the pointer is on it** (`.act-btn.active { color: var(--t1) }`), which
+    /// is what keeps hover and selected from reading as one state: hover adds
+    /// the ground, being in front already had the ink.
     private func mark(_ which: Activity.Icon) -> some View {
         let front = activity.icon == which
         // Which of the two 20-unit drawings this press is about. **Two enums
@@ -269,44 +284,51 @@ struct ControlRoomWorkdirsPage: View {
         // ternary is written with the drawn one's type named so the two are
         // not quietly taken for each other.
         let drawn: ControlRoomWorkdirs.Mark = which == .explorer ? .explorer : .search
-        return Button {
-            activity.press(which)
-            // **Which half of the press this was is read off the state the
-            // press left behind**, and there are two of them: the column is
-            // still there with the search panel in it, or it is not.
-            //
-            // *Not there* -- the explorer is in front, or the press just shut
-            // the column -- takes the walk with it: the search field and its
-            // results are not drawn, and a round still running would go on
-            // reading directories for a panel nobody can see.
-            //
-            // *There* is the case the first version of this got backwards:
-            // pressing 搜索 with an unfinished walk behind it must **carry
-            // that walk on**, not tick the generation a second time, or the
-            // page comes back to 「还在找」 for a walk nothing will finish
-            // (`resumeSearch` says how it is told apart from a fresh one).
-            if activity.icon == .search && activity.open {
-                resumeSearch()
-            } else {
-                generation &+= 1
-            }
-        } label: {
-            icon(drawn, ink: front ? theme.text : theme.textTertiary)
-                .frame(width: Tile.actItem, height: Tile.actItem)
-                .overlay(alignment: .leading) {
-                    if front {
-                        RoundedRectangle(cornerRadius: Tile.actIndicatorRadius)
-                            .fill(theme.attention.color)
-                            .frame(width: Tile.actIndicatorWidth)
-                            .padding(.vertical, Tile.actIndicatorInset)
-                            .padding(.leading, -Tile.actPad)
-                    }
+        return RowHover { over in
+            Button {
+                activity.press(which)
+                // **Which half of the press this was is read off the state the
+                // press left behind**, and there are two of them: the column is
+                // still there with the search panel in it, or it is not.
+                //
+                // *Not there* -- the explorer is in front, or the press just shut
+                // the column -- takes the walk with it: the search field and its
+                // results are not drawn, and a round still running would go on
+                // reading directories for a panel nobody can see.
+                //
+                // *There* is the case the first version of this got backwards:
+                // pressing 搜索 with an unfinished walk behind it must **carry
+                // that walk on**, not tick the generation a second time, or the
+                // page comes back to 「还在找」 for a walk nothing will finish
+                // (`resumeSearch` says how it is told apart from a fresh one).
+                if activity.icon == .search && activity.open {
+                    resumeSearch()
+                } else {
+                    generation &+= 1
                 }
+            } label: {
+                icon(drawn, ink: (front || over) ? theme.text : theme.textTertiary)
+                    .frame(width: Tile.actItem, height: Tile.actItem)
+                    .contentShape(Rectangle())
+                    .background(
+                        RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
+                            .fill(over ? theme.windowTabHover.color : Color.clear)
+                    )
+                    .overlay(alignment: .leading) {
+                        if front {
+                            RoundedRectangle(cornerRadius: Tile.actIndicatorRadius)
+                                .fill(theme.attention.color)
+                                .frame(width: Tile.actIndicatorWidth)
+                                .padding(.vertical, Tile.actIndicatorInset)
+                                .padding(.leading, -Tile.actPad)
+                        }
+                    }
+            }
+            .buttonStyle(.plain)
+            .help(which == .explorer
+                  ? String(localized: "Explorer", comment: "工作目录页：活动栏第一个图标的提示")
+                  : String(localized: "Search", comment: "工作目录页：活动栏第二个图标的提示"))
         }
-        .buttonStyle(.plain)
-        .help(which == .explorer
-              ? String(localized: "Explorer", comment: "工作目录页：活动栏第一个图标的提示")
-              : String(localized: "Search", comment: "工作目录页：活动栏第二个图标的提示"))
     }
 
     // MARK: - The sidebar
@@ -337,28 +359,34 @@ struct ControlRoomWorkdirsPage: View {
     /// the host has not counted anything.
     private var recent: some View {
         VStack(spacing: 0) {
-            Button { activity.toggleRecent() } label: {
-                HStack(spacing: Tile.barChevronGap) {
-                    icon(activity.recentFolded ? .chevronShut : .chevronOpen,
-                         ink: theme.textSecondary)
-                        .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
-                    Text(Tile.recentTitle)
-                        .font(.system(size: Tile.barSize, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary.color)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
+            RowHover { over in
+                Button { activity.toggleRecent() } label: {
+                    HStack(spacing: Tile.barChevronGap) {
+                        icon(activity.recentFolded ? .chevronShut : .chevronOpen,
+                             ink: (over ? theme.text : theme.textSecondary))
+                            .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
+                        Text(Tile.recentTitle)
+                            .font(.system(size: Tile.barSize, weight: .semibold))
+                            .foregroundStyle((over ? theme.text : theme.textSecondary).color)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, Tile.barPadX)
+                    .frame(height: Tile.barHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
+                            .fill(over ? theme.windowTabHover.color : Color.clear)
+                    )
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, Tile.barPadX)
-                .frame(height: Tile.barHeight)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             if !activity.recentFolded {
                 empty(Tile.recentEmpty, align: .leading)
             }
 
-            rule(edge: .bottom)
+            rule()
         }
     }
 
@@ -472,13 +500,19 @@ struct ControlRoomWorkdirsPage: View {
     ///    old walk on* -- hits and queue and all -- which is the opposite of
     ///    what a refresh means.
     private func refreshButton(_ tooltip: String) -> some View {
-        Button(action: refresh) {
-            icon(.refresh, ink: theme.textSecondary)
-                .frame(width: Tile.sbButton, height: Tile.sbButton)
-                .contentShape(Rectangle())
+        RowHover { over in
+            Button(action: refresh) {
+                icon(.refresh, ink: over ? theme.text : theme.textSecondary)
+                    .frame(width: Tile.sbButton, height: Tile.sbButton)
+                    .contentShape(Rectangle())
+                    .background(
+                        RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row) / 2)
+                            .fill(over ? theme.windowTabHover.color : Color.clear)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(tooltip)
         }
-        .buttonStyle(.plain)
-        .help(tooltip)
     }
 
     /// Ask the directories again: the levels, the open ones, and the walk.
@@ -502,12 +536,19 @@ struct ControlRoomWorkdirsPage: View {
     }
 
     /// A rule, drawn the way the design draws every one of them: half a
-    /// point, on one edge of what it separates.
-    private func rule(edge: Alignment) -> some View {
+    /// point, and nothing else.
+    ///
+    /// ⚠️ **No `.frame(maxHeight: .infinity, …)`.** It used to take the whole
+    /// height of whatever it was laid out in and hang the half point on an
+    /// edge of *that*, so 「最近改过」 folded to its 28pt bar still reserved an
+    /// empty column under it -- the space the fold was meant to give back to
+    /// the tree. A hairline is the line and nothing else, so it is only as
+    /// tall as the line. The `edge` argument went with it: it existed to say
+    /// which edge of a stretched box the line sat on.
+    private func rule() -> some View {
         Rectangle()
             .fill(theme.line.color)
             .frame(height: CGFloat(Look.Line.hairline))
-            .frame(maxHeight: .infinity, alignment: edge)
     }
 
     /// One working directory: its root row, and the tree under it while it is
@@ -518,18 +559,20 @@ struct ControlRoomWorkdirsPage: View {
     private func root(_ dir: ControlRoomWorkdirs.Dir, first: Bool) -> some View {
         let open = tree.isOpen(dir.id)
         return VStack(spacing: 0) {
-            Button {
-                tree.select(dir.id)
-                tree.toggle(dir.id)
-                readOpenDirectories()
-            } label: {
-                rootRow(dir, open: open)
+            RowHover { over in
+                Button {
+                    tree.select(dir.id)
+                    tree.toggle(dir.id)
+                    readOpenDirectories()
+                } label: {
+                    rootRow(dir, open: open, over: over)
+                }
+                .buttonStyle(.plain)
+                // ⌥-click: 按住 ⌥ 点一个根只展开它 (CHANGES.md, 12-trees-overflow).
+                .simultaneousGesture(
+                    TapGesture().modifiers(.option).onEnded { tree.solo(dir.id, among: ids) }
+                )
             }
-            .buttonStyle(.plain)
-            // ⌥-click: 按住 ⌥ 点一个根只展开它 (CHANGES.md, 12-trees-overflow).
-            .simultaneousGesture(
-                TapGesture().modifiers(.option).onEnded { tree.solo(dir.id, among: ids) }
-            )
 
             if open { tree(for: dir) }
         }
@@ -547,12 +590,21 @@ struct ControlRoomWorkdirsPage: View {
     /// 设计稿画成掉在两行之间偏下的位置. So the twisty and the name are two
     /// children of one `HStack` -- the row's first line -- and the path line
     /// hangs under the name, untouched by either.
-    private func rootRow(_ dir: ControlRoomWorkdirs.Dir, open: Bool) -> some View {
+    /// ⚠️ **`over` is the pointer, and it is not `selected`.** The ground
+    /// under the pointer is the flat one the design's `.tr-row:hover` uses,
+    /// and **a selected row keeps its chip instead**: the two are drawn apart
+    /// everywhere in the design, and a row that drew hover over a selected
+    /// row would lift the row the person is on every time the pointer crossed
+    /// it. The twisty comes up to the main text under the pointer
+    /// (`.tr-row:hover .tr-twisty { color: var(--t1) }`).
+    private func rootRow(_ dir: ControlRoomWorkdirs.Dir, open: Bool, over: Bool) -> some View {
         let selected = tree.isSelected(dir.id)
+        let hoverGround = over && !selected
         return HStack(spacing: Tile.rootGapBetween) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: Tile.rootWordsGap) {
-                    icon(open ? .chevronOpen : .chevronShut, ink: theme.textSecondary)
+                    icon(open ? .chevronOpen : .chevronShut,
+                         ink: over ? theme.text : theme.textSecondary)
                         .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
                     Text(name(of: dir))
                         .font(.system(size: Tile.wordsSize, weight: .semibold, design: .monospaced))
@@ -591,7 +643,8 @@ struct ControlRoomWorkdirsPage: View {
         .frame(height: Tile.rootHeight)
         .background(
             RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
-                .fill(selected ? Color.white.opacity(theme.selectionTint) : Color.clear)
+                .fill(selected ? Color.white.opacity(theme.selectionTint)
+                               : (hoverGround ? theme.windowTabHover.color : Color.clear))
         )
         // The bar down the left edge of the selected row, sized and placed
         // as the design places it (`files.css`, `.tr.sel::after`).
@@ -628,6 +681,13 @@ struct ControlRoomWorkdirsPage: View {
 
     /// One row of the tree: 28pt, one step of 16 a level, the chevron, the
     /// icon and the name (`files4.css`, `.tr`).
+    ///
+    /// **Under the pointer the whole row takes the flat ground**
+    /// (`.tr-row:hover { background: var(--hover) }`), and the chevron comes
+    /// up with it (`.tr-row:hover .tr-twisty { color: var(--t1) }`). **A
+    /// selected row keeps its chip**: the two states are the design's two
+    /// different things, and hover drawn over a selection would move the row
+    /// the person is on whenever the pointer crossed it.
     private func row(_ node: Node) -> some View {
         let selected = tree.isSelected(node.path)
         // ⚠️ **`isOpen`, not `open`**: a local `Bool` named `open` shadows the
@@ -636,45 +696,49 @@ struct ControlRoomWorkdirsPage: View {
         // cannot see that (it checks syntax only); the app build did
         // (`t2681/xcodebuild-direct.log`).
         let isOpen = node.isDir && levels.isOpen(node.path)
-        return Button {
-            if node.isDir {
-                levels.toggle(node.path)
-                tree.select(node.path)
-                readOpenDirectories()
-            } else {
-                tree.select(node.path)
-                open(node)
-            }
-        } label: {
-            HStack(spacing: Tile.treeGap) {
-                // A file has no chevron, and takes the chevron's box so that
-                // the two line up (`build2665.py`'s `build_tree_node`: 文件
-                // 占位保持对齐).
+        return RowHover { over in
+            Button {
                 if node.isDir {
-                    icon(isOpen ? .chevronOpen : .chevronShut, ink: theme.textSecondary)
-                        .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
+                    levels.toggle(node.path)
+                    tree.select(node.path)
+                    readOpenDirectories()
                 } else {
-                    Color.clear.frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
+                    tree.select(node.path)
+                    open(node)
                 }
-                icon(for: node, open: isOpen)
-                    .frame(width: Tile.treeIcon, height: Tile.treeIcon)
-                Text(node.name)
-                    .font(.system(size: Tile.wordsSize, design: .monospaced))
-                    .foregroundStyle(theme.text.color)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+            } label: {
+                HStack(spacing: Tile.treeGap) {
+                    // A file has no chevron, and takes the chevron's box so that
+                    // the two line up (`build2665.py`'s `build_tree_node`: 文件
+                    // 占位保持对齐).
+                    if node.isDir {
+                        icon(isOpen ? .chevronOpen : .chevronShut,
+                             ink: over ? theme.text : theme.textSecondary)
+                            .frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
+                    } else {
+                        Color.clear.frame(width: Tile.twistyWidth, height: Tile.twistyWidth)
+                    }
+                    icon(for: node, open: isOpen, over: over)
+                        .frame(width: Tile.treeIcon, height: Tile.treeIcon)
+                    Text(node.name)
+                        .font(.system(size: Tile.wordsSize, design: .monospaced))
+                        .foregroundStyle(theme.text.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, Tile.rootPadX + CGFloat(node.depth) * Tile.treeIndent)
+                .padding(.trailing, Tile.rootPadX)
+                .frame(height: Tile.treeRowHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
+                        .fill(selected ? Color.white.opacity(theme.selectionTint)
+                                       : (over ? theme.windowTabHover.color : Color.clear))
+                )
+                .contentShape(Rectangle())
             }
-            .padding(.leading, Tile.rootPadX + CGFloat(node.depth) * Tile.treeIndent)
-            .padding(.trailing, Tile.rootPadX)
-            .frame(height: Tile.treeRowHeight)
-            .background(
-                RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row))
-                    .fill(selected ? Color.white.opacity(theme.selectionTint) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     /// `还有 N 个`, under the directory it belongs to (`Listing.max_entries`).
@@ -703,9 +767,14 @@ struct ControlRoomWorkdirsPage: View {
 
     /// Which of the eight icons this row carries -- `Glyph`'s rule, the
     /// page's drawing.
-    private func icon(for node: Node, open: Bool) -> some View {
+    ///
+    /// **The ink is lifted under the pointer and not by the selection**, the
+    /// same way the row's own twisty is: `selected` already says which row
+    /// the person is on with the chip and the name at `--t1`, and hover says
+    /// the pointer is here. Two different things, two different marks.
+    private func icon(for node: Node, open: Bool, over: Bool) -> some View {
         let glyph = Glyph.of(name: node.name, isDir: node.isDir, open: open)
-        let ink = tree.isSelected(node.path) ? theme.text : theme.textSecondary
+        let ink = (over || tree.isSelected(node.path)) ? theme.text : theme.textSecondary
         return MarkView(strings: glyph.art, artboard: Glyph.artboard)
             .stroke(ink.color, style: StrokeStyle(lineWidth: Tile.treeIconStroke,
                                                   lineCap: .round, lineJoin: .round))
@@ -1349,6 +1418,23 @@ struct ControlRoomWorkdirsPage: View {
 
     private func editingWords(_ n: UInt64) -> String {
         String(localized: "\(String(n)) being changed", comment: "工作目录页：根节点右侧，正在被改的文件个数")
+    }
+}
+
+/// **Whether the pointer is inside the thing it wraps**, handed to that thing
+/// so it can draw its own hover state -- the flat ground the design puts under
+/// a row (`.tr-row:hover`, `.sec-row:hover`, `.act-btn:hover`,
+/// `.sb-tool-btn:hover` all say `background: var(--hover)`).
+///
+/// ⚠️ **Hover is not selection.** The design draws them apart wherever it
+/// draws both: hover is the ground, while selected carries the chip, the bar
+/// and the accent.
+private struct RowHover<Content: View>: View {
+    @State private var over = false
+    @ViewBuilder var content: (Bool) -> Content
+
+    var body: some View {
+        content(over).onHover { over = $0 }
     }
 }
 
