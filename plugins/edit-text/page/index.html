@@ -98,6 +98,12 @@
       empty: "This file is empty.",
       notText: "This file is not text, so there is nothing to show here.",
       truncated: "Showing the first {Shown} of {Total}. The rest is not loaded.",
+      // **A different sentence, because it is a different fact.** When the
+      // host did not say how big the file is there is no total to print, and
+      // the one above would print `{Total}` as nothing -- "of , the rest is
+      // not loaded" -- which reads as a total of zero and still claims there
+      // is a rest. Unknown size and a known remainder are two answers.
+      truncatedUnknown: "Showing {Shown}. The file's total size is unknown; there may be more.",
       refused: "The preview could not be shown: {Why}",
       noBridge: "This page was opened without the preview bridge, so the file cannot be read.",
       encoding: "encoding",
@@ -109,6 +115,7 @@
       empty: "这个文件是空的。",
       notText: "这个文件不是文本，没有可以显示的内容。",
       truncated: "只显示了前 {Shown}（共 {Total}），其余没有加载。",
+      truncatedUnknown: "已显示 {Shown}。文件总大小未知，可能还有内容。",
       refused: "没法显示这份预览：{Why}",
       noBridge: "这个页面没有带着预览桥打开，所以读不到文件。",
       encoding: "编码",
@@ -226,7 +233,16 @@
           var size = typeof min === "number" ? Math.max(body || min, min) : body;
           if (typeof size === "number") root.setProperty("--size-body", size + "px");
           if (typeof look.size.line_height === "number") {
-            root.setProperty("--line-height", String(look.size.line_height));
+            // **px, because the host's number is a height and not a
+            // multiple.** `ControlRoomLook.Font.lineHeightTerminal` is a point
+            // size (20-ish) that the host measures a row by; a unitless CSS
+            // `line-height` is a *multiplier*, so handing the number straight
+            // to the property set every line 20 rows apart -- one line of text
+            // in a page full of space (root's reading of B). The unit has to
+            // be written here rather than guessed from the number: 20 is a
+            // plausible multiple as well as a plausible height, which is the
+            // whole reason the host names its token in points.
+            root.setProperty("--line-height", look.size.line_height + "px");
           }
         }
         if (look && look.radius && typeof look.radius.card === "number") {
@@ -279,15 +295,52 @@
     el.empty.className = "empty";
     el.empty.textContent = "";
 
-    // **`truncated` is about the ask.** A short read of a large file is said
-    // out loud, with both numbers, because the alternative is a page that
-    // shows the first 4 MB of a 40 MB log and looks exactly like a page
-    // showing all of it.
-    var read = answer.base64.length * 3 / 4;
-    if (answer.truncated || (typeof info.size === "number" && read < info.size)) {
+    // **Whether anything of the file is missing — asked of the file, not of
+    // the ask.** The bridge's `truncated` says the answer came back at the
+    // length that was asked for, and that is not the same question: this page
+    // asks for exactly `min(size, READ_MAX)` bytes, so for any file that fits
+    // the answer is cut at the file's own end and `truncated` is true of a
+    // file that is shown whole. A page that read that flag as "the file goes
+    // on" told every reader that a complete small file was incomplete
+    // (measured: 9 bytes of README shown, "only the first 9 B of 9").
+    //
+    // When the size is known that is a comparison against the size, and
+    // **equal is complete**: `read == size` says nothing to warn about. When
+    // it is not known there is no file to compare against, so the ask's own
+    // boundary is all there is — said as what it is, without inventing a
+    // total or claiming the file ends here.
+    function shortOf(info, answer, read) {
+      if (typeof info.size === "number") return read < info.size;
+      return answer.truncated === true;
+    }
+
+    // **How many bytes the answer really carries.** `base64.length` counts
+    // characters of the encoding, and its last group may be padded with `=`
+    // — bytes that were never in the file. `4 chars -> 3 bytes` is exact only
+    // once the padding is taken off, and a shorter final group is what the
+    // `floor` and the two differences below correct. Over a 4 MB read the
+    // error is a few bytes; the point is that the number printed beside "of"
+    // is a byte count and has to be one.
+    function decodedBytes(b64) {
+      var pad = 0;
+      if (b64.length > 0 && b64.charAt(b64.length - 1) === "=") pad++;
+      if (b64.length > 1 && b64.charAt(b64.length - 2) === "=") pad++;
+      return Math.floor(b64.length * 3 / 4) - pad;
+    }
+
+    var read = decodedBytes(answer.base64);
+    if (shortOf(info, answer, read)) {
       var note = document.createElement("div");
       note.className = "notice";
-      note.textContent = say("truncated", { Shown: bytes(read), Total: bytes(info.size) });
+      // **Which sentence, by whether there is a total to name.** With a size
+      // the note is about the file ("of 8.8 KB"); without one it must not
+      // borrow that shape -- `bytes(undefined)` is the empty string, so the
+      // other sentence would print a blank where a total belongs, which reads
+      // as none at all, and go on to say the rest is not loaded.
+      var known = typeof info.size === "number";
+      note.textContent = known
+        ? say("truncated", { Shown: bytes(read), Total: bytes(info.size) })
+        : say("truncatedUnknown", { Shown: bytes(read) });
       el.text.parentNode.insertBefore(note, el.text);
     }
   }
