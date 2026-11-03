@@ -67,7 +67,12 @@ const instructions =
     "closes. squad_list shows the templates; task_create with `squad` and `members`\\n" ++
     "plans the seats this task needs (nothing is opened), and role_launch with `task`\\n" ++
     "and `member` opens them one by one, in the task's own worktree when it has one. Do not make a\\n" ++
-    "template when an existing one fits. A supervisor cannot be a member. Members\\n" ++
+    "template when an existing one fits. **Roles are general -- the same in every project. A project's\\n" ++
+    "own name, site, skills, MCP servers, CLI, model and instructions belong in a squad member's\\n" ++
+    "`override` (squad_put), not in a role of its own; role_put is for a cross-project capability that\\n" ++
+    "is genuinely missing.** One seat is a squad; a small task opens fewer seats rather than getting a\\n" ++
+    "role of its own, and a one-off read-only look at a project can be one worker wearing a role that\\n" ++
+    "already exists. A supervisor cannot be a member. Members\\n" ++
     "talk in the task's channel (group_post), which keeps one squad's talk out of\\n" ++
     "another's context -- it is not secret; only the supervisor is woken by it. Only\\n" ++
     "the lead writes the task's progress. task_close closes the idle members and\\n" ++
@@ -1462,7 +1467,7 @@ const tools = [_]Tool{
     },
     .{
         .name = "squad_put",
-        .description = "Make a squad template, or replace one **you** made, by its key. **Do not make a template out of habit.** Look at squad_list first: if a template already fits, use it and name the seats you need in task_create's `members`. When a project or feature needs a specific combination of roles (e.g. Reviewer lead, Developer, Tester, UI Designer) and existing templates in squad_list do not fit, formulate the composition, align with the user, and use this to persist the template. A template is for a combination of roles that will be wanted again, not for one task. So `reason` is required (at least 20 bytes) and says which existing template does not fit and why, and a template you make is marked `origin: supervisor` for the person to keep or delete. At most 12 supervisor-made templates exist; past that, delete one first (TooManySupervisorSquads). The person's own templates are not yours to replace or delete (NotPermitted). A seat names a role by key, and keeps only what the squad changes: in `override`, a key that is there is the squad's word and one that is not follows the role -- `instructions` replaces the role's whole (\"\" means none), `cli`/`clis` choose the CLI, model, args and options, and `skills`, `mcp`, `cli_skills`, `cli_mcp` add and remove. A role's `polter` settings and `tools` cannot be overridden. A supervisor cannot be a member of a squad: a seat may not be a supervisor role (SupervisorNotAllowed). Supervisor only.",
+        .description = "Make a squad template, or replace one **you** made, by its key. **Do not make a template out of habit.** Look at squad_list first: if a template already fits, use it and name the seats you need in task_create's `members`. When a project or feature needs a specific combination of roles (e.g. Reviewer lead, Developer, Tester, UI Designer) and existing templates in squad_list do not fit, formulate the composition, align with the user, and use this to persist the template. A template is for a combination of roles that will be wanted again, not for one task. **A project's own members are one of those combinations, and their difference is what a template is for**: the seats stay the general roles, and each member's `override` carries what this project changes -- its name, the site it runs on, its instructions, skills, MCP servers, CLI, model and options. Updating a member of an existing project squad comes before making a new role or a new template. So `reason` is required (at least 20 bytes) and says which existing template does not fit and why, and a template you make is marked `origin: supervisor` for the person to keep or delete. At most 12 supervisor-made templates exist; past that, delete one first (TooManySupervisorSquads). The person's own templates are not yours to replace or delete (NotPermitted). A seat names a role by key, and keeps only what the squad changes: in `override`, a key that is there is the squad's word and one that is not follows the role -- `instructions` replaces the role's whole (\"\" means none), `cli`/`clis` choose the CLI, model, args and options, and `skills`, `mcp`, `cli_skills`, `cli_mcp` add and remove. A role's `polter` settings and `tools` cannot be overridden. A supervisor cannot be a member of a squad: a seat may not be a supervisor role (SupervisorNotAllowed). Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"squad":{"type":"object","description":"key, name, description, reason (required for you), members: [{alias, role, required, lead, override}]"}},"required":["squad"],"additionalProperties":false}
         ,
@@ -1513,7 +1518,14 @@ const tools = [_]Tool{
             "ever adds: off there means \"as the user's default has it\", which is on " ++
             "unless they turned it off, not \"refuse\". An official role's key " ++
             "(`builtin: true` in role_list) is refused as BuiltinRole: only the person " ++
-            "changes those, in the role library. Supervisor only.",
+            "changes those, in the role library. **A role is general, and the same in " ++
+            "every project**: what an agent is and can do. Reuse one out of role_list " ++
+            "when it is already right. What one project changes -- its name, the site " ++
+            "it runs on, its own instructions, the MCP servers and skills it wants, " ++
+            "the CLI, the model, the options -- goes in a squad member's `override` " ++
+            "(squad_put), not in a role of its own. Reach for this only when a " ++
+            "**cross-project** capability is genuinely missing -- something another " ++
+            "project would want too. Supervisor only.",
         .schema =
         \\{"type":"object","properties":{"role":{"type":"object","description":"One role, in the shape role_list returns."}},"required":["role"],"additionalProperties":false}
         ,

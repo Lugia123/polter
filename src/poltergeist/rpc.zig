@@ -296,6 +296,13 @@ pub const Method = enum {
     ///
     /// The role is checked by the same parser that reads `personas.json`,
     /// so nothing gets into the file that the file would refuse.
+    ///
+    /// **A role is general -- the same in every project**, and that is what
+    /// makes it reusable: what an agent is and can be told to do. What one
+    /// project changes about it (its name, its site, its instructions, the
+    /// MCP servers and skills it wants, the CLI, the model, the options) is
+    /// a squad seat's `override`, not a role. This is for a cross-project
+    /// capability that is genuinely missing; see the tool description.
     role_put,
 
     /// The agent launchers of the person's own (task 2156, `Launchers`):
@@ -307,6 +314,12 @@ pub const Method = enum {
     launcher_delete,
     /// The squad templates (squads S4): read, written and deleted by a
     /// supervisor, who has no standing to make one lightly (`squad_put`).
+    ///
+    /// Lightly is the word, not never: a project's own members -- the same
+    /// general roles as everywhere, with this project's differences in each
+    /// seat's `override` -- are a combination that will be wanted again,
+    /// which is what a template is for. It is a combination for one task
+    /// alone that does not justify one.
     squad_list,
     squad_put,
     squad_delete,

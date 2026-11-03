@@ -19,24 +19,26 @@ Execute the following 5-stage setup sequence before any implementation:
    - `role_list`: Inspect what roles already exist on this machine.
    - `role_clis` & `launcher_list`: Discover what CLIs are installed (Claude Code,
      Antigravity `agy`, Codex, OpenCode) and their supported models, options, and custom API launchers.
-2. **Choose Execution Mode: Single Worker vs. Squad**:
-   - **Single Worker**: For small, focused, or independent tasks (e.g. quick bugfix, documentation, single-module investigation, targeted verification, script writing), use a **single dedicated worker**. Do NOT make squads for trivial tasks to avoid fragmentation and excessive overhead.
+2. **Choose the worker count and the project's squad**:
+   - **Single Worker**: A small, focused, or independent task -- a quick bugfix, documentation, a single-module investigation, a targeted verification, a script -- **still takes its seat from the project's squad**: open the one seat it needs and no more. Work that writes code, or that needs what this project changes, belongs there even when one worker does all of it. Reusing a role straight out of the library, with no squad at all, is for a one-off **read-only** task that needs none of this project's difference -- a look at a file, one command run to see what it says.
    - **Squad**: For complex, multi-role engineering work requiring cross-check (e.g. core feature development with Reviewer lead, Dev, Tester, and optional UI Designer), use a **Squad**. Match seats to the right CLIs and models (e.g. deep thinking models for Review, fast coding models for Dev, multimodal design models for UI).
    - If the user has not specified roles or models, **formulate a recommended plan** based on model capabilities and cost-efficiency.
-   - Check `squad_list`: reuse an existing template if it fits. If none fits, prepare to define a template with `squad_put`.
+   - Check `squad_list`: reuse an existing project squad, updating one of its members when the project's difference has moved. If the project has no squad yet, define one with `squad_put`.
 3. **Align with the user**:
    - Report your plan to the user in group chat or terminal:
-     - Chosen execution mode (single worker or squad composition);
+     - How many workers it takes, and which project squad they come out of;
      - Recommended CLIs and models with clear rationale;
      - High-level task breakdown and worktree isolation strategy.
    - **Wait for user confirmation.** Adjust any choices according to user preferences.
 4. **Preparatory setup**:
-   - Once confirmed, perform setup actions **before** creating tasks:
-     - Update or define missing roles (`role_put` or user configuration);
-     - Create or update the squad template with `squad_put` (if squad mode is needed);
+   - Once confirmed, perform setup actions **before** creating tasks, **reaching for what exists before writing anything new**:
+     - Pick the **general roles** the work needs out of `role_list`. They are the cross-project base: what an agent is and can do, the same in any project. `role_put` is for a genuinely missing **cross-project** capability, not for one project's difference.
+     - Put the **project's difference** -- its name, the site it runs on, instructions, CLI, model, options, skills, MCP servers -- in that project's **squad member `override`**, which is exactly what a seat's `override` is for. A project squad that names its members' overrides is a sufficient reason to have one.
+     - Reuse the project's existing squad template, updating a member rather than making a new role or template; create one with `squad_put` when the project has none. A missing general role is a reason for `role_put`; a project's difference is not.
      - Check repository status and git worktrees (`worktree_status`).
+   - **One project, done this way**: the project's squad is built from existing general roles -- a `test-worker` seat under the alias `site-recon` for a read-only look at that project's own site, and another under `mcp-smoke` for testing the project's MCP servers on this machine -- and each member's `override` carries this project's own instructions, the MCP servers it may reach and the skills it may use. Neither seat is a `role_put` of a project-named role (a `recon-<project>`, say): the same general `test-worker` role is what every project's such seat is built from, and the project's name lives in the seat's alias and override.
 5. **Execute with isolated worktrees**:
-   - Create tasks with `task_create`. For squad tasks, specify `squad` and `members`. For single worker tasks, create the task and assign the worker with `task_assign`.
+   - Create tasks with `task_create`. For squad tasks, specify `squad` and `members` -- **one member is a legitimate squad**, and a small task opens fewer seats rather than getting a role or template of its own. For single worker tasks, create the task and assign the worker with `task_assign`.
    - **Understand Worktree Isolation**:
      - `feature` and `bug` tasks automatically plan an isolated git worktree (`worktree: auto`).
      - The first `role_launch` physically creates the worktree and branch.
