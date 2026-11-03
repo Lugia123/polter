@@ -51,6 +51,7 @@ struct ControlRoomWorkdirsPage: View {
     typealias Node = ControlRoomWorkdirs.Node
     typealias Search = ControlRoomWorkdirs.Search
     typealias Split = ControlRoomWorkdirs.Split
+    typealias Recent = ControlRoomWorkdirs.Recent
 
     let group: String
     @ObservedObject var model: ControlRoomModel
@@ -99,8 +100,28 @@ struct ControlRoomWorkdirsPage: View {
     @State private var dividerDragging = false
     /// Whether this view pushed a resize cursor and has not popped it. Only
     /// ever set on the systems that predate `pointerStyle` (macOS 14 and
-    /// below); on 15 and up nothing is pushed and this stays false.
+    /// below); on 15 and up nothing is pushed and both stay false.
     @State private var cursorPushed = false
+    @State private var rowCursorPushed = false
+
+    /// **How tall 「最近改过」 was dragged to**, and the height of the column
+    /// itself. Two, for the same reason the column's width is two
+    /// (`ControlRoomWorkdirs.Split`): the section is drawn at
+    /// `Recent.drawn(wanted: askedRecent, …)` and it is `askedRecent` that is
+    /// kept, so folding it, or a short column, does not eat the height that
+    /// was chosen.
+    ///
+    /// ⚠️ **The column's height and not the window's**: the section lives
+    /// between the activity bar and the tree, so the window's height would
+    /// include a title bar and a page strip that are not the column's room
+    /// (`ControlRoomWorkdirs.Recent` says what that costs).
+    @State private var askedRecent: CGFloat = ControlRoomWorkdirs.Recent.height
+    @State private var columnHeight: CGFloat = 0
+    /// Whether the pointer is on the horizontal handle, and whether it is
+    /// being dragged: the same pair the vertical one has, kept apart so that
+    /// hovering one handle cannot light the other.
+    @State private var rowHandleHovered = false
+    @State private var rowHandleDragging = false
 
     private var theme: Look.Theme { Look.theme(scheme) }
 
@@ -383,6 +404,17 @@ struct ControlRoomWorkdirsPage: View {
         }
         .frame(width: drawnSide)
         .frame(maxHeight: .infinity, alignment: .top)
+        // **The column's own box, for the two things measured inside it.**
+        // The horizontal handle's drag reads its `y` against this space (the
+        // section is measured from the column's top, not the window's), and
+        // the height reported up is what the section is squeezed into. A
+        // background reader measures the box the column already has; it is
+        // not wrapped round the column, which would take the layout over.
+        .coordinateSpace(name: Self.sideSpace)
+        .background(GeometryReader { place in
+            Color.clear.preference(key: ColumnHeight.self, value: place.size.height)
+        })
+        .onPreferenceChange(ColumnHeight.self) { columnHeight = $0 }
         // **A zero-width column draws nothing, and clips what it would
         // have.** At a window too narrow for the column and the workbench
         // both, `drawnSide` is 0 -- and a `VStack` whose own frame is zero
@@ -391,6 +423,19 @@ struct ControlRoomWorkdirsPage: View {
         .clipped()
         .overlay(alignment: .trailing) {
             Rectangle().fill(theme.line.color).frame(width: CGFloat(Look.Line.hairline))
+        }
+        // **The horizontal handle, over the boundary between the two
+        // sections.** Declared here and not inside 「最近改过」, because the
+        // 8pt grab area straddles the boundary: as part of the section its
+        // lower half would be clipped away by the section's own box, and the
+        // tree's header, declared after it, would be drawn over it. An
+        // overlay of the whole column is above both (`ControlRoomWorkdirs.Recent`,
+        // the approved design's `.resizer-h`). It costs the layout nothing:
+        // the section is `drawnRecent` tall with or without it.
+        .overlay(alignment: .top) {
+            if activity.icon == .explorer, !activity.recentFolded, drawnRecent > 0 {
+                rowHandle.offset(y: drawnRecent - Recent.handle / 2)
+            }
         }
     }
 
@@ -439,7 +484,7 @@ struct ControlRoomWorkdirsPage: View {
         .backport.pointerStyle(.resizeLeftRight)
         .onHover { inside in
             dividerHovered = inside
-            resizeCursor(inside)
+            resizeCursor(inside, cursor: .resizeLeftRight, pushed: $cursorPushed)
         }
         // **Every way the pointer can leave the handle, and the view with
         // it.** `onHover(false)` is not sent when the view goes away under a
@@ -447,7 +492,7 @@ struct ControlRoomWorkdirsPage: View {
         // so disappearing pops too. Both go through one setter, and it is
         // guarded on what was actually pushed, so the balance is a property
         // of the flag rather than of how many of these ran.
-        .onDisappear { resizeCursor(false) }
+        .onDisappear { resizeCursor(false, cursor: .resizeLeftRight, pushed: $cursorPushed) }
         .gesture(
             DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.pageSpace))
                 .onChanged { drag in
@@ -472,21 +517,27 @@ struct ControlRoomWorkdirsPage: View {
     /// and let it go exactly once.
     ///
     /// ⚠️ **On macOS 15 and up this does nothing**, because
-    /// `.backport.pointerStyle` above is the whole of it there and it does not
-    /// leak -- the two are the same idiom `SplitView.Divider` uses, for the
-    /// same reason. What it is here for are the systems that predate
+    /// `.backport.pointerStyle` on the handle is the whole of it there and it
+    /// does not leak -- the two are the same idiom `SplitView.Divider` uses,
+    /// for the same reason. What it is here for are the systems that predate
     /// `pointerStyle`, where the cursor is a stack this code maintains by
     /// hand: one push, one pop, and neither twice.
-    private func resizeCursor(_ on: Bool) {
+    ///
+    /// **Both handles come through here.** The two carry different cursors
+    /// but the same rule, and a second copy of the rule is how one of them
+    /// ends up leaking a cursor; `pushed` is which handle's own flag, so the
+    /// balance is per handle rather than per call site (a handle that is
+    /// hovered while another is left cannot pop the other one's push).
+    private func resizeCursor(_ on: Bool, cursor: NSCursor, pushed: Binding<Bool>) {
         if #available(macOS 15, *) { return }
         if on {
-            guard !cursorPushed else { return }
-            NSCursor.resizeLeftRight.push()
-            cursorPushed = true
+            guard !pushed.wrappedValue else { return }
+            cursor.push()
+            pushed.wrappedValue = true
         } else {
-            guard cursorPushed else { return }
+            guard pushed.wrappedValue else { return }
             NSCursor.pop()
-            cursorPushed = false
+            pushed.wrappedValue = false
         }
     }
 
@@ -525,11 +576,79 @@ struct ControlRoomWorkdirsPage: View {
 
             if !activity.recentFolded {
                 empty(Tile.recentEmpty, align: .leading)
+                Spacer(minLength: 0)
             }
 
             rule()
         }
+        // **The section's whole box, and the header is inside it.** The
+        // approved design gives the section one height
+        // (`polter-artifacts/2713/v1/index.html`, `.recent-sec { height: 110px }`,
+        // folded 28) with the bar the first thing in it -- so the height is
+        // put on the section and not on the empty state, which takes whatever
+        // is left under the bar. Nothing here names a content height of its
+        // own.
+        .frame(height: drawnRecent)
+        // **A short column clips the section rather than drawing it over the
+        // tree.** On a column too short to hold the section and `minTree`
+        // both, `drawnRecent` can come out under the header's own height; a
+        // `VStack` does not clip its children by itself, so without this the
+        // title row would be laid over the working directories.
+        .clipped()
     }
+
+    /// How tall 「最近改过」 is drawn: `askedRecent` squeezed into the column's
+    /// own height (`ControlRoomWorkdirs.Recent.drawn`), **the section's whole
+    /// box including the line at its foot**. **Not `askedRecent`**, which is
+    /// what is remembered -- folding and a short column both leave it alone.
+    private var drawnRecent: CGFloat {
+        Recent.drawn(wanted: askedRecent,
+                     container: columnHeight,
+                     folded: activity.recentFolded,
+                     line: CGFloat(Look.Line.hairline))
+    }
+
+    /// **The horizontal handle under 「最近改过」** (task 2719 S4; the
+    /// approved design `polter-artifacts/2713/v1/index.html`, `.resizer-h`).
+    ///
+    /// The same shape as the vertical one, turned on its side: an 8pt grab
+    /// area with a hairline along it that takes the accent under the pointer
+    /// and while dragging. It is not in the layout -- the section is exactly
+    /// as tall as `drawnRecent` with or without it -- so the two sections do
+    /// not shift when the pointer arrives.
+    private var rowHandle: some View {
+        let lit = rowHandleHovered || rowHandleDragging
+        return ZStack {
+            Color.clear.contentShape(Rectangle())
+            Rectangle()
+                .fill(lit ? theme.attention.color : theme.line.color)
+                .frame(height: CGFloat(Look.Line.hairline))
+        }
+        .frame(height: Recent.handle)
+        .frame(maxWidth: .infinity)
+        .backport.pointerStyle(.resizeUpDown)
+        .onHover { inside in
+            rowHandleHovered = inside
+            resizeCursor(inside, cursor: .resizeUpDown, pushed: $rowCursorPushed)
+        }
+        .onDisappear { resizeCursor(false, cursor: .resizeUpDown, pushed: $rowCursorPushed) }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.sideSpace))
+                .onChanged { drag in
+                    // `asked` and not `drawn`, and measured from the column's
+                    // own top: the section starts there, so the pointer's `y`
+                    // in this space is the height being asked for.
+                    rowHandleDragging = true
+                    askedRecent = Recent.asked(drag.location.y)
+                }
+                .onEnded { _ in rowHandleDragging = false }
+        )
+    }
+
+    /// The name the horizontal handle's drag reads its `y` against: the
+    /// column's own box, since the section under the pointer is measured from
+    /// the column's top and not from the window's.
+    private static let sideSpace = "ControlRoomWorkdirsSide"
 
     /// 「工作目录」: the bar, then one root per directory.
     private var roots: some View {
@@ -1572,6 +1691,18 @@ struct ControlRoomWorkdirsPage: View {
 /// whole window's numbers instead of its own. The background form measures the
 /// box the page already has.
 private struct ContainerWidth: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// The height of the left column's own box, reported up from a background
+/// reader for the same reason `ContainerWidth` reports the width: 「最近改过」
+/// is squeezed into the **column's** room, and the window's height also holds
+/// a title bar and a page strip that are not the column's.
+private struct ColumnHeight: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {

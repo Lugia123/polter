@@ -1434,3 +1434,95 @@ struct ControlRoomWorkdirsSplitTests {
         #expect(Split.drawn(wanted: 600, container: 5000) == Split.maxSide)
     }
 }
+
+/// How tall 「最近改过」 is, and what a drag on its handle may ask for (task
+/// 2719 S4).
+///
+/// The two values are tested apart on purpose, and folding is tested against
+/// both: `asked` is what the person dragged to and must survive a fold, `drawn`
+/// is what the column can hold. A rule that kept only one would pass a drag
+/// test and then lose the person's height the first time they folded the
+/// section.
+struct ControlRoomWorkdirsRecentTests {
+    typealias Recent = ControlRoomWorkdirs.Recent
+    /// The hairline at the section's foot, which is inside its box.
+    static let line: CGFloat = 0.5
+    /// What a folded section is: the header and that line.
+    static let shut: CGFloat = Recent.foldedHeight + line
+
+    // MARK: What a drag may ask for
+
+    @Test func aDragInsideTheRangeIsKeptAsItIs() {
+        #expect(Recent.asked(200) == 200)
+    }
+
+    @Test func aDragUnderTheShortestIsTheShortest() {
+        #expect(Recent.asked(20) == Recent.shortest)
+    }
+
+    @Test func aDragPastTheTallestIsTheTallest() {
+        #expect(Recent.asked(800) == Recent.tallest)
+    }
+
+    // MARK: What the column can hold
+
+    /// A column with room draws exactly what was asked for.
+    @Test func aTallColumnDrawsWhatWasAskedFor() {
+        #expect(Recent.drawn(wanted: 110, container: 800, folded: false, line: Self.line) == 110)
+    }
+
+    /// **The tree keeps its least height**, and the section gives up the
+    /// rest: 300 - 120 = 180.
+    @Test func aShortColumnSqueezesTheSectionAndNotTheTree() {
+        #expect(Recent.drawn(wanted: 300, container: 300, folded: false, line: Self.line) == 180)
+        #expect(Recent.drawn(wanted: 300, container: 300, folded: false, line: Self.line) + Recent.minTree == 300)
+    }
+
+    /// **A column with room keeps the title row**: the floor is the header and
+    /// its line, so a squeezed section is still one the person can open.
+    @Test func aSqueezedSectionStillHasItsTitleRow() {
+        // 200 - 120 = 80, which is over the header, so the section is 80.
+        #expect(Recent.drawn(wanted: 110, container: 200, folded: false, line: Self.line) == 80)
+        // 148.5 - 120 = 28.5, exactly the header and its line, so the floor
+        // and the ceiling agree.
+        #expect(Recent.drawn(wanted: 110, container: 148.5, folded: false, line: Self.line) == Self.shut)
+    }
+
+    /// **The tree's room is the harder rule.** On a column too short to hold
+    /// both, the section takes what is left after `minTree` and no more --
+    /// it does not keep its header by pushing the tree out of the column, and
+    /// it never goes negative.
+    @Test func aColumnTooShortForBothGivesTheSectionWhatIsLeftAndNoLess() {
+        #expect(Recent.drawn(wanted: 110, container: 140, folded: false, line: Self.line) == 20)
+        #expect(Recent.drawn(wanted: 110, container: 120, folded: false, line: Self.line) == 0)
+        #expect(Recent.drawn(wanted: 110, container: 0, folded: false, line: Self.line) == 0)
+    }
+
+    /// A squeeze never makes a section that was asked to be short taller.
+    @Test func aSqueezeNeverWidensASectionAskedToBeShort() {
+        #expect(Recent.drawn(wanted: 60, container: 800, folded: false, line: Self.line) == 60)
+    }
+
+    /// A folded section is its header and line, **whatever the column has**:
+    /// 28 + hairline, and the same at any height.
+    @Test func aFoldedSectionIsTheHeaderAndItsLine() {
+        #expect(Recent.drawn(wanted: 300, container: 800, folded: true, line: Self.line) == Self.shut)
+        #expect(Recent.drawn(wanted: 300, container: 0, folded: true, line: Self.line) == Self.shut)
+    }
+
+    /// **The height asked for survives a fold.** The same value is drawn at
+    /// 180 in a short column and at its full 300 in a tall one again: this is
+    /// what stops folding (or a short window) from eating the person's height.
+    @Test func theHeightAskedForComesBackAfterAFold() {
+        let asked = Recent.asked(300)
+        #expect(Recent.drawn(wanted: asked, container: 800, folded: true, line: Self.line) == Self.shut)
+        #expect(Recent.drawn(wanted: asked, container: 800, folded: false, line: Self.line) == 300)
+        #expect(Recent.drawn(wanted: asked, container: 300, folded: false, line: Self.line) == 180)
+    }
+
+    /// Nothing is drawn taller than the design's tallest, however tall the
+    /// column is.
+    @Test func aVeryTallColumnStillStopsAtTheTallest() {
+        #expect(Recent.drawn(wanted: 300, container: 5000, folded: false, line: Self.line) == Recent.tallest)
+    }
+}

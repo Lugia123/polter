@@ -1520,4 +1520,92 @@ extension ControlRoomWorkdirs {
             return min(min(max(wanted, minSide), maxSide), ceiling)
         }
     }
+
+    /// **The horizontal divider under 「最近改过」**: how tall that section
+    /// may be dragged, and how tall it is drawn in the column this window has
+    /// (task 2719 S4; the approved design
+    /// `polter-artifacts/2713/v1/index.html`, `.recent-sec`, `.recent-sec.is-collapsed`
+    /// and `.resizer-h`).
+    ///
+    /// **Two values, kept apart for the same reason the column's width is**
+    /// (`Split`): `asked` is what the person dragged to and is what the page
+    /// remembers, `drawn` is that height squeezed into the room the column
+    /// actually has. **Folding is a third thing and does not touch what was
+    /// asked for** -- what folds is the section, not the memory of how tall
+    /// it was, so unfolding brings the old height back.
+    ///
+    /// ⚠️ **The room is the column's own height.** The section sits inside
+    /// the column, under the activity bar and over the tree; the window's
+    /// height also holds a title bar and a page strip that are not the
+    /// column's, so a number worked out from the window would put the handle
+    /// under the tree's own scroll view. `ControlRoomWorkdirsPage` measures
+    /// the column and hands the number here.
+    enum Recent {
+        /// What the section is to begin with, unfolded (the approved design
+        /// `polter-artifacts/2713/v1/index.html`, `.recent-sec { height: 110px }`).
+        static let height: CGFloat = 110
+        /// What it is folded to: the section bar and nothing else, the same
+        /// 28 the same design gives `.recent-sec.is-collapsed` and this page
+        /// already draws for every section bar.
+        static let foldedHeight: CGFloat = 28
+        /// The shortest it may be dragged to (the design's 展开区域
+        /// 60px ~ 300px).
+        static let shortest: CGFloat = 60
+        /// The tallest it may be dragged to (the same rule).
+        static let tallest: CGFloat = 300
+        /// **What the tree below is left.** The section may not be dragged so
+        /// tall that the working directories have nowhere to be: this is the
+        /// least the tree keeps, and the section's ceiling is the column
+        /// minus it.
+        ///
+        /// ⚠️ **Wider than the design's own.** The design gives the tree
+        /// `.tree-sec { min-height: 100px }`; this page draws the tree a
+        /// little taller, which is the 120 the supervisor's scope for S4
+        /// names (120pt). The section is the one that gives way, so the tree
+        /// coming out larger than the design's floor is the safe direction.
+        static let minTree: CGFloat = 120
+        /// **How tall the handle's grab area is, and not just its line**
+        /// (the approved design `polter-artifacts/2713/v1/index.html`,
+        /// `.resizer-h { height: 8px; margin: -4px 0 }`, so the hairline sits
+        /// in the middle of an 8pt target).
+        static let handle: CGFloat = 8
+
+        /// The height a drag has asked for, inside the range a drag may
+        /// reach. **This is what the page keeps**, and folding does not
+        /// change it.
+        static func asked(_ tall: CGFloat) -> CGFloat {
+            min(max(tall, shortest), tallest)
+        }
+
+        /// The section's whole box as drawn in a column this tall: the
+        /// header, the content and the hairline at its foot are all inside
+        /// it. `wanted` is squeezed so the tree keeps `minTree` and never
+        /// goes over `tallest`.
+        ///
+        /// **Folded is the header and its line and asks nothing else** --
+        /// a shut section is `foldedHeight + line`, whether or not the
+        /// column has room for more, because one drawn taller would be a
+        /// section the person cannot tell is shut.
+        ///
+        /// ⚠️ **The floor is the header and its line -- but the ceiling comes
+        /// first.** An unfolded section is drawn with at least its title row
+        /// (the chevron and the words are how it is opened and shut) *while
+        /// the column can spare it*: the tree's `minTree` is the harder rule
+        /// (the person asked for the directories to keep their room), so on a
+        /// column too short for both, what is left after `minTree` is what
+        /// the section gets, and the column clips it. `min(shut, ceiling)`
+        /// with `max(0, …)` is what stops the squeeze going negative, and
+        /// what makes the two rules agree instead of the section pushing the
+        /// tree out of the column.
+        static func drawn(wanted: CGFloat,
+                          container: CGFloat,
+                          folded: Bool,
+                          line: CGFloat) -> CGFloat {
+            let shut = foldedHeight + line
+            if folded { return shut }
+            let ceiling = max(0, container - minTree)
+            let floor = min(shut, ceiling)
+            return max(floor, min(min(max(wanted, shortest), tallest), ceiling))
+        }
+    }
 }
