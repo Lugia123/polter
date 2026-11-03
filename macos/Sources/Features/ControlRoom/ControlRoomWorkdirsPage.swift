@@ -123,6 +123,19 @@ struct ControlRoomWorkdirsPage: View {
     /// hovering one handle cannot light the other.
     @State private var rowHandleHovered = false
     @State private var rowHandleDragging = false
+    /// **The height a drag of the horizontal handle starts from**, captured
+    /// once at the press and `nil` outside a drag. The height the section is
+    /// asked for is this plus the pointer's translation, so the number a
+    /// drag adds to is the one it began with and never a coordinate of the
+    /// handle as it is moving.
+    @State private var rowDragSeed: CGFloat?
+    /// Whether the system still considers a drag of the horizontal handle
+    /// live. **A `@GestureState` and not a `@State`**: the system resets it
+    /// itself when the gesture ends -- including the ends that send no
+    /// `onEnded`, where the view stays and only the gesture is cancelled --
+    /// so `rowDragSeed` is cleared by something that runs on every way a
+    /// drag can stop, not only the ones this view hears about.
+    @GestureState private var rowGestureActive = false
 
     private var theme: Look.Theme { Look.theme(scheme) }
 
@@ -455,12 +468,11 @@ struct ControlRoomWorkdirsPage: View {
         }
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
-        // **The column's own box, for the drag inside it only.** The
-        // horizontal handle's drag reads its `y` against this space -- the
-        // section is measured from the column's top, not the window's. The
-        // height the section is squeezed into is not measured here: it is the
-        // page's own height, handed down from `page(container:height:)`.
-        .coordinateSpace(name: Self.sideSpace)
+        // **The column carries no named space of its own.** The horizontal
+        // handle's drag reads `.global` translations of a seed captured at
+        // the press (`rowHandle`), so it has nothing to measure against here.
+        // The vertical divider still reads `Self.pageSpace`: the page's box,
+        // which a drag along the column does not resize.
         // **A zero-width column draws nothing, and clips what it would
         // have.** At a box too narrow for the column and the workbench both,
         // `width` is 0 -- and a `VStack` whose own frame is zero still draws
@@ -480,7 +492,8 @@ struct ControlRoomWorkdirsPage: View {
         // the section is `recentHeight` tall with or without it.
         .overlay(alignment: .top) {
             if activity.icon == .explorer, !activity.recentFolded, recentHeight > 0 {
-                rowHandle.offset(y: recentHeight - Recent.handle / 2)
+                rowHandle(recentHeight: recentHeight)
+                    .offset(y: recentHeight - Recent.handle / 2)
             }
         }
     }
@@ -642,7 +655,20 @@ struct ControlRoomWorkdirsPage: View {
     /// and while dragging. It is not in the layout -- the section is exactly
     /// as tall as the section's drawn height with or without it -- so the two
     /// sections do not shift when the pointer arrives.
-    private var rowHandle: some View {
+    ///
+    /// `recentHeight` is the section's drawn height, handed down from
+    /// `page(container:height:)` -- the same number the handle is drawn at.
+    /// It is what a drag starts from, and it is an argument rather than read
+    /// back out of `@State` for the reason the column's width is (`side`).
+    ///
+    /// ⚠️ **The drag is a translation of a number held still, not a position
+    /// read back.** The handle is drawn at `recentHeight - handle / 2`, so
+    /// the pointer's place in the column is a reading of the very thing the
+    /// drag is changing; what the drag adds to is `rowDragSeed`, captured
+    /// once at the press, and what it adds is `translation.height`, which is
+    /// zero at the press and does not depend on where the handle is drawn.
+    /// Down is `+`, so dragging the handle down asks for a taller section.
+    private func rowHandle(recentHeight: CGFloat) -> some View {
         let lit = rowHandleHovered || rowHandleDragging
         return ZStack {
             Color.clear.contentShape(Rectangle())
@@ -657,24 +683,44 @@ struct ControlRoomWorkdirsPage: View {
             rowHandleHovered = inside
             resizeCursor(inside, cursor: .resizeUpDown, pushed: $rowCursorPushed)
         }
-        .onDisappear { resizeCursor(false, cursor: .resizeUpDown, pushed: $rowCursorPushed) }
+        .onDisappear {
+            resizeCursor(false, cursor: .resizeUpDown, pushed: $rowCursorPushed)
+            // A handle that goes away mid-drag takes the seed with it: the
+            // next press starts from the height drawn then, not from this
+            // drag's.
+            rowDragSeed = nil
+            rowHandleDragging = false
+        }
+        // **The end that sends no `onEnded`.** A drag the system cancels
+        // while the view is still there -- the pointer is taken away, a
+        // window loses the gesture -- reaches none of the handlers below, and
+        // a seed left over would make the next press start from this drag's
+        // height. `rowGestureActive` is the system's own answer to whether a
+        // drag is live; when it falls, the drag is over however it ended.
+        .onChange(of: rowGestureActive) { active in
+            if !active {
+                rowDragSeed = nil
+                rowHandleDragging = false
+            }
+        }
         .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.sideSpace))
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .updating($rowGestureActive) { _, active, _ in active = true }
                 .onChanged { drag in
-                    // `asked` and not `drawn`, and measured from the column's
-                    // own top: the section starts there, so the pointer's `y`
-                    // in this space is the height being asked for.
+                    // Seeded once, at the press: the height the section was
+                    // drawn at when this drag began. `recentHeight` is that
+                    // number in the first pass, before this writes.
+                    let seed = rowDragSeed ?? recentHeight
+                    rowDragSeed = seed
                     rowHandleDragging = true
-                    askedRecent = Recent.asked(drag.location.y)
+                    askedRecent = Recent.asked(seed + drag.translation.height)
                 }
-                .onEnded { _ in rowHandleDragging = false }
+                .onEnded { _ in
+                    rowHandleDragging = false
+                    rowDragSeed = nil
+                }
         )
     }
-
-    /// The name the horizontal handle's drag reads its `y` against: the
-    /// column's own box, since the section under the pointer is measured from
-    /// the column's top and not from the window's.
-    private static let sideSpace = "ControlRoomWorkdirsSide"
 
     /// 「工作目录」: the bar, then one root per directory.
     private var roots: some View {
