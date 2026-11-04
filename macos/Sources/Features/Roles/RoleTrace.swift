@@ -59,9 +59,12 @@ enum RoleTrace {
     }
 
     /// Built only when on: the message is an autoclosure so that a build
-    /// with the diagnosis off pays nothing for it.
+    /// with the diagnosis off pays nothing for it. The message is taken out
+    /// first because `Logger`'s interpolation would capture a non-escaping
+    /// closure; this local is a plain `String`.
     static func emit(_ what: @autoclosure () -> String) {
         guard on else { return }
-        logger.notice("\(what(), privacy: .public)")
+        let message = what()
+        logger.notice("\(message, privacy: .public)")
     }
 }
