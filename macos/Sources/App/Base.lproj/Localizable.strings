@@ -1447,3 +1447,8 @@
    out is the log's. The other six keys below it are the log's side. */
 "This preview plugin is not available." = "This preview plugin is not available.";
 "This plugin shows the file in a browser view, which is not available here yet." = "This plugin shows the file in a browser view, which is not available here yet.";
+
+/* The native chat's first screen (task 2800 S2c-2a): a page that answered
+   with no messages, and the button that asks a stopped load again. */
+"No messages yet." = "No messages yet.";
+"Try Again" = "Try Again";

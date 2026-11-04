@@ -1519,3 +1519,7 @@
    给用户只一句；缺的是哪个字段属于日志 */
 "This preview plugin is not available." = "这个预览插件暂不可用";
 "This plugin shows the file in a browser view, which is not available here yet." = "这个插件在浏览器视图里显示文件，这里还没有这条路径";
+
+/* 原生群聊首屏（task 2800 S2c-2a）：读到过但没有消息，以及重试按钮 */
+"No messages yet." = "暂无消息";
+"Try Again" = "重试";
