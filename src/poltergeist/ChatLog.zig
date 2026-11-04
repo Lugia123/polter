@@ -1137,6 +1137,30 @@ pub fn historyScanWithBudget(
     cursor: ?ScanCursor,
     output: ?OutputBudget,
 ) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+    return scanTree(alloc, self.io, &self.tree, group, before_seq, limit, filter, scope, cursor, output);
+}
+
+/// `historyScanWithBudget`, against nothing but a read-only tree.
+///
+/// **This is what makes a background reader possible** (task 2835,
+/// contract §8): the walk needs a directory, an io and a `Tree`, and it
+/// opens each day file for itself. It needs no append handle, no torn-tail
+/// repair and no sequence recovery -- the three things `ChatLog.open` does
+/// because it is the writer. A reader that shared the writer's handle would
+/// race its rotation; one that ran `open` would be "fixing" the user's log
+/// before reading it.
+pub fn scanTree(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+    output: ?OutputBudget,
+) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
     // A budget that cannot describe a page is refused before anything is
     // read -- including the empty-request path below, whose envelope is
     // already assumed to fit.
@@ -1163,7 +1187,7 @@ pub fn historyScanWithBudget(
 
     var w: Walk = .{
         .alloc = alloc,
-        .io = self.io,
+        .io = io,
         .group = group,
         .before_seq = before_seq,
         .filter = filter,
@@ -1193,7 +1217,7 @@ pub fn historyScanWithBudget(
         w.found.deinit(alloc);
     }
 
-    var days = try self.tree.days(alloc, group);
+    var days = try tree.days(alloc, group);
     defer days.deinit(alloc);
 
     // A cursor names the file the last call stopped in. Everything newer
@@ -1227,19 +1251,19 @@ pub fn historyScanWithBudget(
         // nothing in it to hand over -- so `stop` stands.
         if (!filter.admitsDay(d.day)) continue;
 
-        const path = try self.tree.partPath(alloc, group, d.day, d.part);
+        const path = try tree.partPath(alloc, group, d.day, d.part);
         defer alloc.free(path);
 
         // A file that was listed a moment ago and will not open now is a
         // gap in the middle of the range, and a gap is the one thing the
         // caller must not be told is the beginning.
-        const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch {
+        const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch {
             w.gap = true;
             continue;
         };
-        defer file.close(self.io);
+        defer file.close(io);
 
-        const st = file.stat(self.io) catch {
+        const st = file.stat(io) catch {
             w.gap = true;
             continue;
         };
@@ -1275,6 +1299,58 @@ pub fn historyScanWithBudget(
         .gap = w.gap,
     };
 }
+
+/// A **read-only** view of the record, for a background scan (task 2835,
+/// contract §8).
+///
+/// It owns an `alloc`, an `io` and a `GroupTree`, and nothing else. It does
+/// **not** create the directory, open the append stream, patch a torn tail
+/// or recover the sequence: all of that is `ChatLog.open`, which is the
+/// writer's, and a reader that ran it would be repairing the user's log
+/// before reading it. A missing group directory is an empty record, which
+/// the walk reports as `at_end` -- the honest answer, not an error.
+pub const Reader = struct {
+    alloc: Allocator,
+    io: std.Io,
+    dir: []u8,
+    tree: Tree,
+
+    pub fn open(alloc: Allocator, io: std.Io, state_dir: []const u8) Allocator.Error!Reader {
+        const dir = try std.fs.path.join(alloc, &.{ state_dir, "chat" });
+        return .{
+            .alloc = alloc,
+            .io = io,
+            .dir = dir,
+            .tree = .{
+                .owner = .chat,
+                .alloc = alloc,
+                .io = io,
+                .dir = dir,
+                .label = "chat log",
+            },
+        };
+    }
+
+    pub fn deinit(self: *Reader) void {
+        self.tree.deinit();
+        self.alloc.free(self.dir);
+        self.* = undefined;
+    }
+
+    pub fn scan(
+        self: *Reader,
+        alloc: Allocator,
+        group: []const u8,
+        before_seq: u64,
+        limit: usize,
+        filter: Filter,
+        scope: Chat.Scope,
+        cursor: ?ScanCursor,
+        output: ?OutputBudget,
+    ) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+        return scanTree(alloc, self.io, &self.tree, group, before_seq, limit, filter, scope, cursor, output);
+    }
+};
 
 pub fn freePage(alloc: Allocator, page: Page) void {
     for (page.entries) |e| freeEntry(alloc, e);

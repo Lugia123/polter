@@ -2271,10 +2271,12 @@ pub const CAPI = struct {
     /// named one would make the window's own chat depend on one that may not
     /// exist. Same shape as `ghostty_app_files` above, for the same reason.
     ///
-    /// **Only `group_read`.** Anything else is refused rather than served:
-    /// this is a chat tab's door, not a second way for a host to call every
-    /// tool an agent has. That is `App.chatReadAnswer`'s rule, where the
-    /// only accepted method is named.
+    /// **Only named methods**: `group_read` and, since task 2835, the
+    /// three bounded history calls `chat_history_begin`,
+    /// `chat_history_poll` and `chat_history_cancel`. Anything else is
+    /// refused rather than served: this is a chat tab's door, not a second
+    /// way for a host to call every tool an agent has. That is
+    /// `App.chatReadAnswer`'s rule, where each accepted method is named.
     ///
     /// **Who is asking is the person at the keyboard**: an agent has no C
     /// ABI, so reaching this at all is being the host, and the request

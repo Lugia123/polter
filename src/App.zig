@@ -513,6 +513,24 @@ poltergeist_recall: poltergeistpkg.Session.Recall = .{},
 /// night has nothing to read, which is the case the whole feature is for.
 chat_log: ?poltergeistpkg.ChatLog = null,
 
+/// The core's bounded, asynchronous history jobs (task 2835, contract §2–§4,
+/// §7, §8). The jobs themselves are pure (`HistoryJobs`); the scan and the
+/// wire shape are this file's, and `poltergeistpkg.rpc`'s serializer.
+history_jobs: poltergeistpkg.HistoryJobs = undefined,
+
+/// The monotonic clock the jobs are timed by, taken once at start. Its
+/// context is this struct, whose `start` never changes -- the worker
+/// threads read it too.
+history_clock: poltergeistpkg.HistoryJobs.Elapsed = undefined,
+
+/// **This run's identity for live messages** (contract §8): 128 random
+/// bits, 32 lowercase hex characters, generated once and never written
+/// down. A live anchor names this plus the group's own seq, so a message
+/// from the previous run can never be mistaken for one in this run even
+/// when the seq repeats. Minting it can fail, and then start-up fails: a
+/// fixed fallback would be an identity two runs share.
+chat_session: [poltergeistpkg.HistoryJobs.id_len]u8 = undefined,
+
 /// What happened, handed to plugins as it happens.
 ///
 /// Deliberately not the chat log. The log is a core feature -- it is
@@ -800,7 +818,7 @@ config_conditional_state: configpkg.ConditionalState,
 /// if they are the first surface.
 first: bool = true,
 
-pub const CreateError = Allocator.Error || font.SharedGridSet.InitError;
+pub const CreateError = Allocator.Error || font.SharedGridSet.InitError || error{Entropy};
 
 /// Create a new app instance. This returns a stable pointer to the app
 /// instance which is required for callbacks.
@@ -876,9 +894,20 @@ pub fn init(
     };
     self.identities.changed = identitiesChanged;
     self.identities.ctx = self;
+
+    // After the struct exists, because the clock's context is this App's
+    // own field and must not move.
+    self.chat_session = poltergeistpkg.HistoryJobs.newOpaqueId(global.io()) catch return error.Entropy;
+    self.history_clock = .init(global.io());
+    self.history_jobs = .init(alloc, global.io(), self.history_clock.clock());
 }
 
 pub fn deinit(self: *App) void {
+    // **Before anything else**: history workers are cancelled and joined
+    // here, so no scan can still be reading when the logs close or this
+    // App's memory goes (contract §3: no detached worker past `deinit`).
+    self.history_jobs.deinit();
+
     // First: the late-alert thread posts into our mailbox, and must be gone
     // before anything it could touch is.
     self.poltergeist_stopping.store(true, .release);
@@ -17225,6 +17254,31 @@ pub fn chatReadAnswer(
 ) Allocator.Error![]const u8 {
     const reader = poltergeistpkg.Chat.user_id;
 
+    // **The three history methods, by name and no others** (task 2835,
+    // contract §2). They are read here rather than through `wire` because
+    // `wire` is the socket's protocol: an agent that could name them would
+    // be reaching a host door with no caller field to claim otherwise.
+    // Anything not named here falls through to the one method this door
+    // has always had, `group_read`.
+    const value = std.json.parseFromSliceLeaky(std.json.Value, arena, req, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "{\"error\":\"BadRequest\"}",
+    };
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return "{\"error\":\"BadRequest\"}",
+    };
+    const method = switch (obj.get("method") orelse .null) {
+        .string => |m| m,
+        else => return "{\"error\":\"BadRequest\"}",
+    };
+    if (std.mem.eql(u8, method, "chat_history_begin"))
+        return self.chatHistoryBegin(arena, obj.get("params"));
+    if (std.mem.eql(u8, method, "chat_history_poll"))
+        return self.chatHistoryPoll(arena, obj.get("params"));
+    if (std.mem.eql(u8, method, "chat_history_cancel"))
+        return self.chatHistoryCancel(arena, obj.get("params"));
+
     const parsed = poltergeistpkg.wire.parseRequestLeaky(arena, req) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return "{\"error\":\"BadRequest\"}",
@@ -17257,8 +17311,12 @@ pub fn chatReadAnswer(
 
     var out: std.Io.Writer.Allocating = .init(arena);
     const w = &out.writer;
-    w.print("{{\"ok\":true,\"group\":{f},\"cursor\":{d},\"since\":{d},\"next\":{d},\"more\":{},\"messages\":[", .{
+    // **`session` is this run's identity**, and it is what makes the live
+    // anchors meaningful: the same group seq in another run is another
+    // message (contract §8). The persisted fields are unchanged.
+    w.print("{{\"ok\":true,\"group\":{f},\"session\":\"{s}\",\"cursor\":{d},\"since\":{d},\"next\":{d},\"more\":{},\"messages\":[", .{
         std.json.fmt(p.group, .{}),
+        self.chat_session[0..],
         cursor,
         after,
         pass.passed,
@@ -17267,31 +17325,614 @@ pub fn chatReadAnswer(
 
     for (pass.messages, 0..) |m, i| {
         if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
-        // **`from_self` is worked out here, from the reader this door
-        // resolved the caller to.** It is never read off the request: a tab
-        // that could send it would be a tab that could draw somebody else's
-        // words as its own. Same rule as the reader above.
-        w.print("{{\"seq\":{d},\"log_seq\":{d},\"from\":\"0x{x:0>16}\",\"from_self\":{},\"author\":{f},\"at_ms\":{d},\"summary\":{},\"channel\":{d},\"text\":{f},\"mentions\":[", .{
-            m.seq,
-            m.log_seq,
-            m.from,
-            m.from == reader,
-            std.json.fmt(try self.chatMemberTitle(arena, m.from), .{}),
-            m.at_ms,
-            m.summary,
-            m.channel,
-            std.json.fmt(m.text, .{}),
-        }) catch return error.OutOfMemory;
-        for (m.mentions, 0..) |n, j| {
-            if (j > 0) w.writeAll(",") catch return error.OutOfMemory;
-            w.print("{{\"id\":\"0x{x:0>16}\",\"title\":{f}}}", .{ n.id, std.json.fmt(n.title, .{}) }) catch return error.OutOfMemory;
-        }
-        w.writeAll("],\"role\":") catch return error.OutOfMemory;
-        w.print("{f}}}", .{std.json.fmt(m.role, .{})}) catch return error.OutOfMemory;
+        // **One serializer for every chat message** (task 2835): this is
+        // the same writer a snapshot and a history page use, so a field
+        // added for one is a field the others carry. `from_self` is worked
+        // out inside it from the reader this door resolved the caller to --
+        // never read off the request, which could claim somebody else's
+        // words are one's own.
+        poltergeistpkg.rpc.writeHistoryRecord(
+            w,
+            poltergeistpkg.rpc.liveRecordOf(m, try self.chatMemberTitle(arena, m.from)),
+            .live,
+            reader,
+            self.chat_session[0..],
+        ) catch return error.OutOfMemory;
     }
     w.writeAll("]}") catch return error.OutOfMemory;
 
     return out.written();
+}
+
+/// The three history methods' request fields (task 2835, contract §8).
+const history_default_limit: usize = 50;
+const history_max_limit: usize = 200;
+
+const HistoryBegin = struct {
+    group: []const u8,
+    request_id: []const u8,
+    limit: usize,
+    resume_token: ?[poltergeistpkg.HistoryJobs.id_len]u8,
+};
+
+/// **The id travels as the 32 ASCII hex characters that were generated.**
+/// `HistoryJobs.newOpaqueId` renders 128 random bits that way, and the
+/// manager compares ids byte for byte; decoding them to 16 raw bytes here
+/// would leave half the array undefined and compare a different value.
+/// Lowercase is the contract's form (contract §8), so upper case is a
+/// different token and is refused rather than quietly normalised.
+fn historyJobId(text: []const u8) ?[poltergeistpkg.HistoryJobs.id_len]u8 {
+    if (text.len != poltergeistpkg.HistoryJobs.id_len) return null;
+    for (text) |c| switch (c) {
+        '0'...'9', 'a'...'f' => {},
+        else => return null,
+    };
+    var out: [poltergeistpkg.HistoryJobs.id_len]u8 = undefined;
+    @memcpy(&out, text);
+    return out;
+}
+
+/// Read `params` for `chat_history_begin`. **Every name is checked**: an
+/// unknown field is a call that meant something else, and a silent default
+/// would answer it as this one (the rule `wire.parseRequestLeaky` states).
+fn parseHistoryBegin(value: ?std.json.Value) ?HistoryBegin {
+    const obj = switch (value orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        const key = kv.key_ptr.*;
+        if (!std.mem.eql(u8, key, "group") and
+            !std.mem.eql(u8, key, "request_id") and
+            !std.mem.eql(u8, key, "limit") and
+            !std.mem.eql(u8, key, "resume_token")) return null;
+    }
+
+    const group = switch (obj.get("group") orelse return null) {
+        .string => |v| v,
+        else => return null,
+    };
+    if (group.len == 0) return null;
+
+    const request_id = switch (obj.get("request_id") orelse return null) {
+        .string => |v| v,
+        else => return null,
+    };
+    if (request_id.len == 0 or
+        request_id.len > poltergeistpkg.HistoryJobs.max_request_id) return null;
+
+    var limit: usize = history_default_limit;
+    if (obj.get("limit")) |v| {
+        const n = switch (v) {
+            .integer => |i| i,
+            else => return null,
+        };
+        if (n <= 0 or n > history_max_limit) return null;
+        limit = @intCast(n);
+    }
+
+    var resume_token: ?[poltergeistpkg.HistoryJobs.id_len]u8 = null;
+    if (obj.get("resume_token")) |v| {
+        const text = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        resume_token = historyJobId(text) orelse return null;
+    }
+
+    return .{
+        .group = group,
+        .request_id = request_id,
+        .limit = limit,
+        .resume_token = resume_token,
+    };
+}
+
+fn parseHistoryJob(value: ?std.json.Value) ?[poltergeistpkg.HistoryJobs.id_len]u8 {
+    const obj = switch (value orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        if (!std.mem.eql(u8, kv.key_ptr.*, "job_id")) return null;
+    }
+    const text = switch (obj.get("job_id") orelse return null) {
+        .string => |t| t,
+        else => return null,
+    };
+    return historyJobId(text);
+}
+
+/// What one background scan owns: copies of everything it may read, and
+/// nothing that points into this App (contract §7). Freed on whichever
+/// thread drops the job, after the worker has been joined.
+const HistoryWork = struct {
+    state_dir: []u8,
+    group: []u8,
+    scope: poltergeistpkg.Chat.Scope,
+    session: [poltergeistpkg.HistoryJobs.id_len]u8,
+    reader: poltergeistpkg.Bus.Id,
+    limit: usize,
+};
+
+fn dupeHistoryScope(alloc: Allocator, scope: poltergeistpkg.Chat.Scope) Allocator.Error!poltergeistpkg.Chat.Scope {
+    return switch (scope) {
+        .everything => .everything,
+        .only => |seats| .{ .only = try alloc.dupe(poltergeistpkg.Chat.Scope.Seat, seats) },
+    };
+}
+
+fn freeHistoryScope(alloc: Allocator, scope: poltergeistpkg.Chat.Scope) void {
+    switch (scope) {
+        .everything => {},
+        .only => |seats| if (seats.len > 0) alloc.free(seats),
+    }
+}
+
+fn makeHistoryWork(
+    self: *App,
+    group: []const u8,
+    state_dir: []const u8,
+    scope: poltergeistpkg.Chat.Scope,
+    limit: usize,
+) Allocator.Error!*HistoryWork {
+    const work = try self.alloc.create(HistoryWork);
+    errdefer self.alloc.destroy(work);
+
+    const work_group = try self.alloc.dupe(u8, group);
+    errdefer self.alloc.free(work_group);
+    const work_dir = try self.alloc.dupe(u8, state_dir);
+    errdefer self.alloc.free(work_dir);
+    const work_scope = try dupeHistoryScope(self.alloc, scope);
+    errdefer freeHistoryScope(self.alloc, work_scope);
+
+    work.* = .{
+        .state_dir = work_dir,
+        .group = work_group,
+        .scope = work_scope,
+        .session = self.chat_session,
+        .reader = poltergeistpkg.Chat.user_id,
+        .limit = limit,
+    };
+    return work;
+}
+
+fn releaseHistoryWork(alloc: Allocator, ctx: ?*anyopaque) void {
+    const w: *HistoryWork = @ptrCast(@alignCast(ctx orelse return));
+    alloc.free(w.state_dir);
+    alloc.free(w.group);
+    freeHistoryScope(alloc, w.scope);
+    alloc.destroy(w);
+}
+
+fn historyCursorValue(c: ?poltergeistpkg.HistoryJobs.Cursor) ?poltergeistpkg.ChatLog.ScanCursor {
+    const v = c orelse return null;
+    return .{
+        .day = v.day,
+        .part = v.part,
+        .offset = v.offset,
+        .end = v.end,
+        .inode = v.inode,
+        .question = v.question,
+    };
+}
+
+fn historyCursorJob(c: poltergeistpkg.ChatLog.ScanCursor) poltergeistpkg.HistoryJobs.Cursor {
+    return .{
+        .day = c.day,
+        .part = c.part,
+        .offset = c.offset,
+        .end = c.end,
+        .inode = c.inode,
+        .question = c.question,
+    };
+}
+
+fn historyStopName(stop: poltergeistpkg.ChatLog.ScanStop) []const u8 {
+    return switch (stop) {
+        .at_end => "at_end",
+        .full => "full",
+        .budget => "budget",
+        .gap => "gap",
+        // A too-large page is not a page: it is reported as a failure with
+        // the token that resumes at the record which did not fit.
+        .too_large => "too_large",
+    };
+}
+
+fn buildHistoryBegin(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) (Allocator.Error || error{ReplyExceedsBudget})![]const u8 {
+    const b: *const HistoryBeginBuild = @ptrCast(@alignCast(ctx orelse return error.OutOfMemory));
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+
+    w.print("{{\"ok\":true,\"state\":\"pending\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"live_since\":{d},\"history_upper\":{d},\"live_snapshot\":[", .{
+        job.id[0..],
+        std.json.fmt(b.group, .{}),
+        b.session[0..],
+        b.live_since,
+        b.history_upper,
+    }) catch return error.OutOfMemory;
+
+    for (b.messages, b.titles, 0..) |m, title, i| {
+        if (i > 0) w.writeAll(",") catch return error.OutOfMemory;
+        // The same serializer a history page and `group_read` use: the
+        // snapshot is a message with the same fields, not a second shape.
+        poltergeistpkg.rpc.writeHistoryRecord(
+            w,
+            poltergeistpkg.rpc.liveRecordOf(m, title),
+            .live,
+            b.reader,
+            b.session[0..],
+        ) catch return error.OutOfMemory;
+    }
+    w.writeAll("]}") catch return error.OutOfMemory;
+
+    // **The finished reply, checked against the real ceiling.** The
+    // per-record measurements reserve the shell, and the shell has a test
+    // of its own; this is the one place that can see the whole assembled
+    // document, so it refuses rather than hand a host more than its
+    // buffer holds.
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        return error.ReplyExceedsBudget;
+    }
+    return bytes;
+}
+
+const HistoryBeginBuild = struct {
+    group: []const u8,
+    messages: []const poltergeistpkg.Chat.Message,
+    titles: []const []const u8,
+    live_since: u64,
+    history_upper: u64,
+    session: [poltergeistpkg.HistoryJobs.id_len]u8,
+    reader: poltergeistpkg.Bus.Id,
+};
+
+fn buildHistoryReady(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    page: poltergeistpkg.ChatLog.ScanPage,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    const writer = &out.writer;
+
+    writer.print("{{\"ok\":true,\"state\":\"ready\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"messages\":[", .{
+        job.id[0..],
+        std.json.fmt(w.group, .{}),
+        w.session[0..],
+    }) catch return error.OutOfMemory;
+
+    for (page.entries, 0..) |e, i| {
+        if (i > 0) writer.writeAll(",") catch return error.OutOfMemory;
+        poltergeistpkg.rpc.writeHistoryRecord(
+            writer,
+            poltergeistpkg.rpc.historyRecordOf(e),
+            .persisted,
+            w.reader,
+            w.session[0..],
+        ) catch return error.OutOfMemory;
+    }
+
+    writer.print("],\"stop\":\"{s}\",\"next_token\":", .{historyStopName(page.stop)}) catch return error.OutOfMemory;
+    if (page.next != null and page.stop != .at_end) {
+        writer.print("\"{s}\"", .{job.token[0..]}) catch return error.OutOfMemory;
+    } else {
+        writer.writeAll("null") catch return error.OutOfMemory;
+    }
+    writer.print(",\"restarted\":{},\"gap\":{}}}", .{ page.restarted, page.gap }) catch return error.OutOfMemory;
+
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        return error.OutOfMemory;
+    }
+    return bytes;
+}
+
+fn buildHistoryTooLarge(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    out.writer.print("{{\"ok\":false,\"error\":\"TooLarge\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"next_token\":\"{s}\"}}", .{
+        job.id[0..],
+        std.json.fmt(w.group, .{}),
+        w.session[0..],
+        job.token[0..],
+    }) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn buildHistoryFailure(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    code: []const u8,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    out.writer.print("{{\"ok\":false,\"error\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{
+        code,
+        job.id[0..],
+        std.json.fmt(w.group, .{}),
+        w.session[0..],
+    }) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn publishHistoryFailure(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, code: []const u8) void {
+    const bytes = buildHistoryFailure(job, w, code) catch return;
+    job.completeFailed(.scan_failed, bytes, null, false);
+}
+
+/// The job's thread. It touches only the work it was handed and the job
+/// itself: **never this App, `self.chat`, `self.chat_log` or the bus**
+/// (contract §7). Its own read-only `Reader` opens what it needs and is
+/// closed before the thread ends.
+fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
+    const w: *HistoryWork = @ptrCast(@alignCast(ctx orelse return));
+    const alloc = job.arena.allocator();
+
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+
+    var reader = poltergeistpkg.ChatLog.Reader.open(alloc, global.io(), w.state_dir) catch {
+        publishHistoryFailure(job, w, "LogsClosed");
+        return;
+    };
+    defer reader.deinit();
+
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+
+    const measure_ctx: poltergeistpkg.rpc.HistoryMeasure = .{
+        .reader = w.reader,
+        .session = w.session[0..],
+    };
+    const budget: poltergeistpkg.ChatLog.OutputBudget = .{
+        .bytes = poltergeistpkg.rpc.history_reply_bytes,
+        .shell = poltergeistpkg.rpc.history_reply_shell_bytes,
+        .measure = poltergeistpkg.rpc.measureHistory,
+        .context = &measure_ctx,
+    };
+
+    const page = reader.scan(
+        alloc,
+        w.group,
+        job.before_seq,
+        w.limit,
+        .{},
+        w.scope,
+        historyCursorValue(job.cursor),
+        budget,
+    ) catch |err| {
+        switch (err) {
+            error.OutOfMemory => publishHistoryFailure(job, w, "OutOfMemory"),
+            error.CursorMismatch => publishHistoryFailure(job, w, "CursorMismatch"),
+            error.ShellExceedsBytes => publishHistoryFailure(job, w, "TooLarge"),
+        }
+        return;
+    };
+    defer poltergeistpkg.ChatLog.freeScanPage(alloc, page);
+
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+
+    const next: ?poltergeistpkg.HistoryJobs.Cursor = if (page.next) |c| historyCursorJob(c) else null;
+
+    if (page.stop == .too_large) {
+        // Explicitly failed, and the token still names the record that did
+        // not fit: the host may reload it with a bigger page later rather
+        // than looping on the same budget (contract §3).
+        const bytes = buildHistoryTooLarge(job, w) catch {
+            publishHistoryFailure(job, w, "TooLarge");
+            return;
+        };
+        job.completeFailed(.too_large, bytes, next, true);
+        return;
+    }
+
+    const bytes = buildHistoryReady(job, w, page) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    job.completeReady(bytes, next, next != null);
+}
+
+fn historyStateJson(
+    self: *App,
+    arena: Allocator,
+    job: *const poltergeistpkg.HistoryJobs.Job,
+    state: []const u8,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(arena);
+    out.writer.print("{{\"ok\":true,\"state\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{
+        state,
+        job.id[0..],
+        std.json.fmt(job.group, .{}),
+        self.chat_session[0..],
+    }) catch return error.OutOfMemory;
+    return out.written();
+}
+
+/// `chat_history_begin`: validate on this thread, take an immutable live
+/// snapshot, register the job and start the scan (contract §7).
+fn chatHistoryBegin(
+    self: *App,
+    arena: Allocator,
+    value: ?std.json.Value,
+) Allocator.Error![]const u8 {
+    const p = parseHistoryBegin(value) orelse return "{\"error\":\"BadParams\"}";
+    const reader = poltergeistpkg.Chat.user_id;
+
+    if (!self.chat.exists(p.group)) return "{\"error\":\"NoSuchGroup\"}";
+    if (!self.chat.isMember(p.group, reader)) return "{\"error\":\"NotAMember\"}";
+    const chat_log = if (self.chat_log) |*l| l else return "{\"error\":\"LogsClosed\"}";
+    const state_dir = self.poltergeist_state_dir orelse return "{\"error\":\"LogsClosed\"}";
+
+    // **Before anything is rebuilt.** A repeated `request_id` with the same
+    // parameters answers with the original, immutable begin response --
+    // even when a message posted since would not fit a fresh snapshot, and
+    // even when the job has since finished (contract §7). Different
+    // parameters under the same id are refused here, not after paying for
+    // a snapshot.
+    switch (self.history_jobs.reuseRequest(p.request_id, p.group, p.limit, p.resume_token)) {
+        .none => {},
+        .reused => |job| return arena.dupe(u8, job.begin_bytes),
+        .conflict => return "{\"error\":\"RequestIdConflict\"}",
+        .expired => return "{\"error\":\"Expired\"}",
+    }
+
+    // The two water marks, read on this thread at one moment (contract §7):
+    // the log's persisted head, and the group's own count -- which is what
+    // the live read continues after. They are different numbers and are
+    // never compared.
+    const history_upper = chat_log.head();
+    const live_since = self.chat.headOf(p.group) orelse 0;
+
+    const scope = poltergeistHost(self).scopeFor(arena, &self.poltergeist, reader, p.group);
+    const snapshot = self.chat.recentFor(arena, p.group, reader, history_default_limit, scope) catch |err| switch (err) {
+        error.NotAMember => return "{\"error\":\"NotAMember\"}",
+        else => return "{\"error\":\"NoSuchGroup\"}",
+    };
+
+    // The newest page that fits the reply, measured by the same serializer
+    // that writes it. A record that would overflow the envelope is left
+    // out and the snapshot keeps the newest records below it; if even the
+    // newest does not fit, say so rather than hand the host a reply its
+    // buffer cannot hold.
+    const records_budget = poltergeistpkg.rpc.history_reply_bytes - poltergeistpkg.rpc.history_reply_shell_bytes;
+    const titles = try arena.alloc([]const u8, snapshot.len);
+    var start = snapshot.len;
+    var used: usize = 0;
+    var i = snapshot.len;
+    while (i > 0) {
+        i -= 1;
+        const title = try self.chatMemberTitle(arena, snapshot[i].from);
+        const cost = poltergeistpkg.rpc.measureRecord(
+            poltergeistpkg.rpc.liveRecordOf(snapshot[i], title),
+            .live,
+            reader,
+            self.chat_session[0..],
+        );
+        // **The comma the writer will put before this record.** Counting
+        // records alone understates the reply by one byte per join, and a
+        // budget is only as honest as its most optimistic term. The first
+        // selected record has nothing before it; every one after (that is,
+        // every older record added from here on) does.
+        const separator: usize = if (start == snapshot.len) 0 else 1;
+        const charge = std.math.add(usize, cost, separator) catch std.math.maxInt(usize);
+        if (charge == std.math.maxInt(usize) or charge > records_budget -| used) {
+            if (start == snapshot.len) return "{\"error\":\"TooLarge\"}";
+            break;
+        }
+        used += charge;
+        titles[i] = title;
+        start = i;
+    }
+
+    var build: HistoryBeginBuild = .{
+        .group = p.group,
+        .messages = snapshot[start..],
+        .titles = titles[start..],
+        .live_since = live_since,
+        .history_upper = history_upper,
+        .session = self.chat_session,
+        .reader = reader,
+    };
+
+    // The scan's own copies. Made here, on this thread; the worker never
+    // reads this App.
+    const work = try self.makeHistoryWork(p.group, state_dir, scope, p.limit);
+
+    const outcome = self.history_jobs.begin(.{
+        .request_id = p.request_id,
+        .group = p.group,
+        .limit = p.limit,
+        .resume_token = p.resume_token,
+        .history_upper = history_upper,
+        .work = .{
+            .ctx = work,
+            .run = runHistoryWork,
+            .release = releaseHistoryWork,
+        },
+        .build = .{ .ctx = &build, .build = buildHistoryBegin },
+    }) catch |err| switch (err) {
+        error.Busy => return "{\"error\":\"Busy\"}",
+        error.RequestIdConflict => return "{\"error\":\"RequestIdConflict\"}",
+        error.CursorExpired => return "{\"error\":\"CursorExpired\"}",
+        error.CursorMismatch => return "{\"error\":\"CursorMismatch\"}",
+        error.Expired => return "{\"error\":\"Expired\"}",
+        error.Entropy => return "{\"error\":\"Entropy\"}",
+        error.ThreadFailed => return "{\"error\":\"ThreadFailed\"}",
+        error.ReplyExceedsBudget => return "{\"error\":\"TooLarge\"}",
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    return arena.dupe(u8, outcome.job.begin_bytes);
+}
+
+/// `chat_history_poll`: never scans. A ready page is the immutable bytes
+/// its worker wrote; a group that has gone away since the scan started is
+/// not delivered (contract §3).
+fn chatHistoryPoll(
+    self: *App,
+    arena: Allocator,
+    value: ?std.json.Value,
+) Allocator.Error![]const u8 {
+    const id = parseHistoryJob(value) orelse return "{\"error\":\"BadParams\"}";
+    const outcome = self.history_jobs.poll(id) catch return "{\"error\":\"NoSuchJob\"}";
+
+    const job = switch (outcome) {
+        .expired => return "{\"error\":\"Expired\"}",
+        .pending => |j| {
+            return self.historyStateJson(arena, j, "pending");
+        },
+        .cancelled => |j| {
+            return self.historyStateJson(arena, j, "cancelled");
+        },
+        .ready => |j| j,
+        .failed => |j| j,
+    };
+
+    // Checked again at delivery, not trusted from when the scan began: a
+    // group deleted or a membership withdrawn in between must not receive
+    // the page.
+    if (!self.chat.exists(job.group)) {
+        self.history_jobs.cancel(job.id) catch {};
+        return "{\"error\":\"NoSuchGroup\"}";
+    }
+    if (!self.chat.isMember(job.group, poltergeistpkg.Chat.user_id)) {
+        self.history_jobs.cancel(job.id) catch {};
+        return "{\"error\":\"NotAMember\"}";
+    }
+
+    const bytes = job.bytes orelse return "{\"error\":\"Expired\"}";
+    return arena.dupe(u8, bytes);
+}
+
+/// `chat_history_cancel`: idempotent. The reply names what was cancelled so
+/// the host can drop the right load even when its own record is stale.
+fn chatHistoryCancel(
+    self: *App,
+    arena: Allocator,
+    value: ?std.json.Value,
+) Allocator.Error![]const u8 {
+    const id = parseHistoryJob(value) orelse return "{\"error\":\"BadParams\"}";
+    const job = self.history_jobs.cancel(id) catch return "{\"error\":\"NoSuchJob\"}";
+    return self.historyStateJson(arena, job, "cancelled");
 }
 
 /// Read further back than the group still holds, out of the log on disk.
@@ -18981,4 +19622,61 @@ test "2156 v3: the person's own Agent CLIs are read once a round, so nothing a r
     try testing.expect(ownClisNeedsRead(app.own_round, app.poltergeist_own_round));
     app.ownClisRound();
     try testing.expect(app.own_round == 2);
+}
+
+test "2835: a generated job id survives the host's JSON round trip and polls" {
+    // **The id's whole journey**, not just its spelling: generated by the
+    // manager (32 ASCII hex), written into a reply, read back out of a
+    // request by the door's parser, and looked up by the manager. Decoding
+    // the text to 16 raw bytes made the second half undefined, and the
+    // test above would not have seen it.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const H = poltergeistpkg.HistoryJobs;
+    var elapsed: H.Elapsed = .init(testing.io);
+
+    const T = struct {
+        fn run(_: ?*anyopaque, job: *H.Job) void {
+            const bytes = job.alloc.dupe(u8, "READY") catch return;
+            job.completeReady(bytes, null, false);
+        }
+        fn release(_: Allocator, _: ?*anyopaque) void {}
+        fn build(_: ?*anyopaque, job: *H.Job) (Allocator.Error || error{ReplyExceedsBudget})![]const u8 {
+            return job.alloc.dupe(u8, "BEGIN");
+        }
+    };
+
+    var jobs = H.init(alloc, testing.io, elapsed.clock());
+    jobs.mode = .immediate;
+    defer jobs.deinit();
+
+    const out = try jobs.begin(.{
+        .request_id = "round-trip",
+        .group = "build",
+        .limit = 10,
+        .history_upper = 7,
+        .work = .{ .run = T.run, .release = T.release },
+        .build = .{ .build = T.build },
+    });
+    const id = out.job.id;
+
+    // Exactly what the host echoes back, envelope and all. An arena for
+    // the dynamic JSON value: `parseFromSliceLeaky` hands its strings to
+    // the caller and they live as long as the value does.
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const doc = try std.fmt.allocPrint(arena.allocator(), "{{\"method\":\"chat_history_poll\",\"params\":{{\"job_id\":\"{s}\"}}}}", .{id[0..]});
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), doc, .{});
+    const params = switch (value) {
+        .object => |o| o.get("params"),
+        else => null,
+    };
+    const parsed = parseHistoryJob(params) orelse return error.NotParsed;
+    try testing.expectEqualSlices(u8, &id, &parsed);
+
+    switch (try jobs.poll(parsed)) {
+        .ready => {},
+        else => return error.ExpectedReady,
+    }
 }

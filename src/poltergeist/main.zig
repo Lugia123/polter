@@ -33,6 +33,7 @@ pub const StallWatch = @import("StallWatch.zig");
 pub const worktree = @import("worktree.zig");
 pub const files = @import("files/main.zig");
 pub const ChatLog = @import("ChatLog.zig");
+pub const HistoryJobs = @import("HistoryJobs.zig");
 pub const MentionRetry = @import("MentionRetry.zig");
 pub const OwedTells = @import("OwedTells.zig");
 pub const StartupAnswers = @import("StartupAnswers.zig");
@@ -144,6 +145,7 @@ test {
     _ = ControlWake;
     _ = ShellSteps;
     _ = ChatLog;
+    _ = HistoryJobs;
     _ = MentionRetry;
     _ = OwedTells;
     _ = StartupAnswers;

@@ -2477,6 +2477,55 @@ pub fn cursorFor(self: *const Chat, name: []const u8, id: Id) Error!u64 {
     return who.cursor;
 }
 
+/// The group's own count as it stands: the seq of the last message posted
+/// into it, or null when there is no such group.
+///
+/// **This is the live water mark a history begin copies** (task 2835,
+/// contract §7): everything up to it is either in the snapshot or on disk,
+/// and the live read continues strictly after it. It is not the persisted
+/// log's head (`ChatLog.head`), which counts every group's writes and does
+/// not restart with the process.
+pub fn headOf(self: *const Chat, name: []const u8) ?u64 {
+    const group = self.groups.getPtr(name) orelse return null;
+    return group.head();
+}
+
+/// The newest `limit` messages `id` may see, oldest first, **without moving
+/// anything**. This is the live snapshot a history begin copies (contract
+/// §7): `readAfter` resumes from a cursor, which is not the same question
+/// as "the most recent page", and `read` would move the member's place in
+/// the conversation.
+///
+/// The messages are borrowed from the group, like `readAfter`'s: a caller
+/// that keeps them copies. Nothing here is a page budget; the caller
+/// measures what it writes.
+pub fn recentFor(
+    self: *const Chat,
+    alloc: Allocator,
+    name: []const u8,
+    id: Id,
+    limit: usize,
+    scope: Scope,
+) Error![]const Message {
+    const group = self.groups.getPtr(name) orelse return error.NoSuchGroup;
+    const who = group.members.get(id) orelse return error.NotAMember;
+
+    var out: std.ArrayListUnmanaged(Message) = .empty;
+    errdefer out.deinit(alloc);
+
+    var i = group.log.items.len;
+    while (i > 0 and out.items.len < limit) {
+        i -= 1;
+        const m = group.log.items[i];
+        if (beyondFloor(m, who)) continue;
+        if (!scope.sees(m.channel, m.at_ms)) continue;
+        try out.append(alloc, m);
+    }
+
+    std.mem.reverse(Message, out.items);
+    return out.toOwnedSlice(alloc);
+}
+
 /// Who is in this group, sorted so two listings can be compared.
 ///
 /// Ids only. What to call each one is not the chat's business: it knows

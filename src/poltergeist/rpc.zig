@@ -6071,6 +6071,160 @@ pub fn historyLineOf(e: ChatLog.Entry) ChatLine {
     };
 }
 
+/// Where a message came from, which decides its anchor (contract §8).
+pub const MessageOrigin = enum { persisted, live };
+
+/// One message as a history page or a live snapshot writes it.
+///
+/// **`mentions` and `role` are optional and the option is the point**: a
+/// line on disk written before either existed has `null` -- nobody recorded
+/// it -- while an empty slice or `""` is a message that named nobody or
+/// belonged to no role. A reader that collapsed the two would draw last
+/// week's message as one that deliberately addressed nobody.
+pub const HistoryRecord = struct {
+    seq: u64,
+    log_seq: u64,
+    from: Bus.Id,
+    author: []const u8,
+    at_ms: i64,
+    summary: bool,
+    channel: u64,
+    text: []const u8,
+    mentions: ?[]const Chat.Mention,
+    role: ?[]const u8,
+};
+
+pub fn historyRecordOf(e: ChatLog.Entry) HistoryRecord {
+    return .{
+        .seq = 0,
+        .log_seq = e.seq,
+        .from = e.from,
+        .author = e.author,
+        .at_ms = e.at_ms,
+        .summary = e.summary,
+        .channel = e.channel,
+        .text = e.text,
+        .mentions = e.mentions,
+        .role = e.role,
+    };
+}
+
+pub fn liveRecordOf(m: Chat.Message, author: []const u8) HistoryRecord {
+    return .{
+        .seq = m.seq,
+        .log_seq = m.log_seq,
+        .from = m.from,
+        .author = author,
+        .at_ms = @intCast(m.at_ms),
+        .summary = m.summary,
+        .channel = m.channel,
+        .text = m.text,
+        .mentions = m.mentions,
+        .role = m.role,
+    };
+}
+
+/// **The one writer for a chat message**, used by `group_read`, by a live
+/// snapshot and by a history page -- and, through `measureRecord`, by the
+/// scan's byte budget. Counting and writing being the same code is what
+/// makes the budget measure the reply rather than a model of it.
+///
+/// The anchor is the core's, never the client's (contract §8): an opaque
+/// string, `p:<log_seq>` for a record that exists on disk and
+/// `l:<session>:<seq>` for a live message that has none. A live record
+/// always carries `live_anchor` beside it, so the host can later see the
+/// same message arrive with its persisted identity. The group is a field of
+/// the response, not part of the anchor.
+pub fn writeHistoryRecord(
+    w: *std.Io.Writer,
+    r: HistoryRecord,
+    origin: MessageOrigin,
+    reader: Bus.Id,
+    session: []const u8,
+) std.Io.Writer.Error!void {
+    try w.print("{{\"seq\":{d},\"log_seq\":{d},\"from\":\"0x{x:0>16}\",\"from_self\":{},\"author\":{f},\"at_ms\":{d},\"summary\":{},\"channel\":{d},\"text\":{f},\"mentions\":", .{
+        r.seq,
+        r.log_seq,
+        r.from,
+        r.from == reader,
+        std.json.fmt(r.author, .{}),
+        r.at_ms,
+        r.summary,
+        r.channel,
+        std.json.fmt(r.text, .{}),
+    });
+
+    if (r.mentions) |ms| {
+        try w.writeAll("[");
+        for (ms, 0..) |m, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.print("{{\"id\":\"0x{x:0>16}\",\"title\":{f}}}", .{
+                m.id,
+                std.json.fmt(m.title, .{}),
+            });
+        }
+        try w.writeAll("]");
+    } else try w.writeAll("null");
+
+    try w.writeAll(",\"role\":");
+    if (r.role) |role| {
+        try w.print("{f}", .{std.json.fmt(role, .{})});
+    } else try w.writeAll("null");
+
+    var abuf: [64]u8 = undefined;
+    const persisted = origin == .persisted or r.log_seq != 0;
+    try w.writeAll(",\"anchor\":");
+    if (persisted) {
+        const a = std.fmt.bufPrint(&abuf, "p:{d}", .{r.log_seq}) catch unreachable;
+        try w.print("{f}", .{std.json.fmt(a, .{})});
+    } else {
+        const a = std.fmt.bufPrint(&abuf, "l:{s}:{d}", .{ session, r.seq }) catch unreachable;
+        try w.print("{f}", .{std.json.fmt(a, .{})});
+    }
+
+    try w.writeAll(",\"live_anchor\":");
+    if (origin == .live) {
+        var lbuf: [96]u8 = undefined;
+        const a = std.fmt.bufPrint(&lbuf, "l:{s}:{d}", .{ session, r.seq }) catch unreachable;
+        try w.print("{f}", .{std.json.fmt(a, .{})});
+    } else try w.writeAll("null");
+
+    try w.writeAll(",\"content_version\":0}");
+}
+
+/// How much one record costs in a history reply: the same writer, through a
+/// sink that counts. `null` context is a programming error and is answered
+/// with `maxInt`, which `OutputBudget` refuses rather than accepts.
+pub fn measureHistory(ctx: ?*const anyopaque, e: *const ChatLog.Entry) usize {
+    const c: *const HistoryMeasure = @ptrCast(@alignCast(ctx orelse return std.math.maxInt(usize)));
+    return measureRecord(historyRecordOf(e.*), .persisted, c.reader, c.session);
+}
+
+pub fn measureRecord(r: HistoryRecord, origin: MessageOrigin, reader: Bus.Id, session: []const u8) usize {
+    var buf: [256]u8 = undefined;
+    var d: std.Io.Writer.Discarding = .init(&buf);
+    writeHistoryRecord(&d.writer, r, origin, reader, session) catch return std.math.maxInt(usize);
+    return std.math.cast(usize, d.fullCount()) orelse std.math.maxInt(usize);
+}
+
+/// What the scan's counting sink needs and nothing else, and immutable for
+/// the life of one scan.
+pub const HistoryMeasure = struct {
+    reader: Bus.Id,
+    session: []const u8,
+};
+
+/// The ceiling on one history reply, envelope included, and the part of it
+/// reserved for the envelope.
+///
+/// **The shell is an upper bound, not a guess**: the response fields are a
+/// fixed set of words plus a 32-character id, a 32-character token, the
+/// group name (at most 48 bytes of `[a-z0-9-]`) and two decimal clocks.
+/// 1 KiB is several times what that can reach, and `historyShellFits` -- a
+/// test -- writes the widest one this code can make and checks it.
+pub const history_reply_bytes: usize = read_budget_bytes;
+pub const history_reply_shell_bytes: usize = 1024;
+
 /// Where a task's tree would be made from.
 pub const TreeBase = struct { dir: []const u8, git: bool };
 
@@ -25034,4 +25188,101 @@ test "worktree: terminal_list 说终端站在哪个任务的树里" {
     fake.worktree_tag = .{ .name = "w1", .branch = "wt/w1", .path = "/src/proj-wt/build/wt-1" };
     const manual = try dispatch(alloc, &b, fake.host(), term(boss), .terminal_list);
     try testing.expect(std.mem.indexOf(u8, try openedJson(alloc, manual), "worktree_task") == null);
+}
+
+test "2835: the counting writer is the reply's own bytes" {
+    const alloc = testing.allocator;
+
+    const mentions = [_]Chat.Mention{
+        .{ .id = 0x2222, .title = "✳ retry.py" },
+        .{ .id = 0x3333, .title = "a\"b" },
+    };
+    const record: HistoryRecord = .{
+        .seq = 9,
+        .log_seq = 41,
+        .from = 0x2222,
+        .author = "worker \"q\" 汉字",
+        .at_ms = 1000,
+        .summary = false,
+        .channel = 3,
+        .text = "a\"b\\c\nd",
+        .mentions = &mentions,
+        .role = "reviewer",
+    };
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeHistoryRecord(&out.writer, record, .live, 0, "00112233445566778899aabbccddeeff");
+    const json = out.written();
+
+    // The same record, measured without being written anywhere.
+    try testing.expectEqual(json.len, measureRecord(record, .live, 0, "00112233445566778899aabbccddeeff"));
+
+    // A live message that is already on disk takes the persisted anchor and
+    // still carries its live identity; a history record has no live
+    // identity at all.
+    try testing.expect(std.mem.indexOf(u8, json, "\"anchor\":\"p:41\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"live_anchor\":\"l:00112233445566778899aabbccddeeff:9\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"content_version\":0") != null);
+
+    const entry: ChatLog.Entry = .{
+        .seq = 41,
+        .at_ms = 1000,
+        .group = "build",
+        .from = 0x2222,
+        .author = "w",
+        .summary = false,
+        .text = "x",
+        .channel = 0,
+        .covers_from_log = 0,
+    };
+    const c: HistoryMeasure = .{ .reader = Chat.user_id, .session = "00" ** 16 };
+    var measured: std.Io.Writer.Allocating = .init(alloc);
+    defer measured.deinit();
+    try writeHistoryRecord(&measured.writer, historyRecordOf(entry), .persisted, c.reader, c.session);
+    try testing.expectEqual(measured.written().len, measureHistory(&c, &entry));
+    try testing.expect(std.mem.indexOf(u8, measured.written(), "\"live_anchor\":null") != null);
+}
+
+test "2835: the fixed reply shell fits its reserve with the widest fields" {
+    const alloc = testing.allocator;
+
+    const group = "a" ** 48;
+    const id = "f" ** 32;
+    const session = "e" ** 32;
+
+    // begin
+    var begin: std.Io.Writer.Allocating = .init(alloc);
+    defer begin.deinit();
+    try begin.writer.print("{{\"ok\":true,\"state\":\"pending\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"live_since\":{d},\"history_upper\":{d},\"live_snapshot\":[", .{
+        id,
+        std.json.fmt(group, .{}),
+        session,
+        std.math.maxInt(u64),
+        std.math.maxInt(u64),
+    });
+    try begin.writer.writeAll("]}");
+
+    // ready, pending and cancelled share their variable fields with it.
+    var ready: std.Io.Writer.Allocating = .init(alloc);
+    defer ready.deinit();
+    try ready.writer.print("{{\"ok\":true,\"state\":\"ready\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"messages\":[],\"stop\":\"at_end\",\"next_token\":\"{s}\",\"restarted\":true,\"gap\":true}}", .{
+        id,
+        std.json.fmt(group, .{}),
+        session,
+        id,
+    });
+
+    var failed: std.Io.Writer.Allocating = .init(alloc);
+    defer failed.deinit();
+    try failed.writer.print("{{\"ok\":false,\"error\":\"TooLarge\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"next_token\":\"{s}\"}}", .{
+        id,
+        std.json.fmt(group, .{}),
+        session,
+        id,
+    });
+
+    for ([_][]const u8{ begin.written(), ready.written(), failed.written() }) |shell| {
+        try testing.expect(shell.len <= history_reply_shell_bytes);
+    }
 }
