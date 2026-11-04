@@ -81,6 +81,14 @@ struct ControlRoomWorkdirsPage: View {
     /// number it was started under and writes nothing when it is not this one
     /// (`startSearch` says why a number and not a cancellation).
     @State private var generation = 0
+    /// **The roots this page is set up for**, or nil before the first answer
+    /// for the group in front. Kept apart from `search` because the walk's
+    /// own record moves as it runs while the roots do not, and kept as
+    /// `Roots` -- the group and the places -- rather than as the answer
+    /// because the answer also carries each row's live terminals and their
+    /// titles, which move whenever an agent in the group does anything
+    /// (`ControlRoomWorkdirs.Roots` has the whole of that, task 2808).
+    @State private var roots: ControlRoomWorkdirs.Roots?
     /// Why a row could not be read, for the one row it belongs to; and why a
     /// file could not be opened. Said on the page, in the core's own words
     /// where the core gave any.
@@ -216,6 +224,14 @@ struct ControlRoomWorkdirsPage: View {
         .onAppear {
             model.refreshWorkdirs()
             readOpenDirectories()
+            // **A walk stopped by leaving the page is carried on when it
+            // comes back**, under a new generation: `onDisappear` ticked the
+            // one it was running under, so the round in flight wrote nothing
+            // and scheduled nothing. The answer's handler cannot do this --
+            // the roots are unchanged, which is exactly what keeps it from
+            // throwing the walk away -- so without this the page would draw
+            // 「还在找」 over a walk nothing was going to continue.
+            if search.moreToCome { resumeSearch() }
         }
         .onChange(of: model.workdirs) { _ in
             // **The one entry that acts on an answer**, and the guard is its
@@ -237,6 +253,21 @@ struct ControlRoomWorkdirsPage: View {
             // it was worked out for, so listening to the answer as a whole
             // fires on the group whether or not the directories differ.
             guard ready else { return }
+            // ⚠️ **And the second guard is the roots** (task 2808). The
+            // answer changes whenever *anything* in it does, and what moves
+            // without a root changing is real: each row carries its
+            // terminals' titles, which an agent redraws as it works, so the
+            // answer comes back different on every fetch while the group is
+            // busy. Acting on that reset the page for ever -- `levels.forget`
+            // dropped every level *and the tickets*, and `restartSearch`
+            // threw the walk away -- so the search never finished and its
+            // results redrew endlessly (「一直刷新」). What a walk is built on
+            // is the group and its roots; `Roots` is that pair and nothing
+            // else, and a change to the rest of the answer is left to the
+            // rows that draw it.
+            let now = ControlRoomWorkdirs.Roots(group: group, dirs: dirs)
+            guard now != roots else { return }
+            roots = now
             // Nothing that can fold or unfold a root is called here: the
             // roots' open/shut state is `Tree`'s and only a click changes it
             // (the supervisor's rule for this page is 不做任何自动折叠).
@@ -265,6 +296,12 @@ struct ControlRoomWorkdirsPage: View {
             // not a thing the page's behaviour depends on.
             guard !ready else { return }
             refusal = nil
+            // **The roots go too**, so that the answer's handler starts the
+            // walk even if the group is switched back before an answer for
+            // the one in between ever landed: without this the roots still
+            // in hand would match the old group's and the walk would not be
+            // started for a page whose search was just emptied.
+            roots = nil
             levels.forget()
             search = Search(roots: [], query: "")
             generation &+= 1

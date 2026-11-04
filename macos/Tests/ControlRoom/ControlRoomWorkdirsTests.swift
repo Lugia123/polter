@@ -1018,6 +1018,68 @@ struct ControlRoomWorkdirsSearchTests {
         #expect(s.hits.map(\.name) == ["a.md"])
     }
 
+    // MARK: The walk ends
+
+    /// **A directory is folded in once**, even when two roots are one inside
+    /// the other: the inner root is asked once, and the outer walk reaching
+    /// it again does not enqueue its children a second time. Without that,
+    /// every fold enqueues children that fold the same way, and the queue
+    /// grows with every pass instead of shrinking -- a walk that never ends,
+    /// which is the other half of task 2808's 「一直刷新」.
+    @Test func aDirectoryReachedTwiceIsWalkedOnce() {
+        var s = Search(roots: [root("w", "/w"), root("w", "/w/sub")], query: "a.md")
+        var levels = Levels()
+        var asked: [Place] = []
+        _ = round(&s, &levels, budget: 64,
+                  table: ["/w": [("sub", true), ("a.md", false)],
+                          "/w/sub": [("deep", true)],
+                          "/w/sub/deep": [("a.md", false)]],
+                  asked: &asked)
+        #expect(asked.map(\.path) == ["/w", "/w/sub", "/w/sub/deep"],
+                "one ask per directory, however many ways the walk reached it")
+        #expect(s.done)
+        #expect(s.hits.count == 2, "and the file under `deep` is one hit, not one per way it was reached")
+    }
+
+    // MARK: What a page acts on
+
+    /// **The page reacts to the roots, and to nothing else in the answer**
+    /// (task 2808). `Dir` also carries the terminals standing in a row and
+    /// their titles, which an agent redraws as it works -- so the answer
+    /// comes back different on every fetch while the group is busy. A page
+    /// that reset its walk for that never finished one; `Roots` is the pair
+    /// that may change (the group, the places), and this is the guard's
+    /// whole rule.
+    @Test func theLivePartsOfTheAnswerAreNotAChangeOfRoots() {
+        func dir(_ id: String, _ path: String,
+                 title: String = "⠏ working", editing: UInt64 = 0) -> ControlRoomWorkdirs.Dir {
+            .init(id: id, path: path, short: path,
+                  who: [.init(id: "0x1", title: title, role: "worker")],
+                  also_in: [], readable: true, why: nil, editing: editing)
+        }
+        let busy = ControlRoomWorkdirs.Roots(group: "g", dirs: [dir("a", "/a")])
+        #expect(busy == ControlRoomWorkdirs.Roots(group: "g", dirs: [dir("a", "/a", title: "✳ idle", editing: 3)]),
+                "a title redrawn, or a count moving, is not a change of roots")
+        // What is a change: the group, the places, and no places at all.
+        #expect(busy != ControlRoomWorkdirs.Roots(group: "h", dirs: [dir("a", "/a")]),
+                "the same root under another group is another search")
+        #expect(busy != ControlRoomWorkdirs.Roots(group: "g", dirs: [dir("b", "/b")]))
+        #expect(busy != ControlRoomWorkdirs.Roots(group: "g", dirs: []))
+    }
+
+    /// **The roots are a set**: the order the core lists the rows in is the
+    /// core's, and the same roots in another order are the same search. A
+    /// page comparing arrays would throw a running walk away for a
+    /// reordering that changes no directory.
+    @Test func theOrderOfTheRootsIsNotAChange() {
+        func dir(_ id: String, _ path: String) -> ControlRoomWorkdirs.Dir {
+            .init(id: id, path: path, short: path, who: [], also_in: [],
+                  readable: true, why: nil, editing: 0)
+        }
+        #expect(ControlRoomWorkdirs.Roots(group: "g", dirs: [dir("a", "/a"), dir("b", "/b")])
+            == ControlRoomWorkdirs.Roots(group: "g", dirs: [dir("b", "/b"), dir("a", "/a")]))
+    }
+
     // MARK: The two tabs
 
     /// **「搜内容」 is drawn and does not work**; 「搜文件名」 is what this

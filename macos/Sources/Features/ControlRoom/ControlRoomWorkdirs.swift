@@ -848,6 +848,42 @@ extension ControlRoomWorkdirs {
 // MARK: - Looking for a file by name
 
 extension ControlRoomWorkdirs {
+    /// **What a page's search is set up for: the group in front, and the
+    /// roots under it** -- and nothing else the answer carries.
+    ///
+    /// ⚠️ **Not the whole `Answer`, and that is task 2808's bug.** `Dir` also
+    /// carries each row's live terminals and their titles (`who`) and the
+    /// count of files an agent is changing (`editing`), and those move while
+    /// a group is being worked in: the control room's snapshot is fetched
+    /// again whenever anything happens, so the working-directories answer
+    /// comes back **different although the roots are the same**. A page that
+    /// reset itself on the answer forgot every level -- the tickets with
+    /// them -- and started the walk again, so with an agent in the group
+    /// drawing a spinner in its title the search never got past its first
+    /// rounds and the results redrew for ever. That is the 「一直刷新」 this
+    /// type is for: what a walk is built on may change only when the group
+    /// or its roots do.
+    ///
+    /// **A set of places and not an array.** The order the core lists the
+    /// rows in is the core's, and the same roots in another order are the
+    /// same search; comparing arrays would throw a walk away for a
+    /// reordering that changes no directory.
+    struct Roots: Equatable {
+        var group: String
+        var places: [Search.Place]
+
+        init(group: String, dirs: [Dir]) {
+            self.group = group
+            self.places = dirs.map {
+                Search.Place(workdirId: $0.id, path: $0.path, rel: "")
+            }
+        }
+
+        static func == (a: Roots, b: Roots) -> Bool {
+            a.group == b.group && Set(a.places) == Set(b.places)
+        }
+    }
+
     /// A search for a file name across the working directories (task 2670
     /// S5).
     ///
@@ -995,6 +1031,25 @@ extension ControlRoomWorkdirs {
         /// sentences from this, and "no file by that name" is the other one.
         var moreToCome: Bool { !capped && !queue.isEmpty }
 
+        /// The directories this walk has **already folded in**, by path.
+        ///
+        /// **What keeps the walk from multiplying.** One directory can be
+        /// reached twice: two roots one inside the other is the ordinary
+        /// case (a project tree and a terminal's cwd under it), and the
+        /// second time it is folded in from the page's store. Folding it a
+        /// second time enqueues its children a second time, and folding
+        /// those does the same -- so the queue doubles at every level
+        /// instead of shrinking, the same file is reported once per way it
+        /// was reached, and a fold costs no ask and so no budget: the round
+        /// that hits this walks the explosion on the thread that draws.
+        /// Recording the path the first time it is folded is what stops the
+        /// second (task 2808).
+        ///
+        /// **By path**, which is what `Levels` is keyed by; two `Place`s for
+        /// one directory are one directory whatever `rel` or `workdirId`
+        /// they were reached through.
+        private(set) var walked: Set<String> = []
+
         /// The next directory to read, or nil when there is none.
         ///
         /// ⚠️ **A level already read is folded in and not returned.** The
@@ -1016,6 +1071,9 @@ extension ControlRoomWorkdirs {
         mutating func next(in levels: Levels) -> Place? {
             while !capped, !queue.isEmpty {
                 let place = queue.removeFirst()
+                // **Once per path, however it was reached** (`walked` says
+                // why a second fold multiplies the walk).
+                guard walked.insert(place.path).inserted else { continue }
                 if let level = levels.level(place.path) {
                     read += 1
                     look(level, at: place)
