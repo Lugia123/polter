@@ -64,6 +64,33 @@ final class ControlRoomChatContainer: NSView {
 
     private weak var ghostty: Ghostty.App?
 
+    /// **Observation only** (task 2875): the page's visibility gate, off
+    /// unless the process says `POLTER_CHAT_TRACE=1`. When off nothing is
+    /// formatted. When on, one line per change of a chat's visibility
+    /// tuple, at most 12 per container, and no state is touched.
+    private static let traceOn =
+        ProcessInfo.processInfo.environment["POLTER_CHAT_TRACE"] == "1"
+    private var tracedTuples = 0
+    private var lastVisibility: [String: String] = [:]
+
+    private func traceVisibility(
+        group: String,
+        front: String?,
+        shown: Bool,
+        seen: Bool,
+        mounted: Bool
+    ) {
+        guard Self.traceOn, tracedTuples < 12 else { return }
+        let facing = front ?? "-"
+        let tuple = "front=\(facing) shown=\(shown) seen=\(seen) mounted=\(mounted)"
+        if lastVisibility[group] == tuple { return }
+        lastVisibility[group] = tuple
+        tracedTuples += 1
+        Ghostty.logger.notice(
+            "chat trace: visibility group=\(group, privacy: .public) \(tuple, privacy: .public)"
+        )
+    }
+
     /// **The door the native chat reads through** (task 2791), handed in by
     /// whoever has the core (`ControlRoomController`). Nil -- and then this
     /// container makes the `polter +chat` terminal it has always made, and
@@ -132,6 +159,13 @@ final class ControlRoomChatContainer: NSView {
             let shown = chat.group == front
             chat.host.isHidden = !shown
             if let view = chat.view { ControlRoomLender.setVisible(view, shown && seen) }
+            traceVisibility(
+                group: chat.group,
+                front: front,
+                shown: shown,
+                seen: seen,
+                mounted: chat.host.window != nil
+            )
             if let feed = chat.feed {
                 if shown && seen { feed.start(group: chat.group) } else { feed.stop() }
             }

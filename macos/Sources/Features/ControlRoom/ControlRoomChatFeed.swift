@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 /// Something that can put a block off until later and take it back again.
 ///
@@ -159,6 +160,28 @@ final class ControlRoomChatFeed: ObservableObject {
 
     private let ask: Ask
     private let scheduler: ControlRoomChatScheduling
+
+    /// **Observation only** (task 2875): off unless the process says
+    /// `POLTER_CHAT_TRACE=1`. At most 16 lines per feed lifetime -- never
+    /// reset by a retry or a new start -- and nothing is formatted when off
+    /// (`@autoclosure`, evaluated into a local before interpolating). A
+    /// dedicated `Logger`, not `Ghostty.logger`: this file is Foundation and
+    /// must not name the app's namespace. Fields are group, generation and a
+    /// state word; never ids, tokens, bodies or replies.
+    private static let traceOn =
+        ProcessInfo.processInfo.environment["POLTER_CHAT_TRACE"] == "1"
+    private static let traceLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-trace"
+    )
+    private var traced = 0
+
+    private func trace(_ what: @autoclosure () -> String) {
+        guard Self.traceOn, traced < 16 else { return }
+        let line = what()
+        traced += 1
+        Self.traceLog.notice("\(line, privacy: .public)")
+    }
     /// This feed's parsed Markdown, with its own lifetime and generation
     /// (task 2800 C2b-1). It is handed values only; the page reads documents
     /// out of it and never parses in `body`.
@@ -223,6 +246,7 @@ final class ControlRoomChatFeed: ObservableObject {
         }
         started = true
         generation += 1
+        trace("start group=\(group) gen=\(generation)")
         reloadedOnce = false
         syncMarkdown()
         startBootstrap()
@@ -233,8 +257,10 @@ final class ControlRoomChatFeed: ObservableObject {
     /// every answer from before this moment is dropped by its generation.
     /// The rows stay, so coming back shows what was there.
     func stop() {
+        let wasStarted = started
         started = false
         generation += 1
+        if wasStarted { trace("stop group=\(self.group ?? "-") gen=\(generation)") }
         cancelScheduling()
         cancelJob()
         syncMarkdown()
@@ -304,10 +330,13 @@ final class ControlRoomChatFeed: ObservableObject {
         }
         switch ask(request) {
         case .notReady:
+            trace("begin group=\(group) gen=\(generation) notReady")
             retryBegin(after: period, generation: generation)
         case let .refused(why):
+            trace("begin group=\(group) gen=\(generation) refused")
             stopWithError(why)
         case let .answer(text):
+            trace("begin group=\(group) gen=\(generation) answer")
             handleBegin(text, generation: generation)
         }
     }
@@ -324,11 +353,13 @@ final class ControlRoomChatFeed: ObservableObject {
     private func handleBegin(_ text: String, generation: UInt64) {
         guard generation == self.generation else { return }
         guard let outcome = H.decodeBegin(text) else {
+            trace("decode group=\(self.group ?? "-") gen=\(generation) malformed")
             stopWithError("malformed begin reply")
             return
         }
         switch outcome {
         case let .failed(failure):
+            trace("decode group=\(self.group ?? "-") gen=\(generation) rejected")
             switch failure.error {
             case "Busy":
                 // The same request, next tick: a new id would be a new scan.
@@ -342,6 +373,8 @@ final class ControlRoomChatFeed: ObservableObject {
             }
 
         case let .started(page):
+            let matched = page.group == group
+            trace("decode group=\(self.group ?? "-") gen=\(generation) started match=\(matched ? "yes" : "no")")
             guard page.group == group else { return }
             if let session, session != page.session {
                 // The run changed under us: the old rows are another run's
@@ -503,8 +536,10 @@ final class ControlRoomChatFeed: ObservableObject {
         }
         switch ask(request) {
         case .notReady:
+            trace("poll group=\(group) gen=\(generation) notReady")
             schedulePoll(generation: generation)
         case let .refused(why):
+            trace("poll group=\(group) gen=\(generation) refused")
             // No retry: the request itself was refused, and asking it again
             // would be the same refusal. The rows already drawn stay.
             trouble = why
@@ -512,6 +547,7 @@ final class ControlRoomChatFeed: ObservableObject {
             canReload = true
             if rows.isEmpty { state = .failed(why) } else { state = .ready }
         case let .answer(text):
+            trace("poll group=\(group) gen=\(generation) answer")
             handlePoll(text, jobID: jobID, generation: generation, group: group)
         }
     }
@@ -519,14 +555,17 @@ final class ControlRoomChatFeed: ObservableObject {
     private func handlePoll(_ text: String, jobID: String, generation: UInt64, group: String) {
         guard generation == self.generation else { return }
         guard let outcome = H.decodePoll(text) else {
+            trace("poll-decode group=\(group) gen=\(generation) malformed")
             stopWithError("malformed history reply")
             return
         }
         switch outcome {
         case .pending:
+            trace("poll-decode group=\(group) gen=\(generation) pending")
             schedulePoll(generation: generation)
 
         case .cancelled:
+            trace("poll-decode group=\(group) gen=\(generation) cancelled")
             self.jobID = nil
             // A cancelled scan is not a page and not an answer about the
             // history; it must not leave the page saying it is still
@@ -534,6 +573,9 @@ final class ControlRoomChatFeed: ObservableObject {
             state = rows.isEmpty ? .empty : .ready
 
         case let .ready(page):
+            let matched = page.jobID == jobID && page.group == group
+                && (session == nil || page.session == session)
+            trace("poll-decode group=\(group) gen=\(generation) ready match=\(matched ? "yes" : "no")")
             guard page.jobID == jobID, page.group == group,
                   session == nil || page.session == session
             else { return }
@@ -551,6 +593,8 @@ final class ControlRoomChatFeed: ObservableObject {
             state = rows.isEmpty ? .empty : .ready
 
         case let .failed(failure):
+            let isExpired = failure.error == "Expired" || failure.error == "NoSuchJob"
+            trace("poll-decode group=\(group) gen=\(generation) \(isExpired ? "expired" : "failed")")
             if let named = failure.jobID, named != jobID { return }
             switch failure.error {
             case "Expired", "NoSuchJob":
