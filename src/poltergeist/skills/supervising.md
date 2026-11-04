@@ -1297,6 +1297,13 @@ user reserved the standing to themselves, this answers `StandingInstruction`.
 `group_post(group, text, mention)` says something, `group_read(group, since)`
 reads what you have not seen, `group_members(group)` says who is there.
 
+**Prefer concise Markdown for structured posts.** Use pipe tables with a
+header delimiter, not ASCII box tables. Fence only code, commands and logs,
+and label their language; never fence the whole post. Keep simple status to
+one or two sentences. For long output, link a file or split at complete
+Markdown block/table-row boundaries. Check `cut` in the reply and continue
+only the missing remainder. Plain text remains valid.
+
 **A post wakes no terminal you mind unless it names that terminal in
 `mention`.** Without it the reply is `ok` and the post is in the group, and the
 person it was for sees it whenever they next `group_read` — which may be

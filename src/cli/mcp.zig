@@ -1161,6 +1161,12 @@ const tools = [_]Tool{
             "and a long one is cut**: when that happens the reply says how much you " ++
             "wrote and how much the group kept, because the readers see no sign that " ++
             "there was more. Say the rest in a second message. " ++
+            "**Prefer concise Markdown for structured posts.** Use pipe tables with " ++
+            "a header delimiter, not ASCII box tables. Fence only code, commands and " ++
+            "logs, and label their language; never fence the whole post. Keep simple " ++
+            "status to one or two sentences. For long output, link a file or split at " ++
+            "complete Markdown block/table-row boundaries. Check `cut` in the reply " ++
+            "and continue only the missing remainder. Plain text remains valid. " ++
             "**A post does not interrupt anybody under supervision -- unless you name " ++
             "them in `mention`**: each named terminal has the message typed into it with " ++
             "a return, the way a supervisor gives an instruction. Names go in `mention` " ++

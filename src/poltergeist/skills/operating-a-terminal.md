@@ -236,6 +236,13 @@ thing that actually runs out here. Say the state, the blocker, and what you
 need; leave out your reasoning and your acknowledgements. If somebody asked
 for the full detail, that is different: give it in full.
 
+**Prefer concise Markdown for structured posts.** Use pipe tables with a
+header delimiter, not ASCII box tables. Fence only code, commands and logs,
+and label their language; never fence the whole post. Keep simple status to
+one or two sentences. For long output, link a file or split at complete
+Markdown block/table-row boundaries. Check `cut` in the reply and continue
+only the missing remainder. Plain text remains valid.
+
 ## Work you have been given: `task_list`, `task_progress`
 
 A supervisor may put work on a panel. `task_list(group)` hands you **your own
