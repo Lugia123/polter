@@ -88,7 +88,7 @@ struct ControlRoomWorkdirsPage: View {
     /// because the answer also carries each row's live terminals and their
     /// titles, which move whenever an agent in the group does anything
     /// (`ControlRoomWorkdirs.Roots` has the whole of that, task 2808).
-    @State private var roots: ControlRoomWorkdirs.Roots?
+    @State private var searchRootIdentity: ControlRoomWorkdirs.Roots?
     /// Why a row could not be read, for the one row it belongs to; and why a
     /// file could not be opened. Said on the page, in the core's own words
     /// where the core gave any.
@@ -266,8 +266,8 @@ struct ControlRoomWorkdirsPage: View {
             // else, and a change to the rest of the answer is left to the
             // rows that draw it.
             let now = ControlRoomWorkdirs.Roots(group: group, dirs: dirs)
-            guard now != roots else { return }
-            roots = now
+            guard now != searchRootIdentity else { return }
+            searchRootIdentity = now
             // Nothing that can fold or unfold a root is called here: the
             // roots' open/shut state is `Tree`'s and only a click changes it
             // (the supervisor's rule for this page is 不做任何自动折叠).
@@ -301,7 +301,7 @@ struct ControlRoomWorkdirsPage: View {
             // the one in between ever landed: without this the roots still
             // in hand would match the old group's and the walk would not be
             // started for a page whose search was just emptied.
-            roots = nil
+            searchRootIdentity = nil
             levels.forget()
             search = Search(roots: [], query: "")
             generation &+= 1
