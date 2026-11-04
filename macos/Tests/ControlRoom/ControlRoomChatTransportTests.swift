@@ -1,0 +1,221 @@
+import Foundation
+import Testing
+
+@testable import Ghostty
+
+/// The single ABI call and the request bodies (task 2800, S2c-1 contract
+/// §2/§3): the call happens once in a fixed buffer, the length rules hold,
+/// and a request is escaped by the encoder rather than by string
+/// concatenation.
+struct ControlRoomChatTransportTests {
+    typealias Transport = ControlRoomChatTransport
+    typealias Request = ControlRoomChatRequest
+
+    // MARK: - One call, one buffer
+
+    /// **The call happens exactly once**, and the buffer it is handed is the
+    /// one fixed size this host uses: 96 KiB of body plus the NUL.
+    @Test func testTheCoreIsCalledOnceInTheFixedBuffer() {
+        let request = #"{"method":"group_read","params":{"group":"polter","since":7}}"#
+        var calls = 0
+        var seenRequest = ""
+        var seenCapacity = 0
+        let outcome = Transport.read(request) { bytes, out in
+            calls += 1
+            seenRequest = String(decoding: bytes.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            seenCapacity = out.count
+            out[0] = 0x61
+            out[1] = 0x62
+            return 2
+        }
+        #expect(calls == 1)
+        #expect(seenRequest == request)
+        #expect(seenCapacity == Transport.bodyLimit + 1)
+        #expect(outcome == .answer("ab"))
+    }
+
+    /// A body of exactly 96 KiB is an answer, and the last byte of the
+    /// buffer is still there for the core's NUL.
+    @Test func testExactlyNinetySixKiBIsAnAnswer() {
+        let body = Array(repeating: UInt8(ascii: "a"), count: Transport.bodyLimit)
+        let outcome = Transport.read("{}") { _, out in
+            #expect(out.count == Transport.bodyLimit + 1)
+            for (i, byte) in body.enumerated() { out[i] = CChar(bitPattern: byte) }
+            return body.count
+        }
+        if case let .answer(text) = outcome {
+            #expect(text.utf8.count == Transport.bodyLimit)
+        } else {
+            Issue.record("expected an answer, got \(outcome)")
+        }
+    }
+
+    /// Needing one byte more than the buffer holds is refused **without
+    /// parsing**: the buffer is filled with bytes that are not UTF-8, and
+    /// the refusal is about the length, not about the bytes.
+    @Test func testOneByteTooManyIsRefusedWithoutParsing() {
+        let outcome = Transport.read("{}") { _, out in
+            out[0] = CChar(bitPattern: 0xFF)
+            return Transport.bodyLimit + 1
+        }
+        #expect(outcome == .refused("chat read needs \(Transport.bodyLimit + 1) bytes; the buffer holds \(Transport.bodyLimit)"))
+    }
+
+    /// A negative injected reading is a transport failure, not a body.
+    @Test func testANegativeReadingIsRefused() {
+        let outcome = Transport.read("{}") { _, out in
+            out[0] = CChar(bitPattern: 0xFF)
+            return -1
+        }
+        #expect(outcome == .refused("chat read answered -1 bytes"))
+    }
+
+    /// Zero is "nothing yet"; a short body that is not UTF-8 is a refusal.
+    /// The two must not look the same.
+    @Test func testZeroAndInvalidUTF8AreDifferent() {
+        let nothing = Transport.read("{}") { _, _ in 0 }
+        #expect(nothing == .notReady)
+
+        let broken = Transport.read("{}") { _, out in
+            out[0] = CChar(bitPattern: 0xC3)
+            out[1] = CChar(bitPattern: 0x28)
+            return 2
+        }
+        #expect(broken == .refused("chat read answered bytes that are not UTF-8"))
+    }
+
+    /// Only the first `n` bytes are read: what the core left after them is
+    /// not part of the answer.
+    @Test func testOnlyTheFirstNBytesAreParsed() {
+        let outcome = Transport.read("{}") { _, out in
+            out[0] = CChar(bitPattern: UInt8(ascii: "o"))
+            out[1] = CChar(bitPattern: UInt8(ascii: "k"))
+            out[2] = CChar(bitPattern: 0xFF)
+            return 2
+        }
+        #expect(outcome == .answer("ok"))
+    }
+
+    // MARK: - Request bodies
+
+    private struct LiveWire: Decodable {
+        struct Params: Decodable {
+            var group: String
+            var since: UInt64
+        }
+        var method: String
+        var params: Params
+    }
+
+    private struct BeginWire: Decodable {
+        struct Params: Decodable {
+            var group: String
+            var requestID: String
+            var limit: Int
+            var resumeToken: String?
+            private enum CodingKeys: String, CodingKey {
+                case group, limit
+                case requestID = "request_id"
+                case resumeToken = "resume_token"
+            }
+        }
+        var method: String
+        var params: Params
+    }
+
+    private struct JobWire: Decodable {
+        struct Params: Decodable {
+            var jobID: String
+            private enum CodingKeys: String, CodingKey { case jobID = "job_id" }
+        }
+        var method: String
+        var params: Params
+    }
+
+    private func object(_ text: String) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+    }
+
+    /// A group name is text, not a fragment: quotes, newlines and CJK all
+    /// survive the round trip, and `since` is a `UInt64` that never passes
+    /// through a `Double` (this one is above 2^53).
+    @Test func testALiveRequestEscapesTheGroupAndKeepsALargeSince() throws {
+        let group = "a\"b\n中文"
+        let since: UInt64 = 9_007_199_254_740_993
+        let wire = try JSONDecoder().decode(LiveWire.self, from: Data(Request.live(group: group, since: since).utf8))
+        #expect(wire.method == "group_read")
+        #expect(wire.params.group == group)
+        #expect(wire.params.since == since)
+    }
+
+    /// A begin carries its default limit and leaves `resume_token` out
+    /// entirely when there is none.
+    @Test func testABeginOmitsAMissingResumeToken() throws {
+        let text = try Request.begin(group: "polter", requestID: Request.newRequestID())
+        let wire = try JSONDecoder().decode(BeginWire.self, from: Data(text.utf8))
+        #expect(wire.method == "chat_history_begin")
+        #expect(wire.params.limit == Request.defaultLimit)
+        #expect(wire.params.resumeToken == nil)
+        let params = try #require(try object(text)["params"] as? [String: Any])
+        #expect(params["resume_token"] == nil)
+        #expect(params["group"] as? String == "polter")
+    }
+
+    /// A resume token is kept as the text it is, not decoded into a cursor.
+    @Test func testABeginKeepsItsResumeTokenAsText() throws {
+        let token = String(repeating: "a", count: 31) + "0"
+        let text = try Request.begin(group: "g", requestID: "r", limit: 200, resumeToken: token)
+        let wire = try JSONDecoder().decode(BeginWire.self, from: Data(text.utf8))
+        #expect(wire.params.limit == 200)
+        #expect(wire.params.resumeToken == token)
+    }
+
+    /// The bounds are refused before the ABI is reached: `request_id`
+    /// 1...128 UTF-8 bytes, `limit` 1...200, and an opaque id is exactly 32
+    /// lowercase hex characters.
+    @Test func testTheBoundsAreRefusedBeforeTheCall() throws {
+        #expect(throws: Request.Invalid.requestID) {
+            try Request.begin(group: "g", requestID: "")
+        }
+        #expect(throws: Request.Invalid.requestID) {
+            try Request.begin(group: "g", requestID: String(repeating: "x", count: 129))
+        }
+        #expect(throws: Request.Invalid.limit) {
+            try Request.begin(group: "g", requestID: "r", limit: 0)
+        }
+        #expect(throws: Request.Invalid.limit) {
+            try Request.begin(group: "g", requestID: "r", limit: 201)
+        }
+        #expect(throws: Request.Invalid.resumeToken) {
+            try Request.begin(group: "g", requestID: "r", resumeToken: "short")
+        }
+        let longest = String(repeating: "x", count: 128)
+        let text = try Request.begin(group: "g", requestID: longest, limit: 1)
+        let wire = try JSONDecoder().decode(BeginWire.self, from: Data(text.utf8))
+        #expect(wire.params.requestID == longest)
+    }
+
+    /// Poll and cancel take one id, the same opaque form, and say which call
+    /// they are.
+    @Test func testPollAndCancelNameTheirJob() throws {
+        let id = String(repeating: "0", count: 31) + "f"
+        let poll = try JSONDecoder().decode(JobWire.self, from: Data(Request.poll(jobID: id).utf8))
+        #expect(poll.method == "chat_history_poll")
+        #expect(poll.params.jobID == id)
+        let cancel = try JSONDecoder().decode(JobWire.self, from: Data(Request.cancel(jobID: id).utf8))
+        #expect(cancel.method == "chat_history_cancel")
+        #expect(cancel.params.jobID == id)
+    }
+
+    /// The id form is the contract's: 32 lowercase hex, no upper case and no
+    /// other length.
+    @Test func testTheOpaqueIdFormIsLowercaseHexOfThirtyTwo() throws {
+        #expect(Request.isOpaqueID(String(repeating: "a", count: 32)))
+        #expect(!Request.isOpaqueID(String(repeating: "A", count: 32)))
+        #expect(!Request.isOpaqueID(String(repeating: "a", count: 31)))
+        #expect(!Request.isOpaqueID(String(repeating: "a", count: 33)))
+        #expect(!Request.isOpaqueID(String(repeating: "g", count: 32)))
+        #expect(throws: Request.Invalid.jobID) { try Request.poll(jobID: "not-a-job") }
+        #expect(throws: Request.Invalid.jobID) { try Request.cancel(jobID: "not-a-job") }
+    }
+}

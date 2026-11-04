@@ -16,8 +16,8 @@ struct ControlRoomChatFeedTests {
     private func answer(group: String = "polter", cursor: UInt64 = 3, next: UInt64 = 3,
                         more: Bool = false, messages: String) -> String {
         """
-        {"ok":true,"group":"\(group)","cursor":\(cursor),"since":0,"next":\(next),\
-        "more":\(more),"messages":[\(messages)]}
+        {"ok":true,"group":"\(group)","session":"s1","cursor":\(cursor),"since":0,\
+        "next":\(next),"more":\(more),"messages":[\(messages)]}
         """
     }
 
@@ -27,7 +27,8 @@ struct ControlRoomChatFeedTests {
         """
         {"seq":\(seq),"log_seq":\(log),"from":"0x0000000000000001","from_self":\(self_),\
         "author":"worker","at_ms":1700000000000,"summary":false,"channel":0,\
-        "text":"\(text)","mentions":\(mentions),"role":\(role)}
+        "text":"\(text)","mentions":\(mentions),"role":\(role),\
+        "anchor":"p:\(log)","live_anchor":null,"content_version":0}
         """
     }
 
@@ -53,10 +54,12 @@ struct ControlRoomChatFeedTests {
     @Test func testTheNamesTheCoreWritesAreTheOnesRead() throws {
         let batch = try #require(Feed.decode(answer(messages: message(1, 10, "hi", self_: true))))
         #expect(batch.group == "polter")
+        #expect(batch.session == "s1")
         #expect(batch.cursor == 3)
         #expect(batch.next == 3)
         #expect(batch.more == false)
         #expect(batch.messages[0].logSeq == 10)
+        #expect(batch.messages[0].anchor == "p:10")
         #expect(batch.messages[0].fromSelf)
         #expect(batch.messages[0].atMs == 1700000000000)
     }

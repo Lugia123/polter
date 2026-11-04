@@ -86,6 +86,8 @@
       "macos/Sources/Features/ControlRoom/ControlRoomTasks.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatRules.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatData.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatHistory.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatTransport.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift",
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift",
@@ -317,6 +319,8 @@
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatRulesTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatFeedTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomChatHistoryTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomChatTransportTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatMarkdownTests.swift",
       "macos/Tests/ControlRoom/ControlRoomSidebarTests.swift",
       "macos/Tests/ControlRoom/ControlRoomEveryKeyTests.swift",

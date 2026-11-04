@@ -15,15 +15,24 @@ import Foundation
 /// snake_case wire into camelCase fields, and the mapping is stated in one
 /// place instead of being implied by the property names.
 enum ControlRoomChatData {
-    /// The whole answer to one request.
+    /// The whole answer to one live read.
     ///
-    /// `cursor` is where the core's log has got to and `next` is what to
-    /// pass as `since` to carry on from this batch; both are the log's
-    /// numbers (`log_seq`), not the group's per-run `seq`, which restarts
-    /// at 1 every time the core does. `more` says the batch was cut short
-    /// and there is more waiting right now.
+    /// ⚠️ **`cursor`, `next` and `since` belong to the live read**: they are
+    /// the group's per-run `seq` and have nothing to do with `log_seq`,
+    /// which is where a message sits in the log on disk. `next` is what to
+    /// pass as `since` to carry on from this batch. A history page's records
+    /// have `seq = 0` and are identified by their `anchor`; they never move
+    /// these numbers.
+    ///
+    /// `session` is **this core run's identity** (contract §8). Live anchors
+    /// are meaningful only inside one session, so the host keeps the value
+    /// and treats a changed one as a different run, not a different group.
+    ///
+    /// `more` says the batch was cut short and there is more waiting right
+    /// now.
     struct Batch: Decodable, Equatable {
         var group: String
+        var session: String
         var cursor: UInt64
         var next: UInt64
         var more: Bool
@@ -33,11 +42,11 @@ enum ControlRoomChatData {
     /// One message.
     struct Message: Decodable, Equatable {
         /// The group's own count, **restarted at 1 with every core run**:
-        /// an identity inside one run, never a cursor.
+        /// an identity inside one run, never a cursor. A history record has
+        /// `0` here, because a record on disk has no place in that count.
         var seq: UInt64
-        /// Where this sits in the log on disk, and the number both `next`
-        /// and a walk back through history page by. 0 for a message never
-        /// written down.
+        /// Where this sits in the log on disk, and the number the live read
+        /// walks by. 0 for a message never written down.
         var logSeq: UInt64
         /// The terminal that said it, as `0x…`; the person's own id is all
         /// zeroes.
@@ -61,6 +70,25 @@ enum ControlRoomChatData {
         /// The body, already cut to the core's own limit when it was posted.
         var text: String
 
+        /// **The core's identity for this message** (contract §8): an
+        /// opaque string, `p:<log_seq>` for a record on disk and
+        /// `l:<session>:<seq>` for a live message that has none. The host
+        /// keeps it as written and never builds one from text, an array
+        /// index or a `seq`: a made-up fallback would silently merge two
+        /// messages the core keeps apart.
+        var anchor: String
+
+        /// The live identity this message also had, when it arrived from
+        /// the live read. Later the same message comes back from history
+        /// with its persisted `anchor`, and this is what lets the two be
+        /// recognised as one. `nil` on a record that was already persisted
+        /// when it was read.
+        var liveAnchor: String?
+
+        /// Bumped by the core when a message's content changes; today it is
+        /// 0. A cache keyed by `anchor` must also key by this.
+        var contentVersion: UInt64
+
         /// The terminals this named, each with the title it had then.
         ///
         /// ⚠️ **Nil is "the line did not record them", not "it named
@@ -76,10 +104,12 @@ enum ControlRoomChatData {
         var role: String?
 
         private enum CodingKeys: String, CodingKey {
-            case seq, from, author, summary, channel, text, mentions, role
+            case seq, from, author, summary, channel, text, mentions, role, anchor
             case logSeq = "log_seq"
             case fromSelf = "from_self"
             case atMs = "at_ms"
+            case liveAnchor = "live_anchor"
+            case contentVersion = "content_version"
         }
     }
 
