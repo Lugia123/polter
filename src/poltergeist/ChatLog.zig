@@ -873,6 +873,14 @@ pub const ScanStop = enum {
     /// The page holds what was asked for. There may be more.
     full,
 
+    /// The **first** record this page would have carried is larger than
+    /// the whole output budget, so nothing was consumed. This is not
+    /// `full`: there is no smaller page, and asking again with the same
+    /// budget stops here again. `next` still names the record, so the
+    /// caller can say which one is too big instead of showing an empty
+    /// group or retrying forever.
+    too_large,
+
     /// The byte budget ran out before the page filled. That is not the
     /// same answer as "nothing matches": the next call resumes at
     /// `ScanPage.next` and continues the search.
@@ -930,6 +938,79 @@ pub const ScanPage = struct {
 pub fn freeScanPage(alloc: Allocator, page: ScanPage) void {
     for (page.entries) |e| freeEntry(alloc, e);
     alloc.free(page.entries);
+}
+
+/// What a scan may spend on the records it hands back, and how one record
+/// is measured.
+///
+/// **The scan decides, and it decides before consuming.** Cutting a page
+/// after the records were read leaves them consumed with nowhere to go:
+/// the cursor has already moved past them, so the next page starts below
+/// what was dropped and the caller never sees those messages. A record
+/// that does not fit therefore stays unread, and `ScanStop.full` says so
+/// with `ScanPage.next` pointing at it.
+///
+/// The measurement belongs to the caller because the bytes belong to the
+/// serializer: it must be the same write run through a counting sink, so
+/// that what the scan accepts is what the reply has room for. It is pure
+/// -- it reads the entry and returns a number -- and must not consult
+/// permission, the UI, or anything that changes while a scan runs.
+pub const OutputBudget = struct {
+    /// The whole page's ceiling in bytes, envelope included.
+    bytes: usize,
+
+    /// The part of `bytes` the batch envelope -- the wrapper object,
+    /// `more`/`next`/error fields and the array's brackets -- is
+    /// guaranteed. Records get `bytes - shell`; a shell at least as large
+    /// as the ceiling leaves nothing and the first record is `too_large`.
+    shell: usize,
+
+    /// What one record costs on the wire, escaped exactly as it will be
+    /// written. A serializer passes its own writer with a counting sink.
+    ///
+    /// Returning `maxInt(usize)` means "this record does not fit anywhere".
+    /// It is refused before any arithmetic, even when the ceiling is
+    /// `maxInt` too: a record that says it cannot be carried is never
+    /// accepted because the addition happened to land on the limit.
+    measure: *const fn (context: ?*const anyopaque, e: *const Entry) usize,
+
+    /// Handed back to `measure` untouched, and immutable for the life of
+    /// the scan. Null when the measurement needs nothing.
+    context: ?*const anyopaque,
+
+    /// Bytes the records may use, never negative.
+    pub fn recordBytes(self: OutputBudget) usize {
+        return self.bytes -| self.shell;
+    }
+
+    /// Refuse a shell larger than the whole ceiling.
+    ///
+    /// **Not the same as `shell == bytes`.** That one is a real budget:
+    /// no record can fit, but the envelope of an empty page still does,
+    /// so a group with nothing left answers `at_end` rather than an error
+    /// about its own reply. A shell above the ceiling cannot even do
+    /// that, and it is a caller's arithmetic mistake, not a page.
+    pub fn validate(self: OutputBudget) error{ShellExceedsBytes}!void {
+        if (self.shell > self.bytes) return error.ShellExceedsBytes;
+    }
+};
+
+/// One record's cost on a page, or null when it must not be consumed.
+///
+/// **`maxInt` is never a number of bytes here.** It is how `measure` says
+/// "this record does not fit anywhere", and a ceiling of `maxInt` must
+/// not turn that into an acceptance. The separator is added checked for
+/// the same reason: a count that wrapped would be a count that lies.
+fn outputCost(
+    budget: OutputBudget,
+    used: usize,
+    e: *const Entry,
+    separator: usize,
+) ?usize {
+    const measured = budget.measure(budget.context, e);
+    if (measured == std.math.maxInt(usize)) return null;
+    const cost = std.math.add(usize, measured, separator) catch return null;
+    return if (cost > budget.recordBytes() -| used) null else cost;
 }
 
 /// A fingerprint of the question a scan answers: which group, which
@@ -1013,6 +1094,9 @@ pub fn history(
 /// Nothing here decides who may see what: every line still goes through
 /// `scope.sees`, and the cursor's fingerprint only refuses a cursor made
 /// for a different question.
+///
+/// This is the no-budget path, kept for every caller that has no page
+/// bytes to promise. A caller that does passes `historyScanWithBudget`.
 pub fn historyScan(
     self: *ChatLog,
     alloc: Allocator,
@@ -1023,6 +1107,41 @@ pub fn historyScan(
     scope: Chat.Scope,
     cursor: ?ScanCursor,
 ) (Allocator.Error || error{CursorMismatch})!ScanPage {
+    return self.historyScanWithBudget(alloc, group, before_seq, limit, filter, scope, cursor, null) catch |err| switch (err) {
+        // No budget was handed in, so there is no shell to be too large.
+        error.ShellExceedsBytes => unreachable,
+        else => |e| return e,
+    };
+}
+
+/// `historyScan`, with an optional ceiling on what the page's records may
+/// cost on the wire.
+///
+/// **The ceiling is applied per record, while reading.** The newest record
+/// that would cross it is not consumed: the page stops short with
+/// `ScanStop.full` and `next` names that record, so the next page returns
+/// it and nothing is lost or returned twice. If the record is the very
+/// first the page would carry, the stop is `too_large` instead -- there is
+/// no smaller page to make, and the caller must not retry the same budget.
+///
+/// The budget is the caller's, because the record's bytes are the
+/// serializer's; see `OutputBudget`.
+pub fn historyScanWithBudget(
+    self: *ChatLog,
+    alloc: Allocator,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+    output: ?OutputBudget,
+) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+    // A budget that cannot describe a page is refused before anything is
+    // read -- including the empty-request path below, whose envelope is
+    // already assumed to fit.
+    if (output) |b| try b.validate();
+
     // The cursor belongs to the question it was asked under, and that is
     // decided before anything else -- including the empty request below,
     // which must not become a way to carry a cursor past the check.
@@ -1059,6 +1178,8 @@ pub fn historyScan(
         .stopped = .at_end,
         .restarted = false,
         .gap = false,
+        .output = output,
+        .output_used = 0,
         .arena = .init(alloc),
         .scratch = try alloc.alloc(u8, scan_chunk_bytes),
     };
@@ -1666,6 +1787,14 @@ const Walk = struct {
     /// A listed file could not be opened or read.
     gap: bool,
 
+    /// What this page may spend on its records, or null for no ceiling.
+    output: ?OutputBudget,
+
+    /// What the records already on this page have taken, separators
+    /// included. Reset with the page, so a continued scan is judged by
+    /// what *this* reply will carry rather than by a previous one.
+    output_used: usize,
+
     /// Newest first until the very last step of `history`.
     found: std.ArrayListUnmanaged(Entry) = .empty,
 
@@ -1767,6 +1896,10 @@ const Walk = struct {
         while (rest.len > 0) {
             const nl = std.mem.lastIndexOfScalar(u8, rest, '\n');
             const line = if (nl) |i| rest[i + 1 ..] else rest;
+            // Where this line ends, taken before `rest` drops it. A page
+            // that stops on this line without consuming it resumes from
+            // here, so the next scan reads it again whole.
+            const line_end = base + @as(u64, @intCast(rest.len));
             rest = if (nl) |i| rest[0..i] else rest[0..0];
 
             _ = w.arena.reset(.retain_capacity);
@@ -1811,7 +1944,7 @@ const Walk = struct {
             const role = try copyRole(w.alloc, parsed.role);
             errdefer if (role) |r| w.alloc.free(r);
 
-            try w.found.append(w.alloc, .{
+            const entry: Entry = .{
                 .seq = parsed.seq,
                 .at_ms = parsed.at_ms,
                 .group = group,
@@ -1823,7 +1956,24 @@ const Walk = struct {
                 .covers_from_log = parsed.covers_from_log,
                 .mentions = mentions,
                 .role = role,
-            });
+            };
+
+            // **Before this record joins the page, not after.** A record
+            // that cannot fit is left unread: `line_end` names the byte
+            // after it, so the cursor the caller gets is the one that
+            // reads it again. The separator is charged to every record
+            // but the first, because that is what the reply will write.
+            if (w.output) |b| {
+                const separator: usize = if (w.found.items.len == 0) 0 else 1;
+                const cost = outputCost(b, w.output_used, &entry, separator) orelse {
+                    freeEntry(w.alloc, entry);
+                    w.stopped = if (w.found.items.len == 0) .too_large else .full;
+                    w.resume_at = line_end;
+                    return true;
+                };
+                w.output_used += cost;
+            }
+            try w.found.append(w.alloc, entry);
             if (w.found.items.len >= w.want) {
                 w.stopped = .full;
                 // `rest` is the part of the window still unread, and it
@@ -4478,4 +4628,374 @@ test "2669: a line from before any of this reads back as not recorded, not as na
     try testing.expectEqualStrings("old", page.entries[0].text);
     try testing.expect(page.entries[0].mentions == null);
     try testing.expect(page.entries[0].role == null);
+}
+
+/// One record exactly as the native history reply writes it, through
+/// whatever writer it is given.
+///
+/// **The measurement under test is this same write.** That is what "the
+/// budget counts the wire bytes" means: `std.json.Stringify` does the
+/// escaping, `author`/`mentions`/`role` are in the count, and `from` goes
+/// out in the `0x…` form the reply uses rather than as a number.
+fn testWriteRecord(s: *std.json.Stringify, e: *const Entry) std.Io.Writer.Error!void {
+    try s.beginObject();
+    try s.objectField("seq");
+    try s.write(@as(u64, 0));
+    try s.objectField("log_seq");
+    try s.write(e.seq);
+    try s.objectField("from");
+    try s.print("\"0x{x:0>16}\"", .{e.from});
+    try s.objectField("from_self");
+    try s.write(e.from == Chat.user_id);
+    try s.objectField("author");
+    try s.write(e.author);
+    try s.objectField("at_ms");
+    try s.write(e.at_ms);
+    try s.objectField("summary");
+    try s.write(e.summary);
+    try s.objectField("channel");
+    try s.write(e.channel);
+    try s.objectField("text");
+    try s.write(e.text);
+    try s.objectField("mentions");
+    if (e.mentions) |ms| {
+        try s.beginArray();
+        for (ms) |m| {
+            try s.beginObject();
+            try s.objectField("id");
+            try s.print("\"0x{x:0>16}\"", .{m.id});
+            try s.objectField("title");
+            try s.write(m.title);
+            try s.endObject();
+        }
+        try s.endArray();
+    } else try s.write(null);
+    try s.objectField("role");
+    try s.write(e.role);
+    try s.endObject();
+}
+
+fn testMeasureRecord(context: ?*const anyopaque, e: *const Entry) usize {
+    _ = context;
+    var counter: std.Io.Writer.Discarding = .init(&.{});
+    var s: std.json.Stringify = .{ .writer = &counter.writer };
+    testWriteRecord(&s, e) catch unreachable;
+    return std.math.cast(usize, counter.fullCount()) orelse std.math.maxInt(usize);
+}
+
+/// A measurement that is over the whole ceiling, whatever the record.
+fn testMeasureOverflow(_: ?*const anyopaque, _: *const Entry) usize {
+    return std.math.maxInt(usize);
+}
+
+test "output budget: the measure is the reply's own escaped JSON, metadata included" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "plain", 0);
+    // Quotes, a backslash, a newline and CJK: the things `Stringify`
+    // rewrites, so a measurement that counted `text.len` would be short.
+    const awkward = "a\"b\\c\nd 汉字";
+    _ = l.appendAbout("build", 1, "worker", 1001, false, awkward, 0, .{
+        .mentions = &.{
+            .{ .id = 0x2222, .title = "✳ retry.py" },
+            .{ .id = 0x3333, .title = "✳ tests" },
+        },
+        .role = "reviewer",
+    });
+
+    const page = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, null);
+    defer ChatLog.freeScanPage(alloc, page);
+    try testing.expectEqual(@as(usize, 2), page.entries.len);
+
+    var saw_escaped = false;
+    for (page.entries) |e| {
+        const measured = testMeasureRecord(null, &e);
+
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        var s: std.json.Stringify = .{ .writer = &out.writer };
+        try testWriteRecord(&s, &e);
+        const json = out.written();
+
+        // The counting sink saw exactly the bytes the reply would carry.
+        try testing.expectEqual(json.len, measured);
+
+        if (std.mem.eql(u8, e.text, awkward)) {
+            saw_escaped = true;
+            // Escaped, not raw: these sequences exist only if the count
+            // went through the JSON writer.
+            try testing.expect(std.mem.indexOf(u8, json, "\\\"") != null);
+            try testing.expect(std.mem.indexOf(u8, json, "\\\\") != null);
+            try testing.expect(std.mem.indexOf(u8, json, "\\n") != null);
+            try testing.expect(measured > e.text.len + e.author.len);
+
+            // Every mention and the role are in the record's bytes, and
+            // out of it when they are not written.
+            var bare = e;
+            bare.mentions = null;
+            bare.role = null;
+            try testing.expect(measured > testMeasureRecord(null, &bare));
+        }
+    }
+    try testing.expect(saw_escaped);
+
+    // The old entry points still answer the same way, byte for byte: the
+    // no-budget path is what they call now.
+    {
+        const by_scan = try l.historyScan(alloc, "build", 0, 10, .{}, .everything, null);
+        defer ChatLog.freeScanPage(alloc, by_scan);
+        const by_budget = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, null);
+        defer ChatLog.freeScanPage(alloc, by_budget);
+        try testing.expectEqual(by_scan.entries.len, by_budget.entries.len);
+        try testing.expectEqual(by_scan.stop, by_budget.stop);
+        for (by_scan.entries, by_budget.entries) |a, b| {
+            try testing.expectEqual(a.seq, b.seq);
+            try testing.expectEqualStrings(a.text, b.text);
+        }
+        try testing.expectEqual(ScanStop.at_end, by_scan.stop);
+    }
+}
+
+test "output budget: the exact boundary fits, one byte less does not, and the next page loses nothing" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    // Four records, deliberately different sizes. Oldest first on disk.
+    const texts = [_][]const u8{ "m1", "m2 is a little longer", "m3", "m4 is the newest and longest of them all" };
+    for (texts, 0..) |text, i| {
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(i)), false, text, 0);
+    }
+
+    // What the reply would write: the two newest, and the separator
+    // between them. This is the boundary to the byte.
+    const whole = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, null);
+    defer ChatLog.freeScanPage(alloc, whole);
+    try testing.expectEqual(@as(usize, 4), whole.entries.len);
+    const c3 = testMeasureRecord(null, &whole.entries[2]);
+    const c4 = testMeasureRecord(null, &whole.entries[3]);
+    const two = c4 + 1 + c3;
+
+    const budget: OutputBudget = .{
+        .bytes = two,
+        .shell = 0,
+        .measure = testMeasureRecord,
+        .context = null,
+    };
+    const first = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, budget);
+    defer ChatLog.freeScanPage(alloc, first);
+    // The two newest, oldest first, exactly filling the ceiling.
+    try testing.expectEqual(@as(usize, 2), first.entries.len);
+    try testing.expectEqualStrings(texts[2], first.entries[0].text);
+    try testing.expectEqualStrings(texts[3], first.entries[1].text);
+    try testing.expectEqual(ScanStop.full, first.stop);
+    const cursor = first.next orelse return error.TestUnexpectedResult;
+
+    // The second page continues below it, with no overlap and nothing
+    // missing.
+    const second = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, cursor, budget);
+    defer ChatLog.freeScanPage(alloc, second);
+    try testing.expectEqual(@as(usize, 2), second.entries.len);
+    try testing.expectEqualStrings(texts[0], second.entries[0].text);
+    try testing.expectEqualStrings(texts[1], second.entries[1].text);
+    try testing.expectEqual(ScanStop.at_end, second.stop);
+
+    // One byte under the boundary: the second-newest record no longer
+    // fits, so the page holds only the newest and the cursor names the
+    // one that did not fit. It is not skipped.
+    const tight = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, .{
+        .bytes = two - 1,
+        .shell = 0,
+        .measure = testMeasureRecord,
+        .context = null,
+    });
+    defer ChatLog.freeScanPage(alloc, tight);
+    try testing.expectEqual(@as(usize, 1), tight.entries.len);
+    try testing.expectEqualStrings(texts[3], tight.entries[0].text);
+    try testing.expectEqual(ScanStop.full, tight.stop);
+    const tight_cursor = tight.next orelse return error.TestUnexpectedResult;
+
+    // The next page starts at the record that did not fit and runs down
+    // through the older ones -- oldest first, the order every page comes
+    // back in. m3 is that record, so it is the last entry here, not the
+    // first.
+    const rest = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, tight_cursor, budget);
+    defer ChatLog.freeScanPage(alloc, rest);
+    try testing.expectEqual(@as(usize, 2), rest.entries.len);
+    try testing.expectEqualStrings(texts[1], rest.entries[0].text);
+    try testing.expectEqualStrings(texts[2], rest.entries[1].text);
+}
+
+test "output budget: the first record too large says why, keeps its place, and does not loop" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "older", 0);
+    const huge = "H" ** (4 * 1024);
+    _ = l.append("build", 1, "worker", 1001, false, huge, 0);
+
+    const whole = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, null);
+    defer ChatLog.freeScanPage(alloc, whole);
+    const need = testMeasureRecord(null, &whole.entries[1]);
+
+    // One byte short of the largest record: nothing can be handed back,
+    // and that is said as `too_large` rather than as an empty page.
+    const too_small: OutputBudget = .{
+        .bytes = need - 1,
+        .shell = 0,
+        .measure = testMeasureRecord,
+        .context = null,
+    };
+    const stopped = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, too_small);
+    defer ChatLog.freeScanPage(alloc, stopped);
+    try testing.expectEqual(@as(usize, 0), stopped.entries.len);
+    try testing.expectEqual(ScanStop.too_large, stopped.stop);
+    try testing.expect(!stopped.exhausted());
+    const place = stopped.next orelse return error.TestUnexpectedResult;
+
+    // The same budget from the same place stops in the same place: the
+    // caller can say which record is too big instead of retrying into a
+    // loop or drawing an empty group.
+    const again = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, place, too_small);
+    defer ChatLog.freeScanPage(alloc, again);
+    try testing.expectEqual(ScanStop.too_large, again.stop);
+    try testing.expectEqual(@as(usize, 0), again.entries.len);
+
+    // A budget that can hold it reads the same record: the cursor was
+    // kept before it, not moved past it.
+    const roomy: OutputBudget = .{
+        .bytes = need,
+        .shell = 0,
+        .measure = testMeasureRecord,
+        .context = null,
+    };
+    const found = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, place, roomy);
+    defer ChatLog.freeScanPage(alloc, found);
+    try testing.expectEqual(@as(usize, 1), found.entries.len);
+    try testing.expectEqualStrings(huge, found.entries[0].text);
+
+    // Zero bytes for records, and a measurement that overflows `usize`,
+    // are both "no record fits" -- never a wrapped small number that
+    // slips one in.
+    for ([_]OutputBudget{
+        .{ .bytes = 0, .shell = 0, .measure = testMeasureRecord, .context = null },
+        .{ .bytes = 0, .shell = 0, .measure = testMeasureOverflow, .context = null },
+        // The shell alone eats the ceiling.
+        .{ .bytes = 8, .shell = 8, .measure = testMeasureRecord, .context = null },
+    }) |none| {
+        const page = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, none);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expectEqual(ScanStop.too_large, page.stop);
+        try testing.expect(page.next != null);
+    }
+}
+
+test "output budget: maxInt, an over-large shell and a zero-space page are told apart" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+
+    // A ceiling of `maxInt` must not turn the measurement's own "nowhere"
+    // into an acceptance: `maxInt` is a sentinel, not a byte count.
+    {
+        const page = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, .{
+            .bytes = std.math.maxInt(usize),
+            .shell = 0,
+            .measure = testMeasureOverflow,
+            .context = null,
+        });
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expectEqual(ScanStop.too_large, page.stop);
+        try testing.expect(page.next != null);
+    }
+
+    // A shell above the ceiling is not a page at all: refused before any
+    // record is read, and named, rather than becoming a silent empty one.
+    try testing.expectError(error.ShellExceedsBytes, l.historyScanWithBudget(
+        alloc,
+        "build",
+        0,
+        10,
+        .{},
+        .everything,
+        null,
+        .{ .bytes = 8, .shell = 9, .measure = testMeasureRecord, .context = null },
+    ));
+
+    // `shell == bytes` is legal: no record fits, but the empty page's
+    // envelope does. A group with nothing left answers `at_end`, not an
+    // error about a reply the caller never made too large.
+    {
+        const empty = try l.historyScanWithBudget(alloc, "quiet", 0, 10, .{}, .everything, null, .{
+            .bytes = 8,
+            .shell = 8,
+            .measure = testMeasureRecord,
+            .context = null,
+        });
+        defer ChatLog.freeScanPage(alloc, empty);
+        try testing.expectEqual(@as(usize, 0), empty.entries.len);
+        try testing.expectEqual(ScanStop.at_end, empty.stop);
+        try testing.expect(empty.next == null);
+    }
+
+    // The same zero record space on a group that has a record: the
+    // envelope fits, the record does not, and that is `too_large`.
+    {
+        const page = try l.historyScanWithBudget(alloc, "build", 0, 10, .{}, .everything, null, .{
+            .bytes = 8,
+            .shell = 8,
+            .measure = testMeasureRecord,
+            .context = null,
+        });
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expectEqual(ScanStop.too_large, page.stop);
+    }
 }
