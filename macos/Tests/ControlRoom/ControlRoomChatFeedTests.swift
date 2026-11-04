@@ -181,7 +181,11 @@ struct ControlRoomChatFeedTests {
     private final class Rig {
         let door = Door()
         let scheduler = TestScheduler()
-        lazy var feed = Feed(ask: door.ask, scheduler: scheduler)
+        /// Parsing is driven by hand; these tests are about the feed, and a
+        /// real background parse would run under an assertion.
+        let executor = ManualMarkdownExecutor()
+        lazy var markdown = ControlRoomChatMarkdownStore(executor: executor)
+        lazy var feed = Feed(ask: door.ask, scheduler: scheduler, markdown: markdown)
     }
 
     // MARK: - The first screen
@@ -563,6 +567,48 @@ struct ControlRoomChatFeedTests {
         rig.feed.start(group: "polter")
         rig.scheduler.run(2)
         #expect(rig.scheduler.count(at: 0.2) == 2) // the poll and the catch-up
+    }
+
+    // MARK: - The page's Markdown
+
+    /// The feed hands its real rows to its Markdown store, and the row's
+    /// content changes from plain text to a document when the parse is
+    /// delivered -- through the store's own production entry point.
+    @Test func testTheFeedHandsRealRowsToTheMarkdownStore() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: [
+                    self.message(seq: 0, anchor: "p:1", text: "# hi"),
+                ]))
+            case "chat_history_poll":
+                return .answer(self.status("pending"))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        // The raw window alone asks for nothing.
+        #expect(rig.executor.startsCount == 0)
+        #expect(rig.feed.markdown.content(
+            id: "p:1", group: "polter", generation: rig.feed.generation, text: "# hi"
+        ) == .plain(text: "# hi"))
+
+        rig.feed.markdown.acquire("p:1", group: "polter", generation: rig.feed.generation)
+        #expect(rig.executor.startsCount == 1)
+        #expect(rig.feed.markdown.content(
+            id: "p:1", group: "polter", generation: rig.feed.generation, text: "# hi"
+        ) == .pending(text: "# hi"))
+
+        rig.executor.runNextParse()
+        rig.executor.deliverNext()
+        guard case .markdown = rig.feed.markdown.content(
+            id: "p:1", group: "polter", generation: rig.feed.generation, text: "# hi"
+        ) else {
+            Issue.record("the feed's row never reached a document")
+            return
+        }
     }
 
     // MARK: - The window's edge

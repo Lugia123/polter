@@ -1452,3 +1452,11 @@
    with no messages, and the button that asks a stopped load again. */
 "No messages yet." = "No messages yet.";
 "Try Again" = "Try Again";
+
+/* The native chat's message row (task 2800 C2b-1): its Markdown is still
+   being parsed off the main thread. */
+"Formatting…" = "Formatting…";
+
+/* The native chat's message row (task 2800 C2b-1 v2): the parse budget
+   cannot admit this row while the ones on screen are pinned. */
+"Showing the original text" = "Showing the original text";

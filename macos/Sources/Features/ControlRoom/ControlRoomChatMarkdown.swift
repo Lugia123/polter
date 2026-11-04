@@ -428,7 +428,10 @@ enum ControlRoomChatMarkdown {
         struct Key: Hashable {
             var group: String
             var anchor: String
-            var version: Int64
+            /// The message's own `contentVersion`, which is a `UInt64` on the
+            /// wire. Kept at its full width: narrowing, `bitPattern` mapping
+            /// or 0-for-failure would make two versions one key.
+            var version: UInt64
         }
 
         private struct Entry {
@@ -440,6 +443,11 @@ enum ControlRoomChatMarkdown {
         let maxBytes: Int
         private var entries: [Key: Entry] = [:]
         private var order: [Key] = []
+        /// Keys the feed is actually using now. **A pinned entry is never
+        /// the one a background parse evicts**; it leaves the cache only when
+        /// its demand is released, and then only as an ordinary LRU entry
+        /// when the budget needs the room.
+        private var pinned: Set<Key> = []
         private(set) var residentBytes = 0
 
         var count: Int { entries.count }
@@ -461,8 +469,71 @@ enum ControlRoomChatMarkdown {
                 return entry.document
             }
             let document = ControlRoomChatMarkdown.parse(text)
-            insert(Entry(document: document, bytes: text.utf8.count), for: key)
+            keep(document, text: text, for: key)
             return document
+        }
+
+        /// What is kept for `key`, or nil. **Reads only**: no parse, no LRU
+        /// move -- a view asks this from `body`, and reading is not using.
+        func document(_ key: Key) -> Document? {
+            entries[key]?.document
+        }
+
+        /// Pin every key the feed is using, and unpin the rest. The set may
+        /// name a key whose document is not parsed yet: it is pinned when it
+        /// arrives, so a completion from another row cannot evict it first.
+        mutating func setPinned(_ keys: Set<Key>) {
+            pinned = keys
+        }
+
+        mutating func pin(_ key: Key) {
+            pinned.insert(key)
+        }
+
+        mutating func unpin(_ key: Key) {
+            pinned.remove(key)
+        }
+
+        func isPinned(_ key: Key) -> Bool {
+            pinned.contains(key)
+        }
+
+        /// Keep `document` for `key`, charged the source's UTF-8 bytes.
+        /// False when the source alone is over the byte budget, or when the
+        /// cache is full of pinned entries and has no room for this one: the
+        /// caller may show it from its own row, but this store did not keep
+        /// it.
+        @discardableResult
+        mutating func keep(
+            _ document: Document,
+            text: String,
+            for key: Key,
+            pinned isPinned: Bool = false
+        ) -> Bool {
+            let bytes = text.utf8.count
+            guard maxEntries > 0, maxBytes > 0, bytes <= maxBytes else { return false }
+            if let existing = entries.removeValue(forKey: key) {
+                residentBytes -= existing.bytes
+                order.removeAll { $0 == key }
+                pinned.remove(key)
+            }
+            entries[key] = Entry(document: document, bytes: bytes)
+            order.append(key)
+            residentBytes += bytes
+            if isPinned { pinned.insert(key) }
+            evictNonPinned()
+
+            // Full of pinned entries: **do not evict one of them**. The new
+            // entry is the one that did not fit.
+            if entries.count > maxEntries || residentBytes > maxBytes {
+                if let dropped = entries.removeValue(forKey: key) {
+                    residentBytes -= dropped.bytes
+                    order.removeAll { $0 == key }
+                    pinned.remove(key)
+                }
+                return false
+            }
+            return true
         }
 
         mutating func removeAll() {
@@ -478,17 +549,18 @@ enum ControlRoomChatMarkdown {
             order.append(key)
         }
 
-        private mutating func insert(_ entry: Entry, for key: Key) {
-            guard maxEntries > 0, maxBytes > 0 else { return }
-            entries[key] = entry
-            order.append(key)
-            residentBytes += entry.bytes
+        /// Make room by forgetting the least recently used **unpinned**
+        /// entry. When everything left is pinned, stop: being over budget is
+        /// the caller's answer to give, not a reason to drop a row that is
+        /// on screen.
+        private mutating func evictNonPinned() {
             while entries.count > maxEntries || residentBytes > maxBytes {
-                guard let oldest = order.first else { break }
-                order.removeFirst()
-                if let removed = entries.removeValue(forKey: oldest) {
+                guard let index = order.firstIndex(where: { !pinned.contains($0) }) else { break }
+                let key = order.remove(at: index)
+                if let removed = entries.removeValue(forKey: key) {
                     residentBytes -= removed.bytes
                 }
+                pinned.remove(key)
             }
         }
     }

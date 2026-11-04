@@ -261,6 +261,17 @@ struct ChatMarkdownTests {
         #expect(table.rows.count == 1)
     }
 
+    /// The version is the message's `contentVersion`, a `UInt64` on the
+    /// wire: the top of the range is a version, not a value to narrow.
+    @Test func testTheCacheKeyKeepsTheWholeUInt64Version() {
+        var cache = Markdown.Cache()
+        let top = Markdown.Cache.Key(group: "polter", anchor: "persisted:7", version: .max)
+        let oneLess = Markdown.Cache.Key(group: "polter", anchor: "persisted:7", version: .max - 1)
+        let kept = cache.document(for: top, text: "顶格版本")
+        #expect(cache.document(top) == kept)
+        #expect(cache.document(oneLess) == nil)
+    }
+
     @Test func testTwoGroupsWithTheSameAnchorAndVersionDoNotShareAnEntry() {
         var cache = Markdown.Cache()
         // The same anchor and version in two groups are not the same

@@ -1523,3 +1523,9 @@
 /* 原生群聊首屏（task 2800 S2c-2a）：读到过但没有消息，以及重试按钮 */
 "No messages yet." = "暂无消息";
 "Try Again" = "重试";
+
+/* 原生群聊消息行（task 2800 C2b-1）：Markdown 仍在后台解析 */
+"Formatting…" = "排版中…";
+
+/* 原生群聊消息行（task 2800 C2b-1 v2）：解析预算暂时无法准入，显示原文 */
+"Showing the original text" = "当前显示原文";

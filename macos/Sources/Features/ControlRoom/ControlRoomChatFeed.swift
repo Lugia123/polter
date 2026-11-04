@@ -159,8 +159,15 @@ final class ControlRoomChatFeed: ObservableObject {
 
     private let ask: Ask
     private let scheduler: ControlRoomChatScheduling
+    /// This feed's parsed Markdown, with its own lifetime and generation
+    /// (task 2800 C2b-1). It is handed values only; the page reads documents
+    /// out of it and never parses in `body`.
+    let markdown: ControlRoomChatMarkdownStore
 
-    private var generation: UInt64 = 0
+    /// **The page's lifecycle generation.** A row carries the one it first
+    /// appeared under; `stop`, a new session and a group change each move it,
+    /// which is how a release from the page before this one is ignored.
+    @Published private(set) var generation: UInt64 = 0
     private var liveNext: UInt64 = 0
     private var bootstrapID: String?
     private var jobID: String?
@@ -184,9 +191,14 @@ final class ControlRoomChatFeed: ObservableObject {
     private var bytes = 0
 
     /// `@escaping` because the door outlives the call that hands it in.
-    init(ask: @escaping Ask, scheduler: ControlRoomChatScheduling = ControlRoomChatTimerScheduler()) {
+    init(
+        ask: @escaping Ask,
+        scheduler: ControlRoomChatScheduling = ControlRoomChatTimerScheduler(),
+        markdown: ControlRoomChatMarkdownStore = ControlRoomChatMarkdownStore()
+    ) {
         self.ask = ask
         self.scheduler = scheduler
+        self.markdown = markdown
     }
 
     deinit {
@@ -212,6 +224,7 @@ final class ControlRoomChatFeed: ObservableObject {
         started = true
         generation += 1
         reloadedOnce = false
+        syncMarkdown()
         startBootstrap()
     }
 
@@ -224,6 +237,7 @@ final class ControlRoomChatFeed: ObservableObject {
         generation += 1
         cancelScheduling()
         cancelJob()
+        syncMarkdown()
     }
 
     /// The person asked a stopped load to try again.
@@ -240,6 +254,7 @@ final class ControlRoomChatFeed: ObservableObject {
         canReload = false
         trouble = nil
         state = .loading
+        syncMarkdown()
         startBootstrap()
     }
 
@@ -265,6 +280,7 @@ final class ControlRoomChatFeed: ObservableObject {
         state = .idle
         trouble = nil
         canReload = false
+        syncMarkdown()
     }
 
     /// A fresh bootstrap: new `request_id`, `limit` 50 and no resume token.
@@ -349,6 +365,7 @@ final class ControlRoomChatFeed: ObservableObject {
             for message in page.liveSnapshot {
                 if !absorb(message) { break }
             }
+            syncMarkdown()
             if case .failed = state { return }
             // **Still loading**: the begin is a snapshot, not the older page
             // that answers what came before it. A pending history poll is
@@ -428,6 +445,7 @@ final class ControlRoomChatFeed: ObservableObject {
         } else {
             trouble = nil
         }
+        syncMarkdown()
     }
 
     private func scheduleCatchUp(generation: UInt64) {
@@ -446,6 +464,9 @@ final class ControlRoomChatFeed: ObservableObject {
         generation += 1
         cancelScheduling()
         cancelJob()
+        // The rows stay on screen until the new snapshot replaces them, but
+        // every answer already being parsed for the old run is stale now.
+        syncMarkdown()
         session = nil
         liveNext = 0
         bootstrapped = false
@@ -559,6 +580,33 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     // MARK: - Scheduling lifetime
+
+    /// Hand the Markdown store this feed's current truth. **Values only**:
+    /// the store may parse off the main thread, so it is given copies of the
+    /// text and the identity, never the feed or the core behind it.
+    ///
+    /// Called once at the end of each top-level change rather than from a
+    /// `rows` observer: a batch of 500 messages mutates the array many times
+    /// inside one merge, and one snapshot per merge is what keeps that
+    /// linear.
+    private func syncMarkdown() {
+        let named = group ?? ""
+        let snapshots = rows.map { row in
+            ControlRoomChatMarkdownStore.Snapshot(
+                id: row.id,
+                group: named,
+                anchor: row.message.anchor,
+                version: row.message.contentVersion,
+                text: row.message.text
+            )
+        }
+        markdown.update(
+            group: named,
+            generation: generation,
+            rows: snapshots,
+            active: started
+        )
+    }
 
     private func cancelScheduling() {
         if let liveToken { scheduler.cancel(liveToken) }
@@ -700,6 +748,7 @@ final class ControlRoomChatFeed: ObservableObject {
         }
         if !older.isEmpty { rows.insert(contentsOf: older, at: 0) }
         trim()
+        syncMarkdown()
     }
 
     private func mergeRow(_ dropID: String, into keepID: String) {

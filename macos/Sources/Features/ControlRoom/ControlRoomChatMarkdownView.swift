@@ -11,11 +11,11 @@ import SwiftUI
 /// `body` would run again on every layout pass, which section 9 of the
 /// design is explicit about.
 ///
-/// **Not wired into the page yet.** This is the block face on its own: the
-/// chat feed, the container and the row that carries author and time are not
-/// touched by this slice, so nothing here claims the chat page draws
-/// Markdown -- only that a message's text, handed to this view, is drawn
-/// this way.
+/// **Wired into the real page** (task 2800 C2b-1): each message row in
+/// `ControlRoomNativeChatView` hands this view the document its feed's
+/// `ControlRoomChatMarkdownStore` parsed, so the chat page draws tables,
+/// lists, headings, quotes and code as themselves. The row keeps its author,
+/// role and stable display id around this block face.
 ///
 /// **Sizes come from `ControlRoomLook`.** Body text, list markers, code and
 /// table cells are all `ControlRoomLook.Font.body`, the design's 13-point

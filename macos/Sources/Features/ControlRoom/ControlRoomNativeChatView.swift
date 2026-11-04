@@ -1,51 +1,133 @@
 import SwiftUI
 
-/// The group chat's messages, drawn natively (task 2791, #2791; the stable
-/// row identity, task 2800 S2c-2a).
+/// The group chat's messages, drawn natively (task 2791, #2791; the demand
+/// and Markdown wiring, task 2800 C2b-1).
 ///
-/// **A view and nothing else.** It is handed the rows it draws and asks
-/// nobody for them: where a batch comes from, which group it is about, and
-/// when to ask again are the feed's. That is deliberate -- a view that also
-/// fetched would be untestable without a core, and "it drew nothing" and
-/// "the request failed" would look the same.
+/// **A view and nothing else.** It is handed the feed it draws and asks
+/// nobody for anything: where a batch comes from, which group it is about,
+/// and when to ask again are the feed's. That is deliberate -- a view that
+/// also fetched would be untestable without a core, and "it drew nothing"
+/// and "the request failed" would look the same.
 ///
-/// **Keyed by the row's display id, never by `seq`.** `seq` is the group's
-/// own count: several history records carry `seq = 0`, and two core runs
-/// reuse the same numbers, so a list keyed by it would fold distinct
-/// messages into one row. The id is the first core anchor this feed saw for
-/// that message and does not change when the core later calls the same
-/// message by its persisted anchor.
+/// ⚠️ **Instantiated is not the same as resident.** Five hundred messages
+/// may be in the feed's window while only the rows SwiftUI actually makes
+/// are on screen; those rows announce themselves (`onAppear`/`onDisappear`)
+/// and only they ask the Markdown store for a parse. An empty live answer
+/// that changes nothing therefore never turns a drawn row back into text.
 ///
-/// **No styling of its own yet.** The face is the system body face and the
-/// colours are the system's, so that this slice adds no size and no colour
-/// to the tables the control room's look comes from.
+/// **A message's body is the block face**: `ControlRoomChatMarkdownView`
+/// draws a document the feed's store parsed off the main thread. While that
+/// document is being made the row shows its original text, selectable, with
+/// a short note; a row the budget could not admit says so plainly instead of
+/// spinning; and no row ever draws another version's document.
 struct ControlRoomNativeChatView: View {
-    var rows: [ControlRoomChatFeed.Row]
+    @ObservedObject var feed: ControlRoomChatFeed
 
     var body: some View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(rows) { row in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(row.message.author)
-                                .font(.body)
-                                .fontWeight(.semibold)
-                            if let role = row.message.role, !role.isEmpty {
-                                Text(role)
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Text(row.message.text)
-                            .font(.body)
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(feed.rows) { row in
+                    ControlRoomNativeChatRow(
+                        row: row,
+                        group: feed.group ?? "",
+                        generation: feed.generation,
+                        markdown: feed.markdown
+                    )
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// One message: its author and role, and its body.
+///
+/// **The demand is this row's, and it is registered where the row appears.**
+/// `registered` remembers the generation the demand was made under, so the
+/// release that follows a page change carries the old generation; the store
+/// ignores that release and the new page's demand stays. Repeated `onAppear`
+/// is idempotent in the store.
+private struct ControlRoomNativeChatRow: View {
+    var row: ControlRoomChatFeed.Row
+    var group: String
+    var generation: UInt64
+    @ObservedObject var markdown: ControlRoomChatMarkdownStore
+
+    @State private var registered: UInt64?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(row.message.author)
+                    .font(.body)
+                    .fontWeight(.semibold)
+                if let role = row.message.role, !role.isEmpty {
+                    Text(role)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { register() }
+        .onDisappear { unregister() }
+        .onChange(of: generation) { _ in reacquire() }
+        .onChange(of: row.message.contentVersion) { _ in reacquire() }
+    }
+
+    private func register() {
+        markdown.acquire(row.id, group: group, generation: generation)
+        registered = generation
+    }
+
+    private func unregister() {
+        guard let registered else { return }
+        markdown.release(row.id, group: group, generation: registered)
+        self.registered = nil
+    }
+
+    /// A new generation or a new version of this message is a new demand.
+    /// The old one is released with **the generation it was made under**, so
+    /// a page that has already moved on cannot be released by this row.
+    private func reacquire() {
+        unregister()
+        register()
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch markdown.content(
+            id: row.id,
+            group: group,
+            generation: generation,
+            text: row.message.text
+        ) {
+        case let .markdown(document):
+            ControlRoomChatMarkdownView(document: document)
+        case let .pending(text):
+            plain(text) {
+                Text(String(localized: "Formatting…", comment: "总控台：群聊页，Markdown 尚未解析完成"))
+            }
+        case let .deferredBudget(text):
+            plain(text) {
+                Text(String(localized: "Showing the original text",
+                            comment: "总控台：群聊页，解析预算不足时显示原文"))
+            }
+        case let .plain(text):
+            plain(text) { EmptyView() }
+        }
+    }
+
+    private func plain<Note: View>(_ text: String, @ViewBuilder note: () -> Note) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(text)
+                .font(.body)
+                .textSelection(.enabled)
+            note()
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -85,7 +167,7 @@ struct ControlRoomNativeChatPane: View {
             if feed.rows.isEmpty {
                 placeholder
             } else {
-                ControlRoomNativeChatView(rows: feed.rows)
+                ControlRoomNativeChatView(feed: feed)
             }
             if feed.canReload {
                 Button {
