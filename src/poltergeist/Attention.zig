@@ -167,6 +167,29 @@ pub const Thresholds = struct {
     }
 };
 
+/// Whether a terminal is deliberately waiting on an alarm it set, and when
+/// that wait last ended (task 2858).
+///
+/// **Only the App derives this**, from the alarm table and the identity
+/// rule the product uses; `Bus.facts` replaces it with `none` for anything
+/// that is not a supervisor, so a caller cannot exempt a worker by handing
+/// one in. It is a fact about the supervisor's own decision -- "wake me at
+/// this time" -- not a measurement.
+pub const Wait = struct {
+    /// The supervisor of at least one live group that has an alarm in the
+    /// table: one that has not rung yet, or one that is due and still
+    /// waiting to be delivered. While this stands, a still screen is not
+    /// evidence that the supervisor is stuck -- it is the supervisor
+    /// waiting, which is what it said it would do.
+    active: bool,
+    /// When the last such wait ended, or null when this terminal has never
+    /// waited. Recomputed on the edge and left alone between edges, so a
+    /// repeated sync does not move it; `classify` runs its grace from here.
+    released_ms: ?u64,
+
+    pub const none: Wait = .{ .active = false, .released_ms = null };
+};
+
 /// What the machine knows about one terminal.
 pub const Facts = struct {
     id: Id,
@@ -200,6 +223,11 @@ pub const Facts = struct {
     seen_ms: ?u64,
     /// When the agent last said, in its own report, that it needs an answer.
     raised_ms: ?u64,
+    /// The supervisor's own alarm wait (task 2858). Not defaulted: whoever
+    /// builds `Facts` says which it is, and `Facts.none` says not waiting.
+    /// `Bus.facts` forces it to `none` for anything that is not a
+    /// supervisor.
+    wait: Wait,
     /// Whether a supervisor may answer this terminal's permission prompt
     /// (`Bus.answer`). It decides whose a prompt is in its first minute
     /// (`ofGroup`).
@@ -212,8 +240,17 @@ pub const Facts = struct {
         process: Process,
         seen_ms: ?u64,
         raised_ms: ?u64,
+        /// No default: this is a decision somebody made (the App, from the
+        /// alarm table), and a forgotten one would silently mean "not
+        /// waiting". Whoever builds it says.
+        wait: Wait,
 
-        pub const none: Outside = .{ .process = .running, .seen_ms = null, .raised_ms = null };
+        pub const none: Outside = .{
+            .process = .running,
+            .seen_ms = null,
+            .raised_ms = null,
+            .wait = Wait.none,
+        };
     };
 
     /// A plain terminal nothing is known about.
@@ -234,6 +271,7 @@ pub const Facts = struct {
         .duty = .on,
         .seen_ms = null,
         .raised_ms = null,
+        .wait = Wait.none,
         .answer = .allowed,
         .held = false,
         .shielded = false,
@@ -309,9 +347,13 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
                 .failed => .{ .failed, f.state_since_ms },
                 // Working, for as long as a screen may be still before it
                 // is asked about; past that, the same "stuck?" -- a retry
-                // nobody ends goes on for ever (task 1777, #734).
-                .retrying => if (now_ms -| f.state_since_ms >= t.screen_still_ms)
-                    .{ .suspect_stuck, f.state_since_ms +| t.screen_still_ms }
+                // nobody ends goes on for ever (task 1777, #734). **Not
+                // while the supervisor waits on its own alarm** (task
+                // 2858): a retry that is waiting is not evidence either.
+                // After a wait ends the clock starts from the release, so
+                // the hours spent waiting are not read as hours of retry.
+                .retrying => if (retrySince(f, t, now_ms)) |at|
+                    .{ .suspect_stuck, at }
                 else
                     .{ .working, f.state_since_ms },
                 .in_turn => if (stuckSince(f, t, now_ms)) |at|
@@ -424,20 +466,44 @@ fn seenSince(seen_ms: ?u64, at_ms: u64) bool {
 /// set to zero, or a terminal that has never called a tool -- has no vote,
 /// and the screen decides alone. A screen that could not be read is not a
 /// still screen.
+///
+/// **A supervisor waiting on its own alarm is not suspect at all** (task
+/// 2858): it is doing what it said it would. **And after the wait ends,
+/// both clocks start from the release**, not from the hours that went by
+/// while it waited -- otherwise the first tick after the alarm would read
+/// a night of waiting as a night of being stuck. The call clock is capped
+/// the same way: its raw duration is kept, but only the part since the
+/// release counts.
 fn stuckSince(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
+    if (f.wait.active) return null;
     const still = switch (f.screen) {
         .still_ms => |ms| ms,
         .unmeasured, .unreadable => return null,
     };
     if (still < t.screen_still_ms) return null;
-    var at = (now_ms -| still) +| t.screen_still_ms;
+    var at = stillAt(f, t, now_ms) orelse return null;
 
-    if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {
+    if (t.calls_silent_ms != 0) if (f.call_silent_ms) |raw| {
+        const silent = if (f.wait.released_ms) |r| @min(raw, now_ms -| r) else raw;
         if (silent < t.calls_silent_ms) return null;
         at = @max(at, (now_ms -| silent) +| t.calls_silent_ms);
     };
 
-    return @max(at, f.state_since_ms);
+    at = @max(at, f.state_since_ms);
+    // A release moves the start forward, so the threshold can still be in
+    // the future even though the screen has been still for T1: the grace
+    // has not run out yet.
+    return if (at > now_ms) null else at;
+}
+
+/// When a retrying agent becomes suspect, or null: the same T1 as a turn,
+/// from a start moved forward by a wait that just ended (task 2858).
+fn retrySince(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
+    if (f.wait.active) return null;
+    var start = f.state_since_ms;
+    if (f.wait.released_ms) |r| start = @max(start, r);
+    if (now_ms -| start < t.screen_still_ms) return null;
+    return start +| t.screen_still_ms;
 }
 
 /// The next moment `classify` could answer differently with no event in
@@ -451,10 +517,23 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
             .agent_left, .agent_exited, .gone => return null,
         }
         if (Bus.Agent.spoke(f.hooks, f.said_by)) {
-            if (f.state == .retrying) break :at f.state_since_ms +| t.screen_still_ms;
+            // A planned wait arms nothing: the screen being still is what
+            // the supervisor said would happen (task 2858). Release ends
+            // the wait, and the grace below is the moment it is looked at
+            // again -- never a moment already past, which would wake the
+            // app in a loop.
+            if (f.wait.active) return null;
+            if (f.state == .retrying) {
+                var start = f.state_since_ms;
+                if (f.wait.released_ms) |r| start = @max(start, r);
+                break :at start +| t.screen_still_ms;
+            }
             if (f.state != .in_turn) return null;
             var at = stillAt(f, t, now_ms) orelse return null;
-            if (t.calls_silent_ms != 0) if (f.call_silent_ms) |silent| {
+            if (t.calls_silent_ms != 0) if (f.call_silent_ms) |raw| {
+                // Same effective start as `stuckSince`: only the part
+                // since the release counts.
+                const silent = if (f.wait.released_ms) |r| @min(raw, now_ms -| r) else raw;
                 at = @max(at, (now_ms -| silent) +| t.calls_silent_ms);
             };
             break :at @max(at, f.state_since_ms);
@@ -473,9 +552,19 @@ pub fn nextChange(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
 }
 
 /// When a measured screen will have been still for T1.
+///
+/// A wait that just ended moves the start forward to its release (task
+/// 2858): the stillness that the supervisor spent waiting is not evidence
+/// about what it is doing after the alarm. `state_since_ms` is moved with
+/// it for the same reason -- the grace is measured from the release when
+/// that is the later moment.
 fn stillAt(f: Facts, t: Thresholds, now_ms: u64) ?u64 {
     return switch (f.screen) {
-        .still_ms => |ms| (now_ms -| ms) +| t.screen_still_ms,
+        .still_ms => |ms| blk: {
+            var start = now_ms -| ms;
+            if (f.wait.released_ms) |r| start = @max(@max(start, f.state_since_ms), r);
+            break :blk start +| t.screen_still_ms;
+        },
         .unmeasured, .unreadable => null,
     };
 }
@@ -1038,6 +1127,89 @@ test "Attention: a call clock that says nothing leaves it to the screen" {
     off.calls_silent_ms = 0;
     f.call_silent_ms = 1;
     try testing.expectEqual(Kind.suspect_stuck, classify(f, off, now).kind);
+}
+
+test "2858: a supervisor waiting on its alarm is not called stuck" {
+    var f = hooked(1, .in_turn, 10 * min);
+    f.screen = .{ .still_ms = 20 * min };
+    f.call_silent_ms = 30 * min;
+    f.wait = .{ .active = true, .released_ms = null };
+    // Both clocks are long past their thresholds, and neither counts.
+    try testing.expectEqual(Kind.working, classify(f, T, now).kind);
+    // Nor is a moment armed while the wait stands.
+    try testing.expectEqual(@as(?u64, null), nextChange(f, T, now));
+
+    // A retry is the same: waiting is not retrying.
+    var r = hooked(1, .retrying, 50 * min);
+    r.screen = .{ .still_ms = 50 * min };
+    r.wait = .{ .active = true, .released_ms = null };
+    try testing.expectEqual(Kind.working, classify(r, T, now).kind);
+    try testing.expectEqual(@as(?u64, null), nextChange(r, T, now));
+}
+
+test "2858: after the wait ends the grace runs from the release" {
+    var f = hooked(1, .in_turn, 90 * min);
+    f.screen = .{ .still_ms = 90 * min };
+    f.call_silent_ms = 90 * min;
+    f.wait = .{ .active = false, .released_ms = now - 1 * min };
+
+    // A night of stillness and silence, ended a minute ago: working, not
+    // "stuck since ten hours ago".
+    try testing.expectEqual(Kind.working, classify(f, T, now).kind);
+
+    // The next moment is the later clock from the release: T2, 15 minutes
+    // after it. Never a moment already past.
+    const at = nextChange(f, T, now) orelse return error.TestExpectedAWake;
+    try testing.expectEqual(now - 1 * min + 15 * min, at);
+    try testing.expect(at > now);
+
+    // At that moment it is suspect, and that moment is what it is since.
+    const dt = at - now;
+    var later_f = f;
+    later_f.screen = .{ .still_ms = 90 * min + dt };
+    later_f.call_silent_ms = 90 * min + dt;
+    const s = classify(later_f, T, at);
+    try testing.expectEqual(Kind.suspect_stuck, s.kind);
+    try testing.expectEqual(at, s.since_ms);
+
+    // A retry starts from the release too, not from the hours before it.
+    var r = hooked(1, .retrying, 90 * min);
+    r.wait = .{ .active = false, .released_ms = now - 1 * min };
+    try testing.expectEqual(Kind.working, classify(r, T, now).kind);
+    try testing.expectEqual(now - 1 * min + T.screen_still_ms, nextChange(r, T, now).?);
+}
+
+test "2858: a wait masks no real question, no failure and no pending hook" {
+    // An approval is the person's, whether or not an alarm stands.
+    var approval = hooked(1, .awaiting_approval, 40 * min);
+    approval.wait = .{ .active = true, .released_ms = null };
+    try testing.expectEqual(Kind.needs_approval, classify(approval, T, now).kind);
+
+    // A real question in `awaiting_input` is not the idle prompt.
+    var question = hooked(1, .awaiting_input, 40 * min);
+    question.wait = .{ .active = true, .released_ms = null };
+    try testing.expectEqual(Kind.needs_answer, classify(question, T, now).kind);
+
+    // An explicit raise stands over the wait, as it stands over idle.
+    var raised = hooked(1, .in_turn, 40 * min);
+    raised.raised_ms = 50 * min;
+    raised.wait = .{ .active = true, .released_ms = null };
+    const asked = classify(raised, T, now);
+    try testing.expectEqual(Kind.needs_answer, asked.kind);
+    try testing.expectEqual(Source.self_report, asked.source);
+
+    // A failure is a failure.
+    var failed = hooked(1, .failed, 40 * min);
+    failed.wait = .{ .active = true, .released_ms = null };
+    try testing.expectEqual(Kind.failed, classify(failed, T, now).kind);
+
+    // And hooks that were promised and never came are still suspect.
+    var missing: Facts = .none;
+    missing.hooks = .expected;
+    missing.expected_ms = 50 * min;
+    missing.wait = .{ .active = true, .released_ms = null };
+    try testing.expectEqual(Kind.suspect_stuck, classify(missing, T, now).kind);
+    try testing.expectEqual(Source.hook_missing, classify(missing, T, now).source);
 }
 
 test "Attention: hooks that were promised and never came are suspect" {

@@ -608,6 +608,15 @@ condition with no deadline** ("until the swap is under 5G"): if it never comes
 true you stop for good. Wait for the condition *or* the alarm, whichever
 comes first.
 
+**An alarm is you saying "not before then", and Polter takes you at your
+word.** While an alarm stands it covers every group you supervise, not just
+the one you set it in — and an alarm that is already due but still waiting
+to be delivered counts too. Your tab is not marked as one that has gone
+silent, and the "maybe stuck?" inference is not run on you. When it rings or
+you cancel it, those clocks start again from that moment rather than from
+the hours you spent waiting. It covers nobody else: a worker in the group is
+not exempt.
+
 If your group has tasks not closed or cancelled and nothing at all has been
 heard from your terminal for 15 minutes (`poltergeist-silence-remind-after`)
 and you have no alarm set, you are told so — and told again every 15 minutes

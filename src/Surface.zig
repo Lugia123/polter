@@ -4057,10 +4057,15 @@ const notice_quiet_keyboard_ms = 10 * std.time.ms_per_s;
 /// could lose was the confirmation, and `terminal_list` still answers per
 /// surface.
 pub fn updatePoltergeistTabMark(self: *Surface) void {
-    const mark = self.app.poltergeist.tabMark(
+    // **With the wait fact** (task 2858), so a supervisor that is waiting on
+    // its own alarm is not drawn as one that has gone silent. The fact is
+    // the same one the snapshot and the reminder use; this call site is the
+    // production one, and it must not be left on the old `tabMark`.
+    const mark = self.app.poltergeist.tabMarkWithWait(
         self.id,
         self.app.poltergeistElapsedMs(),
         self.io.config.poltergeist_quiescence_ms,
+        self.app.alarmWaitOf(self.id),
     );
     const shielded = self.app.poltergeist.isShielded(self.id);
     const role = self.app.poltergeist.roleOf(self.id);

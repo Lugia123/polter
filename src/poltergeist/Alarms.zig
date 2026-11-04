@@ -22,6 +22,7 @@ const Alarms = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const Attention = @import("Attention.zig");
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 
@@ -63,11 +64,28 @@ pub const Error = error{
 alloc: Allocator,
 list: std.ArrayListUnmanaged(Alarm) = .empty,
 next_id: u64 = 1,
-/// When each terminal was last heard from -- a line typed into it by
-/// Polter, or a Polter tool called from it -- on the caller's awake clock.
-/// A terminal not in here has had nothing since `started_ms`.
-heard: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+/// When each terminal was last heard from, and whether it is waiting on an
+/// alarm. On the caller's awake clock. A terminal not in here has had
+/// nothing since `started_ms`, and is not waiting.
+heard: std.AutoHashMapUnmanaged(u64, Heard) = .empty,
 started_ms: u64 = 0,
+
+/// One terminal's clock and its planned wait (task 2858). Both live here
+/// because they are the same thing asked at different moments: the release
+/// of a wait and a line being typed both restart what the reminder counts.
+pub const Heard = struct {
+    /// When anything was last heard from it -- a line typed into it by
+    /// Polter, or a Polter tool called from it.
+    at_ms: u64,
+    /// Whether it was, at the last sync, the supervisor of a group with an
+    /// alarm in the table. **The previous round is kept only to recognise
+    /// a true -> false edge**; every judgement is made from the table as
+    /// it is now.
+    waiting: bool = false,
+    /// When that wait last ended: written once, on the edge, and left
+    /// alone until a new wait begins. Null when it has never waited.
+    released_ms: ?u64 = null,
+};
 
 pub fn init(alloc: Allocator) Alarms {
     return .{ .alloc = alloc };
@@ -229,13 +247,46 @@ pub fn forgetGroupsNotIn(self: *Alarms, ctx: anytype, comptime exists: fn (@Type
 /// reminded. That is the intended trade -- polling is work, and the night
 /// this exists for (10-24) was a supervisor that had stopped calling
 /// anything at all.
+///
+/// **A wait ending is heard from here too** (task 2858): the supervisor
+/// was not idle while it waited on its own alarm, so the quiet grace starts
+/// again at the release. It is not a faked tool call -- `callSilentMs` is
+/// untouched -- only the reminder's own clock.
 pub fn noteHeard(self: *Alarms, id: u64, now_ms: u64) void {
-    self.heard.put(self.alloc, id, now_ms) catch {};
+    const gop = self.heard.getOrPut(self.alloc, id) catch return;
+    gop.value_ptr.at_ms = now_ms;
 }
 
 /// How long since anything was heard from terminal `id`.
 pub fn quietOf(self: *const Alarms, id: u64, now_ms: u64) u64 {
-    return now_ms -| (self.heard.get(id) orelse self.started_ms);
+    const e = self.heard.get(id) orelse return now_ms -| self.started_ms;
+    return now_ms -| e.at_ms;
+}
+
+/// This terminal's planned wait, as the last sync left it (task 2858).
+/// A terminal the table does not know is not waiting.
+pub fn waitOf(self: *const Alarms, id: u64) Attention.Wait {
+    const e = self.heard.get(id) orelse return Attention.Wait.none;
+    return .{ .active = e.waiting, .released_ms = e.released_ms };
+}
+
+/// Record this round's answer for terminal `id`: it is (or is not) the
+/// supervisor of a group with an alarm in the table.
+///
+/// **Only the edge does anything.** A transition to waiting starts the
+/// wait; a transition away records the moment as the release. Saying the
+/// same thing again -- which every tick does -- changes nothing, so a
+/// repeated sync cannot push the release forward or restart a grace that
+/// is already running. A terminal with no clock yet is not created by a
+/// "not waiting" answer.
+pub fn setWaiting(self: *Alarms, id: u64, active: bool, now_ms: u64) void {
+    if (!active and !self.heard.contains(id)) return;
+    const gop = self.heard.getOrPut(self.alloc, id) catch return;
+    if (!gop.found_existing) gop.value_ptr.* = .{ .at_ms = self.started_ms };
+    const e = gop.value_ptr;
+    if (e.waiting == active) return;
+    if (!active) e.released_ms = now_ms;
+    e.waiting = active;
 }
 
 /// An agent that is here at `now_ms` starts its terminal's quiet there, if
@@ -245,7 +296,7 @@ pub fn quietOf(self: *const Alarms, id: u64, now_ms: u64) u64 {
 /// keeps its own time.
 pub fn observe(self: *Alarms, id: u64, now_ms: u64) void {
     if (self.heard.contains(id)) return;
-    self.heard.put(self.alloc, id, now_ms) catch {};
+    self.heard.put(self.alloc, id, .{ .at_ms = now_ms }) catch {};
 }
 
 /// The agent in `id` has gone: its quiet is not its old one when it comes
@@ -346,8 +397,12 @@ pub const Quiet = struct {
     /// An agent is connected from the supervisor's terminal. A line
     /// printed on an empty shell helps nobody.
     agent_here: bool,
-    /// The group has an alarm that has not rung: the supervisor said when
-    /// it wants to be woken, and is not woken sooner on our account.
+    /// The group's supervisor is waiting on an alarm it set for **any**
+    /// group it minds -- this group's or another's (task 2858). It said
+    /// when it wants to be woken, and is not woken sooner on our account.
+    /// It was once "this group has an alarm that has not rung", and that
+    /// let a supervisor with an alarm in one group be silence-reminded in
+    /// another.
     alarm_pending: bool,
     /// How long since anything was last heard from that terminal: a line
     /// Polter typed into it (a quiet report, a mention, an alarm, this) or
@@ -356,6 +411,32 @@ pub const Quiet = struct {
     /// `poltergeist-silence-remind-after`; zero switches it off.
     after_ms: u64,
 };
+
+/// One group as the wait question sees it (task 2858): who minds it now,
+/// and whether the table still holds an alarm for it -- future, or due and
+/// not yet delivered.
+pub const Armed = struct {
+    steward: ?Id,
+    armed: bool,
+};
+
+/// Which terminals are waiting on an alarm: the stewards of the groups
+/// that are armed, each once.
+///
+/// **This round's groups only.** A terminal whose group is gone, or which
+/// lost the group to a take-over, is not in the list, so nothing about its
+/// old identity survives into the answer; the caller turns the list into
+/// edges (start / release) and forgets terminals that are no longer here.
+pub fn waitingAmong(arena: Allocator, groups: []const Armed) Allocator.Error![]Id {
+    var out: std.ArrayListUnmanaged(Id) = .empty;
+    for (groups) |g| {
+        if (!g.armed) continue;
+        const id = g.steward orelse continue;
+        if (std.mem.indexOfScalar(Id, out.items, id) != null) continue;
+        try out.append(arena, id);
+    }
+    return out.items;
+}
 
 /// The group's supervisor, by **the rule the whole product uses**
 /// (`ControlRoom.stewardAmong`): the terminal that made the group while it
@@ -418,6 +499,8 @@ pub fn supervisorOfGroup(
 }
 
 /// Whether that supervisor should be told now that nothing has reached it.
+/// `q.alarm_pending` is the supervisor's own wait across every group it
+/// minds (task 2858), not this group's future alarm alone.
 pub fn shouldRemind(q: Quiet) bool {
     if (q.after_ms == 0) return false;
     if (supervisor(q) == null or !q.agent_here) return false;
@@ -468,8 +551,9 @@ pub fn plan(q: Quiet, now_ms: u64, recheck_ms: u64) Reminder {
     // a group, a supervisor or a task comes from.
     if (q.after_ms == 0) return .{ .say = false, .wake = null };
     if (supervisor(q) == null or q.unfinished == 0) return .{ .say = false, .wake = null };
-    // An alarm standing is the supervisor's own answer to "when do you want
-    // to be woken"; the alarm's own due is what the clock waits for.
+    // A wait standing is the supervisor's own answer to "when do you want to
+    // be woken" -- for any group it minds (task 2858); that wait's own
+    // release is what the clock waits for.
     if (q.alarm_pending) return .{ .say = false, .wake = null };
 
     if (shouldRemind(q)) return .{ .say = true, .wake = now_ms +| q.after_ms };
@@ -621,6 +705,82 @@ test "2148: an alarm is at most 60 minutes and at least one, and a group holds t
     try testing.expectError(error.TooManyAlarms, fourth);
     // Another group's are its own.
     _ = try al.set("docs", 5, "", 0);
+}
+
+test "2858: a supervisor waits for any of its armed groups, and no other supervisor does" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // One supervisor, two groups: one armed is enough.
+    const same = try waitingAmong(a, &.{
+        .{ .steward = 0xa1, .armed = true },
+        .{ .steward = 0xa1, .armed = false },
+    });
+    try testing.expectEqualSlices(Id, &.{0xa1}, same);
+    // Listed once however many of its groups are armed.
+    const twice = try waitingAmong(a, &.{
+        .{ .steward = 0xa1, .armed = true },
+        .{ .steward = 0xa1, .armed = true },
+    });
+    try testing.expectEqualSlices(Id, &.{0xa1}, twice);
+    // Another supervisor's alarm is its own: both wait, neither borrows.
+    const both = try waitingAmong(a, &.{
+        .{ .steward = 0xa1, .armed = true },
+        .{ .steward = 0xb1, .armed = true },
+    });
+    try testing.expectEqualSlices(Id, &.{ 0xa1, 0xb1 }, both);
+    // An armed group with no supervisor exempts nobody.
+    const orphan = try waitingAmong(a, &.{.{ .steward = null, .armed = true }});
+    try testing.expectEqual(@as(usize, 0), orphan.len);
+    // A group whose alarm is gone (delivered, cancelled, dropped) releases.
+    const gone = try waitingAmong(a, &.{.{ .steward = 0xa1, .armed = false }});
+    try testing.expectEqual(@as(usize, 0), gone.len);
+}
+
+test "2858: the wait edge is written once, and only its end moves the release" {
+    var al = Alarms.init(testing.allocator);
+    defer al.deinit();
+    al.started_ms = 0;
+    al.observe(7, 100);
+    try testing.expectEqual(Attention.Wait.none, al.waitOf(7));
+
+    // The first sync that says it waits starts it; there is no release yet.
+    al.setWaiting(7, true, 200);
+    try testing.expect(al.waitOf(7).active);
+    try testing.expectEqual(@as(?u64, null), al.waitOf(7).released_ms);
+    // Its quiet clock is not touched by a wait beginning.
+    try testing.expectEqual(@as(u64, 100), al.quietOf(7, 200));
+
+    // Saying the same thing again every tick changes nothing.
+    al.setWaiting(7, true, 300);
+    al.setWaiting(7, true, 400);
+    try testing.expectEqual(@as(?u64, null), al.waitOf(7).released_ms);
+
+    // The edge away records the release, once.
+    al.setWaiting(7, false, 500);
+    try testing.expect(!al.waitOf(7).active);
+    try testing.expectEqual(@as(?u64, 500), al.waitOf(7).released_ms);
+    al.setWaiting(7, false, 600);
+    al.setWaiting(7, false, 700);
+    try testing.expectEqual(@as(?u64, 500), al.waitOf(7).released_ms);
+
+    // A new wait keeps the old release (it is history, not the grace) and
+    // its own end replaces it.
+    al.setWaiting(7, true, 800);
+    try testing.expectEqual(@as(?u64, 500), al.waitOf(7).released_ms);
+    al.setWaiting(7, false, 900);
+    try testing.expectEqual(@as(?u64, 900), al.waitOf(7).released_ms);
+
+    // "Not waiting" does not invent a clock for a terminal with none.
+    al.setWaiting(9, false, 1_000);
+    try testing.expect(!al.heard.contains(9));
+    try testing.expectEqual(Attention.Wait.none, al.waitOf(9));
+
+    // Forgetting the terminal forgets the fact, so a new terminal id (or
+    // the same one after its agent went) starts with no stale release.
+    al.forget(7);
+    try testing.expectEqual(Attention.Wait.none, al.waitOf(7));
 }
 
 test "2148: what is due rings once, for a group that can be told, and waits otherwise" {

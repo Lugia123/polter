@@ -2240,6 +2240,12 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
     const projects = self.projectsWork(alloc, now_ms) catch return;
 
     const wall_ms = self.poltergeistWallMs();
+    // **The wait facts are this round's answer, before anything reads
+    // them** (task 2858): the snapshot below and every tab mark go by what
+    // this writes. Doing it here as well as in `considerSupervisorClocks`
+    // is the fallback -- a supervisor that changed between two alarm ticks
+    // is still this tick's answer, and the sync writes nothing but edges.
+    self.syncAlarmWaits(now_ms);
     const outcome = self.control_room.refresh(.{
         .bus = &self.poltergeist,
         .chat = &self.chat,
@@ -2263,6 +2269,9 @@ fn controlRoomTick(self: *App, rt_app: *apprt.App) void {
         .asks = &self.control_asks,
         .take_over = self.takeOverIn(),
         .resource_levels = self.resourceLevels(alloc) catch return,
+        // The table `syncAlarmWaits` has just written this round's edges
+        // into; `statusOf` hands one entry to `Bus.facts`.
+        .waits = self.alarmsHeld(),
         .now_ms = now_ms,
         .wall_ms = @intCast(@max(0, wall_ms)),
     }, if (dirty) .event else .timer) catch |err| {
@@ -2553,6 +2562,8 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
         .alarms => {
             self.alarmsHeld().dropGroup(group);
             self.saveAlarms();
+            // A group that is gone takes its waits with it (task 2858).
+            self.syncAlarmWaits(self.poltergeistElapsedMs());
         },
     };
 
@@ -15209,7 +15220,6 @@ fn quietIn(
     arena: Allocator,
     group: []const u8,
     now: u64,
-    wall: i64,
 ) ?poltergeistpkg.Alarms.Quiet {
     const al = self.alarmsHeld();
     // Writes `heard` (task 2411): a minding supervisor whose agent is here
@@ -15231,13 +15241,20 @@ fn quietIn(
         // Filled in below, from whichever terminal the rule picks: it is
         // the chosen one's agent and quiet that decide anything.
         .agent_here = false,
-        .alarm_pending = al.pendingIn(group, wall),
+        // Filled in below from the chosen supervisor.
+        .alarm_pending = false,
         .since_heard_ms = 0,
         .after_ms = self.poltergeist_silence_remind_ms,
     };
     const sup = poltergeistpkg.Alarms.supervisor(q);
     q.agent_here = if (sup) |s| self.agentPresent(s) else false;
     q.since_heard_ms = if (sup) |s| al.quietOf(s, now) else 0;
+    // **The supervisor's own wait, across every group it minds** (task
+    // 2858), not this group's future alarm alone: an alarm standing in one
+    // of its groups is that supervisor saying "not before then" about all
+    // of them. The fact comes from `syncAlarmWaits`, whose edges are the
+    // only thing that touches it.
+    q.alarm_pending = if (sup) |s| al.waitOf(s).active else false;
     return q;
 }
 
@@ -15245,7 +15262,7 @@ fn quietIn(
 fn groupSupervisor(self: *App, group: []const u8) ?poltergeistpkg.Bus.Id {
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
     defer arena.deinit();
-    const q = self.quietIn(arena.allocator(), group, self.poltergeistElapsedMs(), self.poltergeistWallMs()) orelse return null;
+    const q = self.quietIn(arena.allocator(), group, self.poltergeistElapsedMs()) orelse return null;
     return poltergeistpkg.Alarms.supervisor(q);
 }
 
@@ -15325,6 +15342,16 @@ pub fn noteHeard(self: *App, id: poltergeistpkg.Bus.Id) void {
     self.alarmsHeld().noteHeard(id, self.poltergeistElapsedMs());
 }
 
+/// This terminal's planned wait, for its tab mark (task 2858).
+///
+/// Read-only: nothing is loaded or created here. Before the alarm table
+/// has been read there is nothing that could be waiting, and "not waiting"
+/// is the truth then.
+pub fn alarmWaitOf(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.Attention.Wait {
+    const al = if (self.alarms) |*a| a else return poltergeistpkg.Attention.Wait.none;
+    return al.waitOf(id);
+}
+
 /// Ring what is due for a group that can be told, remind a supervisor that
 /// has heard nothing for too long, and arm the wake for the next of either
 /// (task 2148). On the app thread.
@@ -15379,6 +15406,12 @@ fn considerSupervisorClocks(self: *App) void {
     }
     if (changed) self.saveAlarms();
 
+    // **Who is waiting on an alarm, once for this round** (task 2858),
+    // after the table has settled: a `takeDue` whose line went back with
+    // `restore` is still a wait, so the sync comes after the whole loop and
+    // never sees the in-between. The reminder below reads this answer.
+    self.syncAlarmWaits(now);
+
     // The quiet reminder, group by group. What each group comes to is
     // `Alarms.plan`'s to decide, because both of round 1's defects were in
     // that arithmetic and neither could be read here.
@@ -15392,7 +15425,7 @@ fn considerSupervisorClocks(self: *App) void {
     while (it.next()) |kv| {
         const group = kv.key_ptr.*;
         defer _ = quiet_arena.reset(.retain_capacity);
-        const q = self.quietIn(quiet_arena.allocator(), group, now, wall) orelse continue;
+        const q = self.quietIn(quiet_arena.allocator(), group, now) orelse continue;
         const sup = poltergeistpkg.Alarms.supervisor(q) orelse continue;
         var r = poltergeistpkg.Alarms.plan(q, now, poltergeistpkg.Alarms.waiting_recheck_ms);
         if (r.say) {
@@ -15437,6 +15470,79 @@ fn considerSupervisorClocks(self: *App) void {
         };
     }
     self.alarm_wake.?.arm(wake, now);
+}
+
+/// Work out this round's answer to "who is waiting on an alarm", and record
+/// the edges in the clocks the reminder already keeps (task 2858).
+///
+/// **One immutable set per round, from the table as it is now**: the
+/// stewards of live groups that still hold an alarm. `countIn`, not
+/// `pendingIn`: an alarm that is due and not yet delivered is still a wait,
+/// and it stops being one when it is delivered or taken off. The identity
+/// rule is `Alarms.supervisorOfGroup`, the one the control room and the
+/// alarm itself use; a worker is never in the set, and neither is an armed
+/// group with no supervisor.
+///
+/// **Only edges are written** (`Alarms.setWaiting`). The start of a wait,
+/// and its release: the release also restarts the supervisor's silence
+/// grace through `noteHeard` -- it was waiting, not idle, so the reminder's
+/// clock starts again from there. No tool call is faked and nothing on the
+/// bus is touched. Saying the same thing again every tick changes nothing,
+/// so a grace already running is never pushed forward.
+fn syncAlarmWaits(self: *App, now: u64) void {
+    // The table is read once, like the clock that owns it: an alarm file
+    // left by a restart is a wait from the first tick, not from whenever
+    // the first alarm operation happens.
+    const al = self.alarmsHeld();
+
+    var arena: std.heap.ArenaAllocator = .init(self.alloc);
+    defer arena.deinit();
+    var armed: std.ArrayListUnmanaged(poltergeistpkg.Alarms.Armed) = .empty;
+    defer armed.deinit(self.alloc);
+    var groups = self.chat.groups.keyIterator();
+    while (groups.next()) |name| {
+        defer _ = arena.reset(.retain_capacity);
+        const steward = poltergeistpkg.Alarms.supervisorOfGroup(
+            arena.allocator(),
+            &self.poltergeist,
+            &self.chat,
+            name.*,
+        );
+        armed.append(self.alloc, .{
+            .steward = steward,
+            .armed = al.countIn(name.*) > 0,
+        }) catch return;
+    }
+    const waiting = poltergeistpkg.Alarms.waitingAmong(self.alloc, armed.items) catch return;
+    defer self.alloc.free(waiting);
+
+    // Copied first: recording an edge writes to the map these ids come
+    // from, and an iterator cannot outlive that.
+    var ids: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty;
+    defer ids.deinit(self.alloc);
+    var heard = al.heard.iterator();
+    while (heard.next()) |kv| ids.append(self.alloc, kv.key_ptr.*) catch break;
+    for (waiting) |id| {
+        if (std.mem.indexOfScalar(poltergeistpkg.Bus.Id, ids.items, id) == null)
+            ids.append(self.alloc, id) catch return;
+    }
+
+    for (ids.items) |id| {
+        if (self.findSurfaceByID(id) == null or !self.agentPresent(id)) {
+            // Gone, or nobody listening in it: the wait goes with it, and a
+            // later agent starts from its own arrival, not from a release
+            // this terminal never had.
+            al.forget(id);
+            continue;
+        }
+        const was = al.waitOf(id).active;
+        const is = std.mem.indexOfScalar(poltergeistpkg.Bus.Id, waiting, id) != null;
+        al.setWaiting(id, is, now);
+        // The last wait ending restarts the silence grace from the release.
+        // Only the overall edge does -- the per-group answer is already
+        // collapsed into `is`.
+        if (was and !is) al.noteHeard(id, now);
+    }
 }
 
 /// Tasks of `group` not closed or cancelled -- `done` among them: the

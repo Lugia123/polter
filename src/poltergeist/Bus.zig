@@ -2032,6 +2032,10 @@ pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Out
         .duty = e.duty,
         .seen_ms = outside.seen_ms,
         .raised_ms = outside.raised_ms,
+        // **Only a supervisor can be waiting on its own alarm** (task
+        // 2858). Forcing `none` here is what stops a caller from handing a
+        // worker a wait and having the worker exempted from "stuck".
+        .wait = if (e.role == .supervisor) outside.wait else Attention.Wait.none,
         .answer = self.answer(id),
         .held = e.held,
         .shielded = e.shielded,
@@ -3464,10 +3468,32 @@ pub const shield_prefix = "\u{1F512} ";
 /// own that number, and passing it in keeps this decidable without a
 /// terminal.
 pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMark {
+    return self.tabMarkWithWait(id, now_ms, quiet_after_ms, Attention.Wait.none);
+}
+
+/// The same, told about a supervisor's planned wait (task 2858).
+///
+/// **A supervisor waiting on its own alarm is not "silent"**: the mark is
+/// the same fact the rest of the product uses, and while the wait stands --
+/// or while the grace after its release is still running -- the tab is not
+/// drawn as one that has gone quiet. The old `tabMark` is kept for callers
+/// with no wait to hand in (and for the tests that predate this), and it is
+/// exactly this call with `Wait.none`.
+///
+/// The release grace uses the same T2 as the inference it is covering: the
+/// call clock itself is not rewritten (nothing fakes a tool call), it is
+/// only not read as evidence during the wait or its grace.
+pub fn tabMarkWithWait(
+    self: *const Bus,
+    id: Id,
+    now_ms: u64,
+    quiet_after_ms: u64,
+    wait: Attention.Wait,
+) TabMark {
     const e = self.entries.get(id) orelse return .none;
     return switch (e.role) {
         .none => .none,
-        .supervisor => if (self.callsSilent(id, now_ms))
+        .supervisor => if (self.supervisorSilent(e, id, now_ms, wait))
             .supervisor_silent
         else
             .supervisor,
@@ -3478,6 +3504,19 @@ pub fn tabMark(self: *const Bus, id: Id, now_ms: u64, quiet_after_ms: u64) TabMa
             else if (e.held) .held_on_duty else .on_duty,
         },
     };
+}
+
+/// Whether a supervisor should be drawn as one that has stopped calling
+/// Polter, told about its planned wait.
+fn supervisorSilent(self: *const Bus, e: Entry, id: Id, now_ms: u64, wait: Attention.Wait) bool {
+    if (wait.active) return false;
+    if (wait.released_ms) |r| {
+        // The grace after a release is the same threshold the inference
+        // would use, measured from the release rather than from a call.
+        const after = self.callsSilentAfter(e);
+        if (after != 0 and now_ms -| r < after) return false;
+    }
+    return self.callsSilent(id, now_ms);
 }
 
 /// Most terminals named individually in one summary. Beyond this the rest
@@ -6216,6 +6255,52 @@ test "a silent supervisor's flag goes hollow, and a call fills it again" {
     try testing.expectEqual(TabMark.supervisor, b.tabMark(boss, t15 + 1000, 1000));
 }
 
+test "2858: a supervisor waiting on its alarm is not drawn as silent" {
+    var b = try hookedBus();
+    defer b.deinit();
+    b.noteCall(boss, 0);
+
+    const t15 = 15 * std.time.ms_per_min;
+    // The clock says silent, and the wait says otherwise.
+    try testing.expectEqual(TabMark.supervisor_silent, b.tabMark(boss, t15, 1000));
+    try testing.expectEqual(
+        TabMark.supervisor,
+        b.tabMarkWithWait(boss, t15, 1000, .{ .active = true, .released_ms = null }),
+    );
+
+    // After the release the grace is the same T2, measured from the
+    // release: not silent a minute later, silent once T2 has run.
+    try testing.expectEqual(
+        TabMark.supervisor,
+        b.tabMarkWithWait(boss, t15, 1000, .{ .active = false, .released_ms = t15 - std.time.ms_per_min }),
+    );
+    try testing.expectEqual(
+        TabMark.supervisor_silent,
+        b.tabMarkWithWait(boss, t15 + 15 * std.time.ms_per_min, 1000, .{
+            .active = false,
+            .released_ms = t15,
+        }),
+    );
+
+    // A worker's mark does not see a wait at all.
+    try testing.expectEqual(
+        b.tabMark(worker, t15, 1000),
+        b.tabMarkWithWait(worker, t15, 1000, .{ .active = true, .released_ms = null }),
+    );
+}
+
+test "2858: facts refuse a wait that belongs to a worker" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const wait: Attention.Wait = .{ .active = true, .released_ms = 7 };
+
+    const worker_facts = b.facts(worker, 1_000, .{ .process = .running, .seen_ms = null, .raised_ms = null, .wait = wait });
+    try testing.expectEqual(Attention.Wait.none, worker_facts.wait);
+
+    const boss_facts = b.facts(boss, 1_000, .{ .process = .running, .seen_ms = null, .raised_ms = null, .wait = wait });
+    try testing.expectEqual(wait, boss_facts.wait);
+}
+
 test "a supervisor that has never called keeps its flag" {
     var b = testBus();
     defer b.deinit();
@@ -7789,7 +7874,7 @@ test "ControlRoom facts: everything the bus knows of a terminal, at one moment" 
     try testing.expectEqual(Attention.Process.running, f.process);
 
     // What the caller supplies is passed through untouched.
-    const seen = b.facts(worker, 3_000, .{ .process = .running, .seen_ms = 7, .raised_ms = 9 });
+    const seen = b.facts(worker, 3_000, .{ .process = .running, .seen_ms = 7, .raised_ms = 9, .wait = Attention.Wait.none });
     try testing.expectEqual(@as(?u64, 7), seen.seen_ms);
     try testing.expectEqual(@as(?u64, 9), seen.raised_ms);
 }
@@ -7848,7 +7933,7 @@ test "ControlRoom facts: an agent that left is a failure only when something sai
     try testing.expectEqual(Attention.Process{ .agent_exited = 2_500 }, b.facts(worker, 3_000, .none).process);
 
     // The caller is looking at the terminal now, and outranks the note.
-    const gone = b.facts(worker, 3_000, .{ .process = .gone, .seen_ms = null, .raised_ms = null });
+    const gone = b.facts(worker, 3_000, .{ .process = .gone, .seen_ms = null, .raised_ms = null, .wait = Attention.Wait.none });
     try testing.expectEqual(Attention.Process.gone, gone.process);
 
     // An agent that speaks again is there.

@@ -783,6 +783,12 @@ pub const Input = struct {
     /// highest of its members', the dot before its performance tab. No
     /// default: a caller that forgot it would show no group with a reading.
     resource_levels: []const ResourceLevel,
+    /// The alarm table as this round's answer about who is waiting on one
+    /// (task 2858). The App syncs its edges before building the snapshot;
+    /// `statusOf` hands the entry to `Bus.facts`, which refuses it for
+    /// anything that is not a supervisor. No default: a caller that forgot
+    /// it would silently say nobody is waiting.
+    waits: *const Alarms,
     /// The bus's clock, and the real one.
     now_ms: u64,
     wall_ms: u64,
@@ -2057,6 +2063,10 @@ fn statusOf(in: Input, id: Id, seen_ms: ?u64, wake: *Wake) Attention.Status {
         .process = if (open) |t| t.process else .gone,
         .seen_ms = seen_ms,
         .raised_ms = raised_ms,
+        // This round's wait, from the table the App synced before the
+        // snapshot was built (task 2858). `Bus.facts` refuses it for
+        // anything that is not a supervisor.
+        .wait = in.waits.waitOf(id),
     });
     wake.consider(Attention.nextChange(f, thresholds, in.now_ms));
     return Attention.classify(f, thresholds, in.now_ms);
@@ -3282,6 +3292,9 @@ const World = struct {
     bus: Bus,
     chat: Chat,
     tasks: Tasks,
+    /// The alarm table, which is also this snapshot's answer about who is
+    /// waiting on one (task 2858).
+    alarms: Alarms,
     open: std.ArrayListUnmanaged(Terminal) = .empty,
     wall_ms: u64 = 1_700_000_000_000,
     quota: []const quota.Reading = &.{},
@@ -3303,6 +3316,7 @@ const World = struct {
             .bus = .init(testing.allocator, .{}),
             .chat = .init(testing.allocator, .{}),
             .tasks = .init(testing.allocator, .{}),
+            .alarms = Alarms.init(testing.allocator),
         };
     }
 
@@ -3310,6 +3324,7 @@ const World = struct {
         self.fix_sent.deinit(testing.allocator);
         self.asks.deinit(testing.allocator);
         self.open.deinit(testing.allocator);
+        self.alarms.deinit();
         self.tasks.deinit();
         self.chat.deinit();
         self.bus.deinit();
@@ -3400,6 +3415,7 @@ const World = struct {
             .asks = &self.asks,
             .take_over = self.take_over,
             .resource_levels = self.resource_levels,
+            .waits = &self.alarms,
             .now_ms = now_ms,
             .wall_ms = self.wall_ms + now_ms,
         };
@@ -5199,6 +5215,39 @@ fn lastWith(dir: []const u8, from: Chat.LastSupervisor.DirFrom, session: []const
 
 fn noRuns(_: *anyopaque, _: Id, _: ?Bus.Program) bool {
     return false;
+}
+
+test "2858: the snapshot's production path hands the wait to Attention" {
+    var w = World.init();
+    defer w.deinit();
+    const now = 100 * min;
+
+    try w.steward(0xa1, "web", 0x21, "web");
+    // Retrying for ten minutes: a supervisor is not watched, so this is the
+    // one stuck inference its own clock can reach -- no sampled screen
+    // needed -- and it is already past T1.
+    try w.hook(0xa1, .turn_retrying, null, now - 10 * min);
+
+    var wake: Wake = .{ .now_ms = now, .at = null };
+    const before = statusOf(w.input(now), 0xa1, null, &wake);
+    try testing.expectEqual(Attention.Kind.suspect_stuck, before.kind);
+
+    // This round's wait, in the table the Input carries: working, and no
+    // moment armed for a pure-inference wake.
+    w.alarms.setWaiting(0xa1, true, now);
+    var waiting_wake: Wake = .{ .now_ms = now, .at = null };
+    const waiting_status = statusOf(w.input(now), 0xa1, null, &waiting_wake);
+    try testing.expectEqual(Attention.Kind.working, waiting_status.kind);
+    try testing.expectEqual(@as(?u64, null), waiting_wake.at);
+
+    // Released a minute ago: the grace runs from the release, so it is
+    // still working and the next moment is T1 after the release -- not a
+    // stuck state that starts over from the ten minutes before it.
+    w.alarms.setWaiting(0xa1, false, now - 1 * min);
+    var released_wake: Wake = .{ .now_ms = now, .at = null };
+    const released = statusOf(w.input(now), 0xa1, null, &released_wake);
+    try testing.expectEqual(Attention.Kind.working, released.kind);
+    try testing.expectEqual(@as(?u64, now + 2 * min), released_wake.at);
 }
 
 test "2148: the alarm's rule for a group's supervisor is this file's rule, case for case" {
