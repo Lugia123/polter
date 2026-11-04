@@ -43,36 +43,11 @@ final class ControlRoomChatFeed: ObservableObject {
 
     typealias Ask = (String) -> Reply
 
-    /// What became of a post, **the core's three states and not a bool**
-    /// (`ghostty_chat_send_result_e`): the two a bool has do not cover it,
-    /// because a post that may or may not have gone is not a post that did
-    /// not go.
-    enum Posted: Equatable {
-        /// It went. `answer` is the core's own reply, when there was one.
-        case confirmed(String?)
-        /// Nothing was written, and that is certain: sending again is safe.
-        case refused(String)
-        /// It may or may not have gone. **Never sent again on this
-        /// side.**
-        case unknown(String)
-    }
-
-    typealias Send = (String) -> Posted
-
     /// The messages of the group in front, oldest first.
     @Published private(set) var messages: [D.Message] = []
     /// Why there is nothing new, when there is a reason worth saying. Nil
     /// while the answers are arriving.
     @Published private(set) var trouble: String?
-    /// What the last post became of, said under the box until the person
-    /// types again. **Nil is "nothing was posted"**, which is not the same
-    /// as "the post is fine".
-    @Published private(set) var posted: Posted?
-    /// What the person has typed but not sent, **per group**: a draft is the
-    /// person's own words about one conversation, and carrying it to
-    /// another group's box would offer to send it somewhere they were not
-    /// writing.
-    @Published var drafts: [String: String] = [:]
 
     /// How often to ask again while the page is in front. Two seconds, the
     /// same bound `ProjectLinker` watches its directory on: a chat that has
@@ -84,8 +59,6 @@ final class ControlRoomChatFeed: ObservableObject {
     private(set) var group: String?
 
     private let ask: Ask
-    /// The post door; nil where this build has none.
-    private let send: Send?
     private var timer: Timer?
     /// Per group: what to pass as `since` next.
     private var next: [String: UInt64] = [:]
@@ -101,98 +74,11 @@ final class ControlRoomChatFeed: ObservableObject {
 
     /// `@escaping` because the door outlives the call that hands it in: the
     /// feed keeps it for every tick of the timer.
-    ///
-    /// **`send` is optional and separate from `ask`** (task 2791, slice 2):
-    /// a build with the read door and not the post door still shows the
-    /// conversation, and the box is not drawn rather than being drawn and
-    /// doing nothing.
-    init(ask: @escaping Ask, send: Send? = nil) {
+    init(ask: @escaping Ask) {
         self.ask = ask
-        self.send = send
     }
 
     // MARK: - The page's two moments
-
-    // MARK: - Sending
-
-    /// The post the core is handed: **the group named outright, and no
-    /// `task`**.
-    ///
-    /// ⚠️ **The channel is not guessed.** `group_post` takes an optional
-    /// `task`, and a host that filled it from the last message it happened
-    /// to be showing would post a public remark into a task's channel (or
-    /// the reverse) on the strength of where the scroll happened to be. A
-    /// box on the chat page writes to the group's public channel -- which is
-    /// what `task` absent means -- and nothing here reads the conversation
-    /// to decide otherwise.
-    static func postRequest(group: String, text: String) -> String {
-        "{\"method\":\"group_post\",\"params\":{\"group\":\(ControlRoomPageRequest.quoted(group)),\"text\":\(ControlRoomPageRequest.quoted(text))}}"
-    }
-
-    /// What the box holds for `group`, and the one way it is written.
-    ///
-    /// **Per group.** Leaving a group and coming back finds what was typed,
-    /// and the draft never travels: `drafts` is keyed by the group it was
-    /// written for.
-    func draft(for group: String) -> String { drafts[group] ?? "" }
-
-    func setDraft(_ text: String, for group: String) {
-        drafts[group] = text
-        // **Typing is the person moving on.** What the last post became of
-        // belongs to the words it was about; leaving it under the box while
-        // they write the next line would put "not sent" over a message that
-        // has nothing to do with it.
-        posted = nil
-    }
-
-    /// Whether this build has a post door at all. **False and the box is not
-    /// drawn**: a text field nobody can send from is worse than no field,
-    /// because it looks like the chat can be answered.
-    var hasSendDoor: Bool { send != nil }
-
-    /// Whether the person may post to the group in front right now: there is
-    /// a door for it, the page is showing a group, and the box has something
-    /// in it that is not only whitespace.
-    ///
-    /// **Only the group in front**: a page nobody can see must not be where
-    /// a post goes, for the same reason a page nobody can see is not where a
-    /// key goes (`ControlRoomChatPage.offerFocus`).
-    var canPost: Bool {
-        guard let group, send != nil else { return false }
-        return !draft(for: group).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    /// Post what the box holds for the group in front, once.
-    ///
-    /// **Once, and never on its own again.** Which of the three outcomes
-    /// came back decides only what is *said* and whether the box is
-    /// emptied:
-    ///
-    ///  * `confirmed` -- it went: the draft goes, and the conversation is
-    ///    asked for again at once, because the core's own copy is the one
-    ///    worth showing and the person just changed it.
-    ///  * `refused` -- nothing was written and that is certain: the draft
-    ///    stays, with the core's reason beside it, so the person can press
-    ///    again themselves. **This is the only one that may be sent again.**
-    ///  * `unknown` -- it may or may not have gone: the draft **stays** and
-    ///    the page says so. Nothing here sends it again, and nothing here
-    ///    offers to: a second send of a post that landed is the duplicate
-    ///    the three states exist to prevent.
-    func post() {
-        guard let group, let send, canPost else { return }
-        let text = draft(for: group)
-        posted = send(Self.postRequest(group: group, text: text))
-        switch posted {
-        case .confirmed:
-            drafts[group] = ""
-            fetch()
-        case .refused, .unknown, nil:
-            // The draft stays, and the conversation is refreshed: what the
-            // core holds is the truth about whether the post landed, and
-            // the person reads it there. `unknown` is not retried.
-            fetch()
-        }
-    }
 
     /// The page is in front, on `group`. From nothing when it is another
     /// group's.
@@ -200,9 +86,6 @@ final class ControlRoomChatFeed: ObservableObject {
         if self.group != group {
             self.group = group
             messages = held[group] ?? []
-            // **Another group's post is another group's news.** What became
-            // of the last one is about words this box is not holding.
-            posted = nil
             said = nil
         }
         arm()

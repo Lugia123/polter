@@ -4,10 +4,10 @@ import Foundation
 /// batch `ghostty_app_chat_read` answers, and one message inside it.
 ///
 /// **Decoding only.** Nothing here asks the core, draws anything, or decides
-/// what a page shows: the door is not in this tree yet (#2778 is building
-/// it), so this file is the shape the host agrees to read, written down
-/// where a test can hold it without an app (`tools/mac-logic-tests.json`).
-/// What is drawn of a message is a later slice's.
+/// what a page shows: this file is the shape the host agrees to read, written
+/// down where a test can hold it without an app
+/// (`tools/mac-logic-tests.json`). What is drawn of a message is a later
+/// slice's.
 ///
 /// **The properties are the repository's own spelling and the wire's is
 /// `CodingKeys`'**, the way every other reading in this directory is written

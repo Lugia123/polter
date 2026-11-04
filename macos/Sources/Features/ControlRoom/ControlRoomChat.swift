@@ -72,11 +72,6 @@ final class ControlRoomChatContainer: NSView {
     /// keeps working in a build whose core has no such door.
     var askCore: ControlRoomChatFeed.Ask?
 
-    /// **The door the native chat posts through** (task 2791, slice 2),
-    /// handed in by the same caller. Nil where the build has no post door,
-    /// and then the pane draws no box rather than a box that does nothing.
-    var sendCore: ControlRoomChatFeed.Send?
-
     init(_ ghostty: Ghostty.App) {
         self.ghostty = ghostty
         super.init(frame: .zero)
@@ -231,7 +226,7 @@ final class ControlRoomChatContainer: NSView {
     private func make(_ group: String) -> Chat? {
         guard let ghostty, let app = ghostty.app else { return nil }
         if let askCore {
-            let feed = ControlRoomChatFeed(ask: askCore, send: sendCore)
+            let feed = ControlRoomChatFeed(ask: askCore)
             let host = NSHostingView(rootView: ControlRoomNativeChatPane(group: group, feed: feed))
             host.translatesAutoresizingMaskIntoConstraints = false
             addSubview(host)

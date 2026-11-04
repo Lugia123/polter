@@ -158,10 +158,6 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // `0db7ea854` (task 2778): `ghostty_app_chat_read` in
         // `include/ghostty.h`, exported from `src/apprt/embedded.zig`.
         chats.askCore = ControlRoomChatCoreAdapter.ask(ghostty)
-        // And the post door (task 2791, slice 2): the same three states the
-        // header names, so that "it may have gone" is never read here as
-        // "it did not".
-        chats.sendCore = ControlRoomChatCoreAdapter.send(ghostty)
         chats.onEnded = { [weak self] ended in self?.model.chatEnded = ended }
         // Out of a chat, the keyboard goes to the list, as on Windows the
         // panel takes it: arrow keys move among the groups at once.
