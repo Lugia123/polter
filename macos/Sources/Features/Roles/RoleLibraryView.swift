@@ -96,6 +96,7 @@ final class RoleLibraryEditor: ObservableObject {
     }
 
     private func load(_ key: String?) {
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) load role=\(key ?? "-")")
         skill = nil
         selection = key
         isNew = false
@@ -115,12 +116,22 @@ final class RoleLibraryEditor: ObservableObject {
             return
         }
         guard !isNew, let key = draft?.key ?? selection else { return }
-        if let fresh = library.catalog.roles.first(where: { $0.key == key }) {
-            if !isDirty { draft = fresh }
+        // Read before anything moves, so the line says what the draft was
+        // when the catalog arrived rather than after it was replaced.
+        let dirtyIn = isDirty
+        let draftIn = draft
+        var tookDraft = false
+        let fresh = library.catalog.roles.first(where: { $0.key == key })
+        if let fresh {
+            if !isDirty {
+                draft = fresh
+                tookDraft = true
+            }
             original = fresh
         } else if !isDirty {
             load(nil)
         }
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) changed role=\(key) dirtyIn=\(dirtyIn) draftIn=\(RoleTrace.clis(draftIn)) catalog=\(RoleTrace.clis(fresh)) tookDraft=\(tookDraft) draftOut=\(RoleTrace.clis(draft))")
     }
 
     /// True when it is fine to throw the draft away. The same question the
@@ -190,6 +201,7 @@ final class RoleLibraryEditor: ObservableObject {
             if activeCli == cli { activeCli = role.clis.first?.cli }
         }
         draft = role
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) toggle-set role=\(role.key) cli=\(cli) used=\(used) draft=\(RoleTrace.clis(role))")
     }
 
     /// Switch one of the person's own Agent CLIs on or off for this role
@@ -199,11 +211,13 @@ final class RoleLibraryEditor: ObservableObject {
     /// goes. The tick returns to what the library has when the draft is
     /// thrown away.
     func setOwnCli(_ key: String, for role: String, used: Bool) {
-        if library.ticked(key, role: role) == used {
+        let libraryTicked = library.ticked(key, role: role)
+        if libraryTicked == used {
             ownOverrides.removeValue(forKey: key)
         } else {
             ownOverrides[key] = used
         }
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) toggle-own role=\(role) cli=\(key) used=\(used) library=\(libraryTicked) draft=\(ownOverrides[key].map { $0 ? "true" : "false" } ?? "-")")
     }
 
     /// What the person's own Agent CLI `key` is ticked for in the draft on
@@ -240,11 +254,15 @@ final class RoleLibraryEditor: ObservableObject {
             return true
         }
         guard let role = draft else { return true }
+        let saveID = RoleTrace.nextSave()
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) save-in save=\(saveID) role=\(role.key) clis=\(RoleTrace.clis(role)) isNew=\(isNew) isDirty=\(isDirty)")
         if isNew && library.catalog.roles.contains(where: { $0.key == role.key }) {
             status = String(localized: "Another role already uses this key.", comment: "角色库：新建角色的 key 与已有角色重复")
             return false
         }
-        if let error = library.put(role) {
+        let putError = library.put(role)
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) save-put save=\(saveID) role=\(role.key) ok=\(putError == nil)")
+        if let error = putError {
             status = error
             return false
         }
@@ -252,6 +270,7 @@ final class RoleLibraryEditor: ObservableObject {
         selection = role.key
         original = library.catalog.roles.first { $0.key == role.key } ?? role
         draft = original
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) save-post save=\(saveID) draft=\(RoleTrace.clis(draft)) original=\(RoleTrace.clis(original))")
         // **The ticks of the person's own go after the role itself**, so a
         // new role is in the library before anything is ticked for it --
         // which is the whole of what `NoSuchPersona` was about. Every one

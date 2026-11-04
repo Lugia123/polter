@@ -167,6 +167,9 @@ final class RoleLibrary: ObservableObject {
                 ghostty_app_persona_put(app, ptr, UInt(data.count), $0.baseAddress, UInt($0.count))
             }
         }
+        // The core's own word, before the read-back: the code the message is
+        // made from, so the log has the name and not this language's words.
+        RoleTrace.emit("event=\(RoleTrace.nextEvent()) put role=\(role.key) ok=\(ok) err=\(ok ? "-" : String(cString: err))")
         reload()
         return ok ? nil : Self.message(for: String(cString: err))
     }
