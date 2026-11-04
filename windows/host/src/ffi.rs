@@ -2000,6 +2000,18 @@ pub struct Api {
     /// has no such export, and a preview is the only thing that wants it.
     /// Without it a preview says so rather than showing a blank frame.
     pub app_files: Option<unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> usize>,
+    /// `ghostty_app_chat_read(app, req, len, buf, cap)` (task 2802, W1):
+    /// the group chat's one read door. `group_read` and the three bounded
+    /// history calls are dispatched by the core behind this single symbol;
+    /// there is no separate C symbol per history call. `req` is one JSON
+    /// request and the answer is one JSON reply; `cap` is the whole output
+    /// buffer, whose last byte is the NUL the core may write.
+    ///
+    /// **Optional**: a core from before this task has no such export, and
+    /// `chat_read` answers `Unsupported` rather than falling back to a
+    /// socket, a surface door or a terminal. App thread only.
+    pub app_chat_read:
+        Option<unsafe extern "C" fn(App, *const u8, usize, *mut u8, usize) -> usize>,
     /// `ghostty_app_key(app, event)`: a key with no terminal to send it to.
     /// The core performs the binding when it is app-scoped (or global) and
     /// answers true; a surface-scoped one is left alone and answers false.

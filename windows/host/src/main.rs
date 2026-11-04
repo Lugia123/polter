@@ -101,6 +101,7 @@
 
 mod capture;
 mod chat_page;
+mod chat_read;
 mod close_scope;
 mod control_room;
 mod control_room_keys;
@@ -5794,6 +5795,16 @@ fn load_api() -> Option<Api> {
                 let p = GetProcAddress(internal, s!("ghostty_app_files"));
                 if p.is_none() {
                     logf!("optional symbol ghostty_app_files missing: the file preview will have no data");
+                }
+                p.map(|p| std::mem::transmute(p))
+            },
+            // Optional, and the only chat door this host has (task 2802,
+            // W1): a core from before it answers Unsupported rather than
+            // borrowing a socket or a terminal.
+            app_chat_read: {
+                let p = GetProcAddress(internal, s!("ghostty_app_chat_read"));
+                if p.is_none() {
+                    logf!("optional symbol ghostty_app_chat_read missing: the native chat has no data");
                 }
                 p.map(|p| std::mem::transmute(p))
             },
