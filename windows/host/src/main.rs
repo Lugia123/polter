@@ -100,6 +100,7 @@
 //! 3 = console), not a successful build. See `subsystems()` in `build.rs`.
 
 mod capture;
+mod chat_feed;
 mod chat_page;
 mod chat_read;
 mod close_scope;
