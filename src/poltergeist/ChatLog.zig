@@ -809,6 +809,160 @@ pub const Page = struct {
     exhausted: bool,
 };
 
+/// Where a scan stopped, physically: the file, how far into it, and the
+/// question it was asked under.
+///
+/// **A logical seq is not a resume point.** `history` walks a file
+/// backwards from that file's end, so a caller that remembered only the
+/// oldest seq it was given is handed the same bytes again -- and a search
+/// that matches nothing spends its whole budget on that prefix on every
+/// call and never reaches the older records. This is what lets such a
+/// call make progress instead of asking forever.
+///
+/// It owns nothing, and it is only meaningful to the log that made it.
+pub const ScanCursor = struct {
+    /// The day file the next read starts in, by the name the record gave
+    /// it.
+    day: u32,
+    part: u32,
+
+    /// The top of what has been scanned: the next call reads only the
+    /// part of the file **below** it. Everything from here up to `end`
+    /// is already behind this round and is not read again.
+    offset: u64,
+
+    /// The upper bound of the round this cursor belongs to.
+    ///
+    /// **Fixed for the round, not taken from the file on every call.** A
+    /// group that is still talking appends to its day file between calls;
+    /// re-reading up to the new end each time would spend the whole byte
+    /// budget on the same newer messages and never reach the older ones.
+    /// What was appended after the round began is live traffic, read from
+    /// the stream, and this scan does not look at it.
+    end: u64,
+
+    /// Which file `offset` was measured in. A file replaced under the
+    /// same name is a different file, and an offset into the old one
+    /// names nothing in the new one.
+    ///
+    /// Zero where the host has no such number: the size and the record's
+    /// own listing still check the position, but a same-size replacement
+    /// cannot be told apart there and this cursor is only as good as
+    /// those two.
+    inode: u64,
+
+    /// A fingerprint of the question -- group, filter and scope.
+    ///
+    /// **A guard against mixing cursors up, never an authorization.** What
+    /// a line may say is decided per line by `scope.sees` on every call;
+    /// this only keeps one question's file position from being handed to
+    /// another, by mistake or by a caller that changed its mind. A
+    /// collision would let a mismatched cursor through and still read
+    /// nothing the caller was not allowed to see.
+    question: u64,
+};
+
+/// Why a walk stopped.
+///
+/// No field anywhere in this file defaults to one of these: a caller that
+/// forgot to say would be claiming an answer it does not have.
+pub const ScanStop = enum {
+    /// The record ran out: there is nothing older to read.
+    at_end,
+
+    /// The page holds what was asked for. There may be more.
+    full,
+
+    /// The byte budget ran out before the page filled. That is not the
+    /// same answer as "nothing matches": the next call resumes at
+    /// `ScanPage.next` and continues the search.
+    budget,
+
+    /// A file the record listed could not be opened or read, and the walk
+    /// reached the end of the listing without filling the page. There is
+    /// no position to continue from -- the next attempt starts from the
+    /// cursor the caller already has.
+    gap,
+};
+
+/// One page of a walk that can be continued.
+pub const ScanPage = struct {
+    /// Oldest first, the same order as `Page.entries`.
+    entries: []const Entry,
+
+    /// Where to continue, or null when the walk reached `at_end`. Handing
+    /// it back to `historyScan` is what makes the next call read new
+    /// bytes instead of the same ones.
+    ///
+    /// Null with `stop = .full` is the one combination that is not "the
+    /// record ended": it is a caller that asked for no entries at all.
+    /// Nothing was read, so there is no position to report.
+    next: ?ScanCursor,
+
+    /// Why the walk stopped. Never a default; see `ScanStop`.
+    stop: ScanStop,
+
+    /// True when the cursor named a file that is no longer the file it
+    /// was: gone, truncated, or replaced. The walk did not trust the old
+    /// offset -- it started again from the end of the file it could open
+    /// -- because that offset may now name a different message.
+    ///
+    /// **A restart re-reads bytes the caller may already hold.** Staying
+    /// duplicate-free is the caller's side of it: either move
+    /// `before_seq` up to the oldest record already shown, or deduplicate
+    /// by the record's stable identity. `before_seq` on its own only
+    /// excludes what the caller chose to exclude.
+    restarted: bool,
+
+    /// True when a file the record listed could not be opened or read.
+    /// Its messages are not in this page, and the walk went on past it. A
+    /// caller that cares asks again from the cursor it passed rather than
+    /// from the one returned.
+    gap: bool,
+
+    /// True when the record ran out. A gap is not the beginning: the walk
+    /// cannot say what it could not read.
+    pub fn exhausted(self: ScanPage) bool {
+        return self.stop == .at_end;
+    }
+};
+
+pub fn freeScanPage(alloc: Allocator, page: ScanPage) void {
+    for (page.entries) |e| freeEntry(alloc, e);
+    alloc.free(page.entries);
+}
+
+/// A fingerprint of the question a scan answers: which group, which
+/// filter, and whose eyes.
+fn questionOf(group: []const u8, filter: Filter, scope: Chat.Scope) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(group);
+
+    var num: [8]u8 = undefined;
+    std.mem.writeInt(i64, &num, filter.since_ms, .little);
+    h.update(&num);
+    std.mem.writeInt(i64, &num, filter.until_ms, .little);
+    h.update(&num);
+    h.update(filter.match);
+
+    switch (scope) {
+        .everything => h.update(&[_]u8{0}),
+        .only => |seats| {
+            h.update(&[_]u8{1});
+            for (seats) |seat| {
+                std.mem.writeInt(u64, &num, seat.task, .little);
+                h.update(&num);
+                if (seat.until_ms) |until| {
+                    h.update(&[_]u8{1});
+                    std.mem.writeInt(u64, &num, until, .little);
+                    h.update(&num);
+                } else h.update(&[_]u8{0});
+            }
+        },
+    }
+    return h.final();
+}
+
 /// Messages in `group` older than `before_seq`, newest end first.
 ///
 /// Read out of the record rather than out of the stream, for two reasons.
@@ -820,6 +974,10 @@ pub const Page = struct {
 ///
 /// Reading fails the way writing does -- quietly. A page that stops short
 /// says `exhausted = false`, and the caller asks again later.
+///
+/// This is the walk with the cursor dropped. `historyScan` is the same
+/// page plus the physical place it stopped, for a caller that may be
+/// interrupted and must not pay for the same bytes twice.
 pub fn history(
     self: *ChatLog,
     alloc: Allocator,
@@ -829,7 +987,60 @@ pub fn history(
     filter: Filter,
     scope: Chat.Scope,
 ) Allocator.Error!Page {
+    // Asked for nothing: an empty page that does not claim the record
+    // ended. That is what this caller has always been told.
     if (limit == 0) return .{ .entries = &.{}, .exhausted = false };
+
+    const page = self.historyScan(alloc, group, before_seq, limit, filter, scope, null) catch |err| switch (err) {
+        // No cursor was handed in, so there is nothing to disagree about.
+        error.CursorMismatch => unreachable,
+        else => |e| return e,
+    };
+    return .{ .entries = page.entries, .exhausted = page.exhausted() };
+}
+
+/// The same walk as `history`, with a place to continue from.
+///
+/// **Growth is not a reason to start over.** A group that is still
+/// talking appends to its day file between calls; those messages are live
+/// traffic and are read from the stream. The round's upper bound therefore
+/// stays where it was when the scan began (`ScanCursor.end`), and only a
+/// file that was truncated, replaced or taken away is reported with
+/// `restarted` -- an offset into a file that changed underneath it must
+/// never be believed, because it would name a different message while
+/// looking entirely legal.
+///
+/// Nothing here decides who may see what: every line still goes through
+/// `scope.sees`, and the cursor's fingerprint only refuses a cursor made
+/// for a different question.
+pub fn historyScan(
+    self: *ChatLog,
+    alloc: Allocator,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+) (Allocator.Error || error{CursorMismatch})!ScanPage {
+    // The cursor belongs to the question it was asked under, and that is
+    // decided before anything else -- including the empty request below,
+    // which must not become a way to carry a cursor past the check.
+    // Nothing is read to answer it.
+    const question = questionOf(group, filter, scope);
+    if (cursor) |c| {
+        if (c.question != question) return error.CursorMismatch;
+    }
+
+    // Asked for nothing: nothing was read and there is no position to
+    // report. `stop` says so rather than claiming the record ended.
+    if (limit == 0) return .{
+        .entries = &.{},
+        .next = cursor,
+        .stop = .full,
+        .restarted = false,
+        .gap = false,
+    };
 
     var w: Walk = .{
         .alloc = alloc,
@@ -839,6 +1050,15 @@ pub fn history(
         .filter = filter,
         .scope = scope,
         .want = @min(limit, max_history_limit),
+        .cursor = cursor,
+        // Written out rather than defaulted: "not restarted, no gap, and
+        // no stop recorded yet" is a state this walk has to say, not one
+        // it can be assumed to be in.
+        .round_end = 0,
+        .resume_at = 0,
+        .stopped = .at_end,
+        .restarted = false,
+        .gap = false,
         .arena = .init(alloc),
         .scratch = try alloc.alloc(u8, scan_chunk_bytes),
     };
@@ -855,13 +1075,35 @@ pub fn history(
     var days = try self.tree.days(alloc, group);
     defer days.deinit(alloc);
 
+    // A cursor names the file the last call stopped in. Everything newer
+    // than it was scanned then, and a file that appeared since is newer
+    // still, so the walk starts exactly there. A file the record no
+    // longer lists -- deleted between the calls -- is not guessed at: the
+    // walk carries on at the next older one, and says the record changed.
+    var start: usize = 0;
+    if (cursor) |c| {
+        start = days.items.len;
+        for (days.items, 0..) |d, i| {
+            if (d.day > c.day or (d.day == c.day and d.part > c.part)) continue;
+            start = i;
+            break;
+        }
+        if (start == days.items.len or
+            days.items[start].day != c.day or
+            days.items[start].part != c.part)
+        {
+            w.restarted = true;
+        }
+    }
+
     // Newest day first, and within a day its last part first: the same
     // direction the walk inside each file goes.
-    var exhausted = true;
-    for (days.items) |d| {
+    var stop: ScanStop = .at_end;
+    var next: ?ScanCursor = null;
+    for (days.items[start..]) |d| {
         // A day the filter cannot want is not opened at all. Skipping it
         // does not make the page short of the beginning -- there was
-        // nothing in it to hand over -- so `exhausted` stands.
+        // nothing in it to hand over -- so `stop` stands.
         if (!filter.admitsDay(d.day)) continue;
 
         const path = try self.tree.partPath(alloc, group, d.day, d.part);
@@ -871,31 +1113,46 @@ pub fn history(
         // gap in the middle of the range, and a gap is the one thing the
         // caller must not be told is the beginning.
         const file = std.Io.Dir.openFileAbsolute(self.io, path, .{}) catch {
-            exhausted = false;
+            w.gap = true;
             continue;
         };
         defer file.close(self.io);
 
         const st = file.stat(self.io) catch {
-            exhausted = false;
+            w.gap = true;
             continue;
         };
 
-        switch (try w.generation(file, st.size)) {
+        switch (try w.generation(d.day, d.part, file, st.size, @intCast(st.inode))) {
             .enough => {
-                exhausted = false;
+                stop = w.stopped;
+                next = .{
+                    .day = d.day,
+                    .part = d.part,
+                    .offset = w.resume_at,
+                    .end = w.round_end,
+                    .inode = @intCast(st.inode),
+                    .question = question,
+                };
                 break;
             },
-            .gave_up => exhausted = false,
+            .gave_up => w.gap = true,
             .start_of_file => {},
         }
     }
+    if (stop == .at_end and w.gap) stop = .gap;
 
     // Collected newest first because backwards is the only direction a
     // file can be walked; handed back oldest first because that is the
     // order `group_read` uses and the order a conversation is read in.
     std.mem.reverse(Entry, w.found.items);
-    return .{ .entries = try w.found.toOwnedSlice(alloc), .exhausted = exhausted };
+    return .{
+        .entries = try w.found.toOwnedSlice(alloc),
+        .next = next,
+        .stop = stop,
+        .restarted = w.restarted,
+        .gap = w.gap,
+    };
 }
 
 pub fn freePage(alloc: Allocator, page: Page) void {
@@ -1381,6 +1638,34 @@ const Walk = struct {
     scope: Chat.Scope,
     want: usize,
 
+    /// Where a continued walk resumes; null for a first page.
+    ///
+    /// **No default, like the result fields**: a walk that forgot it would
+    /// silently read the newest bytes again instead of continuing, which
+    /// is the whole thing this is here to stop.
+    cursor: ?ScanCursor,
+
+    /// The upper bound of the round the file being read belongs to: fixed
+    /// when that file was first reached, so messages appended between
+    /// calls are live traffic rather than something this walk re-reads.
+    /// Meaningful only for the file the cursor named.
+    round_end: u64,
+
+    /// Where the walk stopped inside the current file, for the cursor it
+    /// hands back. Set by `chunk` together with `stopped`; zero when it
+    /// stopped at the file's beginning.
+    resume_at: u64,
+
+    /// Why `chunk` asked to stop. Set by `chunk` whenever it returns true.
+    stopped: ScanStop,
+
+    /// The record was not what the cursor described: the file was
+    /// truncated, replaced, or is gone.
+    restarted: bool,
+
+    /// A listed file could not be opened or read.
+    gap: bool,
+
     /// Newest first until the very last step of `history`.
     found: std.ArrayListUnmanaged(Entry) = .empty,
 
@@ -1396,10 +1681,33 @@ const Walk = struct {
     /// Reading fails the way writing does: once out loud, then quietly.
     warned: bool = false,
 
-    /// Walk one file backwards from `size` to 0, or until there is no
-    /// reason to keep going.
-    fn generation(w: *Walk, file: std.Io.File, size: u64) Allocator.Error!Stop {
+    /// Walk one file backwards from its end -- or from where the cursor
+    /// stopped in it -- to 0, or until there is no reason to keep going.
+    ///
+    /// `size` and `inode` are what the file is now. A cursor taken from
+    /// this file is followed only when the file is still the one it was
+    /// (`inode`) and still holds every byte the round read up to
+    /// (`size >= c.end`): growth is newer traffic this round does not
+    /// look at, while a truncation or a replacement makes the offset name
+    /// a different line, which is the one thing a cursor must never do.
+    fn generation(w: *Walk, day: u32, part: u32, file: std.Io.File, size: u64, inode: u64) Allocator.Error!Stop {
         var end = size;
+        var round_end = size;
+        if (w.cursor) |c| {
+            if (c.day == day and c.part == part) {
+                if (c.inode == inode and size >= c.end and c.offset <= c.end) {
+                    end = c.offset;
+                    round_end = c.end;
+                } else {
+                    // Truncated or replaced under the same name. The old
+                    // offset may now sit in a different message, so it is
+                    // refused; the file is read again from its own end.
+                    w.restarted = true;
+                }
+            }
+        }
+        w.round_end = round_end;
+
         while (end > 0) {
             const start = end -| scan_chunk_bytes;
             const len: usize = @intCast(end - start);
@@ -1434,14 +1742,22 @@ const Walk = struct {
                 end = 0;
             }
 
-            if (try w.chunk(bytes)) return .enough;
+            // `end` is the start of the whole lines just handed over, so
+            // it is also the position a walk that stops before them
+            // resumes from.
+            if (try w.chunk(bytes, end)) return .enough;
         }
         return .start_of_file;
     }
 
     /// Walk the whole lines in one window, newest first. True when the
     /// walk should stop here.
-    fn chunk(w: *Walk, bytes: []const u8) Allocator.Error!bool {
+    ///
+    /// `base` is the file offset `bytes[0]` sits at. It is what turns a
+    /// stop in the middle of the window into a position the next call can
+    /// resume from: everything before `base + rest.len` is still
+    /// unread.
+    fn chunk(w: *Walk, bytes: []const u8, base: u64) Allocator.Error!bool {
         // Counted a window at a time rather than a line at a time: the
         // budget is a wall, not a measurement, and overshooting it by one
         // window is cheaper than checking it a thousand times.
@@ -1508,7 +1824,14 @@ const Walk = struct {
                 .mentions = mentions,
                 .role = role,
             });
-            if (w.found.items.len >= w.want) return true;
+            if (w.found.items.len >= w.want) {
+                w.stopped = .full;
+                // `rest` is the part of the window still unread, and it
+                // is a prefix of `bytes`, so its length is exactly how
+                // far the unread region reaches from `base`.
+                w.resume_at = base + @as(u64, @intCast(rest.len));
+                return true;
+            }
         }
 
         // Out of budget stops the walk short on purpose. A quiet group
@@ -1516,7 +1839,14 @@ const Walk = struct {
         // empty page with `exhausted = false`, the cursor where it was, and
         // the caller free to ask again -- which is the honest answer, and
         // the only one that does not either block or lie about the end.
-        return w.scanned >= history_scan_bytes;
+        if (w.scanned >= history_scan_bytes) {
+            w.stopped = .budget;
+            // Every line in this window was read, so the unread region
+            // ends where the window's whole lines began.
+            w.resume_at = base;
+            return true;
+        }
+        return false;
     }
 
     /// Say it once. A page that stops short is a page the caller will ask
@@ -2243,6 +2573,233 @@ test "a line with no seq is not a line a cursor can point at" {
     try testing.expectEqualStrings("one", page.entries[0].text);
     try testing.expectEqualStrings("three", page.entries[1].text);
     try testing.expect(page.exhausted);
+}
+
+test "a scan cursor walks past bytes it has already read" {
+    // **The reason the cursor exists.** A query that matches nothing used
+    // to be handed the newest two megabytes on every call and never reach
+    // the older records. Each call here must read a new stretch, and the
+    // last one must find the single message that matches at the bottom of
+    // a file several times bigger than the budget.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    // The match is the oldest line. Everything above it is newer than the
+    // answer, and there is enough of it to need more than one budget.
+    _ = l.append("build", 1, "worker", 1000, false, "needle", 0);
+    const filler = "x" ** (8 * 1024);
+    for (1..701) |i| {
+        const text = try std.fmt.allocPrint(alloc, "{d}-{s}", .{ i, filler });
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(i)), false, text, 0);
+    }
+
+    var cursor: ?ScanCursor = null;
+    var calls: usize = 0;
+    var top: u64 = std.math.maxInt(u64);
+    while (true) {
+        const page = try l.historyScan(alloc, "build", 0, 1, .{ .match = "needle" }, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, page);
+        calls += 1;
+        try testing.expect(calls < 20);
+
+        if (page.entries.len > 0) {
+            try testing.expectEqual(@as(usize, 1), page.entries.len);
+            try testing.expectEqualStrings("needle", page.entries[0].text);
+            try testing.expectEqual(@as(u64, 1), page.entries[0].seq);
+            break;
+        }
+
+        // Nothing matched yet, and the honest answer is "keep asking from
+        // here", not "no such message".
+        try testing.expectEqual(ScanStop.budget, page.stop);
+        try testing.expect(page.next != null);
+        const next = page.next.?;
+        // Every call reads bytes above the one before it: the walk moves
+        // away from the file's end instead of starting there again.
+        try testing.expect(next.offset < top);
+        top = next.offset;
+        cursor = next;
+    }
+
+    // More than one call: the budget really did run out before the
+    // answer, which is the situation the old walk repeated forever.
+    try testing.expect(calls >= 3);
+}
+
+test "a scan cursor keeps its question and walks past lines that are not records" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "oldest", 0);
+
+    // A foreign hand: one line that is not JSON at all, and one that is a
+    // real message from before seq existed. Neither is a position a
+    // cursor can point at, and neither may stop the walk getting past it.
+    const legacy = "not json at all\n" ++
+        "{\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x0000000000000001\"," ++
+        "\"author\":\"worker\",\"text\":\"legacy\"}\n";
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    try testGraft(&l, io, day, legacy);
+
+    _ = l.append("build", 1, "worker", 1002, false, "newest", 0);
+
+    const first = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, null);
+    defer ChatLog.freeScanPage(alloc, first);
+    try testing.expectEqual(@as(usize, 1), first.entries.len);
+    try testing.expectEqualStrings("newest", first.entries[0].text);
+    try testing.expectEqual(ScanStop.full, first.stop);
+    const cursor = first.next orelse return error.TestUnexpectedResult;
+
+    // The rest of the chain: the bad line and the line without a seq are
+    // physically walked past, and the older real message still arrives.
+    {
+        const second = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, second);
+        try testing.expectEqual(@as(usize, 1), second.entries.len);
+        try testing.expectEqualStrings("oldest", second.entries[0].text);
+        try testing.expect(!second.gap);
+    }
+
+    // **The cursor belongs to one question.** A different group, filter
+    // or reader is refused rather than walked from somebody else's
+    // offset, and that is decided without reading anything.
+    try testing.expectError(error.CursorMismatch, l.historyScan(alloc, "other", 0, 1, .{}, .everything, cursor));
+    try testing.expectError(error.CursorMismatch, l.historyScan(alloc, "build", 0, 1, .{ .match = "x" }, .everything, cursor));
+    try testing.expectError(error.CursorMismatch, l.historyScan(alloc, "build", 0, 1, .{}, Chat.Scope.public, cursor));
+
+    // Asking for nothing is not a way around that check.
+    try testing.expectError(error.CursorMismatch, l.historyScan(alloc, "build", 0, 0, .{}, Chat.Scope.public, cursor));
+    {
+        const empty = try l.historyScan(alloc, "build", 0, 0, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, empty);
+        try testing.expectEqual(@as(usize, 0), empty.entries.len);
+        try testing.expectEqual(ScanStop.full, empty.stop);
+        const again = empty.next orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(cursor.day, again.day);
+        try testing.expectEqual(cursor.part, again.part);
+        try testing.expectEqual(cursor.offset, again.offset);
+        try testing.expectEqual(cursor.end, again.end);
+        try testing.expectEqual(cursor.question, again.question);
+    }
+
+    // The old wrapper keeps its old answer for this caller.
+    const none = try l.history(alloc, "build", 0, 0, .{}, .everything);
+    defer ChatLog.freePage(alloc, none);
+    try testing.expect(!none.exhausted);
+}
+
+test "a scan cursor is continued across growth and not believed across a rewrite" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    for (1..5) |i| {
+        const text = try std.fmt.allocPrint(alloc, "m{d}", .{i});
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(i)), false, text, 0);
+    }
+
+    const first = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, null);
+    defer ChatLog.freeScanPage(alloc, first);
+    try testing.expectEqualStrings("m4", first.entries[0].text);
+    try testing.expectEqual(ScanStop.full, first.stop);
+    var cursor = first.next orelse return error.TestUnexpectedResult;
+
+    // **Growth is live traffic.** Two more messages are said after the
+    // cursor was taken; resuming must not start over at the new end and
+    // must not hand them back as history.
+    _ = l.append("build", 1, "worker", 1010, false, "m5", 0);
+    _ = l.append("build", 1, "worker", 1011, false, "m6", 0);
+    {
+        const page = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("m3", page.entries[0].text);
+        try testing.expect(!page.restarted);
+        cursor = page.next orelse return error.TestUnexpectedResult;
+    }
+
+    // The record shrinks under the cursor -- in place, so the file is
+    // still the same file with fewer bytes. The offset may now name a
+    // different line, so it is refused and the file is read from its end.
+    const day = try testDayPath(alloc, &l, "build", 1001);
+    l.tree.close();
+    const two = "{\"seq\":1,\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x1\",\"author\":\"w\",\"text\":\"m1\"}\n" ++
+        "{\"seq\":2,\"at_ms\":1002,\"group\":\"build\",\"from\":\"0x1\",\"author\":\"w\",\"text\":\"m2\"}\n";
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, day, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, two);
+    }
+    {
+        const page = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expect(page.restarted);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("m2", page.entries[0].text);
+        cursor = page.next orelse return error.TestUnexpectedResult;
+    }
+
+    // Replaced under the same name: same bytes, same size, different
+    // file. The inode is the only thing that can tell, and it does.
+    const copy = try std.fmt.allocPrint(alloc, "{s}.copy", .{day});
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, copy, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, two);
+    }
+    try std.Io.Dir.renameAbsolute(copy, day, io);
+    {
+        const page = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expect(page.restarted);
+        try testing.expectEqual(@as(usize, 1), page.entries.len);
+        try testing.expectEqualStrings("m2", page.entries[0].text);
+        cursor = page.next orelse return error.TestUnexpectedResult;
+    }
+
+    // Taken away entirely: the cursor names a file nothing has, so the
+    // walk neither guesses at it nor reads some other day as if it were.
+    try std.Io.Dir.deleteFileAbsolute(io, day);
+    {
+        const page = try l.historyScan(alloc, "build", 0, 1, .{}, .everything, cursor);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expect(page.restarted);
+        try testing.expectEqual(@as(usize, 0), page.entries.len);
+        try testing.expectEqual(ScanStop.at_end, page.stop);
+        try testing.expect(page.exhausted());
+    }
 }
 
 test "paging back over a file larger than one window loses nothing at the seams" {
