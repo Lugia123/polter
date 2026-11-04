@@ -2664,7 +2664,7 @@ pub fn layout(frame: HWND) {
     }
     // The chat page's terminal, over the panel like the lent one; or every
     // chat hidden. With the lock dropped: placing one may make it.
-    crate::chat_page::place(frame, chat_rect);
+    crate::chat_native::place(frame, chat_rect);
 
     // The window's caption follows the tab in front, and the control room
     // in and out of the front. From here for the dividers' reason just
@@ -7183,7 +7183,7 @@ pub fn focus_active(frame: HWND) {
     }
     // The chat in front, when the keyboard was last in it (task 2015).
     // Asked before the guard: it is another module's state.
-    let chat = crate::chat_page::keyboard_hwnd();
+    let chat = crate::chat_native::keyboard_hwnd();
     let target = match window(frame) {
         Some(w) => match w.tabs.get(w.active).map(|t| t.front()) {
             Some(Front::Pane(p)) => Target::Pane(p.hwnd),
@@ -7192,6 +7192,11 @@ pub fn focus_active(frame: HWND) {
             // and the person having clicked in it, the terminal's.
             Some(Front::Room(hwnd)) => match chat {
                 Some(c) => Target::Pane(c),
+                // **A native chat page does not fall back to a lent
+                // supervisor** (task 2802, W2b): its reading area is not a
+                // terminal, and a key meant for it must not be sent into a
+                // terminal nobody can see.
+                None if crate::control_room::chat_group().is_some() => Target::Room(hwnd),
                 None => match w.shown_on_loan().filter(|l| l.keyboard).and_then(|_| w.typing_pane()) {
                     Some(p) => Target::Pane(p.hwnd),
                     None => Target::Room(hwnd),
@@ -7687,7 +7692,7 @@ pub fn surface_of(hwnd: HWND) -> Surface {
     }
     // A chat on the control room's chat page is in no tab either, and is the
     // same window class (task 2015).
-    let chat = crate::chat_page::surface_of(hwnd);
+    let chat = crate::chat_native::surface_of(hwnd);
     if !chat.is_null() {
         return chat;
     }
@@ -7787,8 +7792,8 @@ pub fn focus_pane_at(hwnd: HWND) {
 fn focus_pane_reached(hwnd: HWND, reach: polter_control_room::lend::Reach) {
     // A chat on the control room's chat page is in no tab (task 2015): its
     // own module gives it the keyboard.
-    if crate::chat_page::owns(hwnd) {
-        crate::chat_page::take_keyboard(hwnd);
+    if crate::chat_native::owns(hwnd) {
+        crate::chat_native::take_keyboard(hwnd);
         return;
     }
     let Some((frame, tab_idx, id)) = pane_of(hwnd) else {
@@ -9863,7 +9868,7 @@ pub extern "system" fn surface_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             WM_SETFOCUS => {
                 // Whether the keyboard is now in a chat of the control
                 // room's (task 2015), or has left one.
-                crate::chat_page::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
+                crate::chat_native::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
                 crate::ime_set_window(hwnd);
                 // ⚠️ `ime_focus` ends in `ITfThreadMgr::SetFocus`, which is
                 // unbounded. **By the readings of 2026-09-09 it is not in the

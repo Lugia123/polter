@@ -1376,7 +1376,7 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
 // ------------------------------------------------------- the chat page
 
 /// The group whose chat page is in front, when one is: what
-/// `chat_page::place` puts a chat in front for. Asked by `tabs::layout`
+/// `chat_native::place` puts a chat in front for. Asked by `tabs::layout`
 /// after its lock.
 pub(crate) fn chat_group() -> Option<String> {
     let hwnd = panel()?;
@@ -1394,46 +1394,12 @@ pub(crate) fn chat_group() -> Option<String> {
     pages.then_some(group)
 }
 
-/// The chat page of a group whose chat ended: one sentence in the middle of
-/// the page, which a press anywhere on the page answers (`chat_reopen_press`).
-unsafe fn paint_chat_ended(dc: HDC, at: Px, page: Rect, theme: &Theme, fonts: &mut Fonts, t: f64) {
-    let Some(group) = selection().filter(|g| page_of(g) == Page::Chat) else { return };
-    if !crate::chat_page::ended(&group) {
-        return;
-    }
-    let line = Rect { x: page.x, y: page.y + page.h / 2.0 - side::HEADER_HEIGHT / 2.0, w: page.w, h: side::HEADER_HEIGHT };
-    let items = [
-        Item::Fill { rect: page, color: theme.terminal_background },
-        Item::Text { rect: line, text: tr(rightpage::msg::CHAT_ENDED), style: scene::body_style(theme.text_secondary), align: Align::Centre },
-    ];
-    unsafe { paint_items(dc, at, &items, fonts, t) };
-}
-
-/// A press on the chat page of a group whose chat ended opens it again.
-/// Whether it was one.
-fn chat_reopen_press(hwnd: HWND, x: i32, y: i32) -> bool {
-    let Some(group) = selection().filter(|g| page_of(g) == Page::Chat) else { return false };
-    if !crate::chat_page::ended(&group) {
-        return false;
-    }
-    let g = geometry(hwnd);
-    let (px, py) = (x as f64 / g.scale - g.room.right.x, y as f64 / g.scale - g.room.right.y);
-    let page = polter_control_room::scene::terminal_rect(g.room.right.w, g.room.right.h);
-    if px < page.x || py < page.y || px >= page.x + page.w || py >= page.y + page.h {
-        return false;
-    }
-    crate::chat_page::reopen(&group);
-    crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
-    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
-    true
-}
-
 /// Before a paint: when the chat that should be in front is not the one
 /// that is -- another group selected on its chat page -- the window is laid
 /// out again, which places it.
 fn chat_sync(hwnd: HWND) {
     let want = chat_group();
-    if !crate::chat_page::settled(&want) {
+    if !crate::chat_native::settled(&want) {
         crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
     }
 }
@@ -1646,7 +1612,7 @@ pub fn snapshot_changed() {
     // A task may have moved: the task page asks again (API.md §2.2).
     tasks_fetch(hwnd);
     // A chat whose group is gone -- deleted, renamed, archived -- goes too.
-    crate::chat_page::prune(|g| {
+    crate::chat_native::prune(|g| {
         source::with(|data| match data {
             Data::Ready(r) => r.list.row(g).is_some(),
             // Nothing known is not the same as gone: kept.
@@ -3420,13 +3386,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             report_presence(hwnd);
             LRESULT(0)
         }
-        // A chat's program ended (`chat_page::closed_by_core`): put away,
-        // and the window laid out again without it.
-        crate::chat_page::WM_CHAT_GONE => {
-            crate::chat_page::gone(wp.0 as u64);
-            crate::tabs::layout(unsafe { GetAncestor(hwnd, GA_ROOT) });
-            LRESULT(0)
-        }
         WM_ROOM_RECLAIM => {
             let terminal = RECLAIMED.lock().ok().and_then(|mut r| r.take());
             if let Some(terminal) = terminal {
@@ -3635,7 +3594,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let to = HWND(wp.0 as *mut c_void);
             let what = if to.0.is_null() {
                 "nothing"
-            } else if crate::chat_page::owns(to) {
+            } else if crate::chat_native::owns(to) {
                 "a chat"
             } else if !crate::tabs::surface_of(to).is_null() {
                 "a terminal"
@@ -3723,7 +3682,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             wlogf!(unsafe { GetAncestor(hwnd, GA_ROOT) }, "[focus] the control room's panel took the keyboard from {:?}", wp.0 as *mut c_void);
             // The keyboard is on the list now -- out of a chat, when it came
             // from one (task 2015).
-            crate::chat_page::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
+            crate::chat_native::focus_went_to(hwnd, HWND(wp.0 as *mut c_void));
             // The one TSF document manager of this thread belongs to the
             // terminals; hand it back while a window that takes no text has
             // the keyboard (`palette.rs` has the contract). A pane's own
@@ -3797,7 +3756,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             PERF.with(|p| *p.borrow_mut() = None);
             // The chats are the control room's: they go with its panel.
-            crate::chat_page::close_all();
+            crate::chat_native::close_all();
             // Closed is not in front: nothing on it is in sight any more.
             say_presence(polter_control_room::alert::Presence::default());
             STATE.with(|s| {
@@ -4025,9 +3984,6 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     if tasks_press(hwnd, x, y) {
         return;
     }
-    if chat_reopen_press(hwnd, x, y) {
-        return;
-    }
     if notice_press(hwnd, x, y) {
         return;
     }
@@ -4220,7 +4176,7 @@ fn words_box(dc: HDC, at: Px, items: &[Item]) -> (f64, f64, f64, f64) {
     (cx, cy, width * s, (bottom - top) * s)
 }
 
-fn rgb(c: Rgba) -> COLORREF {
+pub(crate) fn rgb(c: Rgba) -> COLORREF {
     COLORREF((c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16))
 }
 
@@ -4505,7 +4461,6 @@ fn paint(hwnd: HWND) {
             if let Some(page) = page_rect {
                 paint_perf(mem, at, page, theme);
                 paint_tasks(mem, at, page, theme);
-                paint_chat_ended(mem, at, page, theme, &mut fonts, t);
             }
             // While the last session is looked for, its spinner turns
             // (task 1741).

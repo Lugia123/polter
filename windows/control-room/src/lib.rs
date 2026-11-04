@@ -79,6 +79,7 @@ pub mod preview_layout;
 pub mod pulse;
 pub mod quota;
 pub mod reach;
+pub mod chat_rows;
 pub mod reader;
 pub mod rightpage;
 pub mod rowmenu;

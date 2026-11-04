@@ -101,7 +101,7 @@
 
 mod capture;
 mod chat_feed;
-mod chat_page;
+mod chat_native;
 mod chat_read;
 mod close_scope;
 mod control_room;
@@ -2886,12 +2886,6 @@ extern "C" fn cb_close_surface(ud: *mut c_void, confirm: bool) {
     // has one: it would close *some other pane*, because pane ids are unique
     // and the lookup would simply find nothing to remove.
     //
-    // **A chat on the control room's chat page is in no tab** (task 2015,
-    // `chat_page.rs`): its program ending is put away there, and never
-    // reaches the lookup below, which would find no window and say so.
-    if chat_page::closed_by_core(id) {
-        return;
-    }
     match tabs::frame_of_pane(id) {
         // ⚠️ **The second argument is the core's answer, and it used to be
         // thrown away** (it was spelled `_confirm`). `Surface.close` computes
@@ -3907,11 +3901,6 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
         ACTION_SHOW_CHILD_EXITED => {
             alogf!(origin, "[action] show_child_exited");
-            // A chat's program ending is its page's to say, at once
-            // (task 2015).
-            if let Some(s) = target_surface(&target) {
-                crate::chat_page::child_exited(s);
-            }
             true
         }
 
@@ -5130,7 +5119,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     (api().surface_set_content_scale)(s, scale, scale);
                 }
                 // The control room's chats in this window too (task 2015).
-                chat_page::rescale(hwnd, scale);
+                chat_native::rescale(hwnd, scale);
                 tabs::layout(hwnd);
                 wlogf!(hwnd, "[win] dpi changed -> scale {}", scale);
                 LRESULT(0)
