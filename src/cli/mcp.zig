@@ -4,6 +4,7 @@ const Action = @import("ghostty.zig").Action;
 const args = @import("args.zig");
 const global = @import("../global.zig");
 const transport = @import("../poltergeist/transport.zig");
+const notify = @import("../poltergeist/notify.zig");
 const poltergeist_server = @import("../poltergeist/Server.zig");
 const agent_cli = @import("../poltergeist/agent_cli.zig");
 const readline = @import("readline.zig");
@@ -960,10 +961,8 @@ const tools = [_]Tool{
     },
     .{
         .name = "notify_user",
-        .description = "Ask for the person to be told something. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- those go out at any hour, because the terminal is stopped until somebody answers and that somebody may have to be the user. (Answer it yourself first with terminal_answer_prompt when the box is one you can judge: that is allowed in every terminal unless the user has switched it off there or shielded it. This is for the ones you cannot -- refused with `AuthoriseOff`, the worker's own agent would not take your answer, or the question is the person's to decide.) **With `authorisation` two more things happen, plugin or no plugin**: your group goes into the control room's \"waiting for you\" at once, showing what you said (so make `title` and `body` say which terminal and what it is asking), and the operating system's own notification is raised from your window Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. **Read the reply**: it says whether the message actually went anywhere -- the control room's list, the system notification and the plugins each in their own sentence. If it did not, do not sit waiting for an answer. Supervisor only.",
-        .schema =
-        \\{"type":"object","properties":{"reason":{"type":"string","enum":["authorisation","scheduling"]},"title":{"type":"string"},"body":{"type":"string"},"id":{"type":"string","description":"The terminal this is about, if it is about one"}},"required":["reason","title"]}
-        ,
+        .description = "Ask for the person to be told something. Use `reason: needs_user` when the work is stopped on a human decision or action: a design or delivery to approve, a choice only they can make, a login or authorisation, a device they have to operate. Use `reason: authorisation` when a terminal is stopped on a permission prompt -- it is the same path as `needs_user`, kept for older prompts (plugins are still handed `authorisation`). Both go out at any hour, because the work is stopped until somebody acts and that somebody may have to be the user. (Answer a worker's prompt yourself first with terminal_answer_prompt when the box is one you can judge: that is allowed in every terminal unless the user has switched it off there or shielded it. This is for the ones you cannot -- refused with `AuthoriseOff`, the worker's own agent would not take your answer, or the question is the person's to decide.) **With either of those two things happen, plugin or no plugin**: your group goes into the control room's \"waiting for you\" at once, showing what you said (so make `title` and `body` say which terminal and what it is asking), and the operating system's own notification is raised from your window. **Do not call this for ordinary progress**: a worker finishing, a long build, waiting on an alarm, a routine check, or a terminal that is merely quiet with nothing blocked is not a reason to call the person -- say so in the group instead, and set an alarm if you need to look back. Send one notice per question and wait for the answer; do not repeat it each time a screen goes still or an alarm rings. Use `reason: scheduling` for questions you could answer yourself (keep going, change tack, give up); those are held back during the hours the user set aside, and handed back to you to decide. An unknown reason is refused with `BadReason`, never sent as `scheduling`. **Read the reply**: it says whether the message actually went anywhere -- the control room's list, the system notification and the plugins each in their own sentence. If it did not, do not sit waiting for an answer. Supervisor only.",
+        .schema = notify.user_schema,
     },
     .{
         .name = "session_recall",
@@ -1753,7 +1752,7 @@ const tools = [_]Tool{
             "right-click menu; nothing you can call switches it on, and asking again " ++
             "will not " ++
             "change it. Where they have you get `AuthoriseOff` (or `Shielded`), and the " ++
-            "right move is notify_user with `reason: authorisation`, naming the " ++
+            "right move is notify_user with `reason: needs_user`, naming the " ++
             "terminal and what it is asking, and saying the same in your own " ++
             "terminal. The notice that told you about the prompt already says which " ++
             "it will be: `answer=allowed`, `answer=off` or `answer=shielded`. `choice` " ++

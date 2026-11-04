@@ -316,7 +316,7 @@ poltergeist-notify-window = 09:00-22:00
 > | 等批准 / 等输入的通知 | 排在 `poltergeist-notice-interval` 后面 | **不排队**：下一个 5 秒心跳就单独递给总管，不占、不重置其它通知的间隔（`Bus.drainIfDue` → `takeSome(only_waiting)`） |
 > | 用户正在总管终端里打字 | 那次通知算递过了 | 算没递（`Bus.deliveryRefused`），用户停手后的下一个心跳补送 |
 > | 通知里带什么 | 工具名与摘要 | 加 `state_at_ms`、`event_at_ms`（直接抄给 `terminal_answer_prompt` 当守卫）和 `answer=allowed/off/shielded` |
-> | 总管答不了时 | `notify_user` 只走插件；没装插件就是「nobody was told」 | `notify_user(authorisation)` **另外发一条系统通知**，不需要插件；返回值把系统通知和插件分两句如实说（`notify.System`、`notify.reply`） |
+> | 总管答不了时 | `notify_user` 只走插件；没装插件就是「nobody was told」 | `notify_user(needs_user)`（旧名 `authorisation`）**另外发一条系统通知**，不需要插件；返回值把系统通知和插件分两句如实说（`notify.System`、`notify.reply`） |
 >
 > **没被看管的 worker 不在这张表里。** 它的 hook 事件不进任何人的箱（`Bus.agentEvent` 只收
 > `role == .watched` 且没下班的），所以它等确认时**没有谁被通知**，只在总控台它那一行上看得见。
@@ -357,8 +357,11 @@ poltergeist-notify-window = 09:00-22:00
 第二类没有第三个选项。程序不能替按，总管不能替按，那么要么把人叫来，要么它就停在那里 —— 而这恰恰是通知必须能推到手机上的原因，也是通知做成插件体系（[plugins.md](plugins.md)）的由来：桌面通知在人已经离开的机器上没有意义。
 
 **窗口外的规则因此按类别定，而不是按终端定 —— 这一条已经是现状。**
-`notify.Reason` 就是这两类（`src/poltergeist/notify.zig:39-53`），`notify_user` 的
-`reason` 参数只收这两个词，`decide` 按它分流（`src/poltergeist/notify.zig:146-148`）：
+`notify.Reason` 仍是这两类（`src/poltergeist/notify.zig`）；`notify_user` 的
+`reason` 收三个词 —— `needs_user`（task 2844 起，表示工作停在人的决定或操作上）、
+`authorisation`（旧名，权限提示）和 `scheduling` —— 前两个解析到同一条
+authorisation 路径，插件收到的也仍是 `authorisation`；未知的词明确拒绝为
+`BadReason`。`decide` 按解析后的类别分流：
 
 - 调度决策 → 窗口外压下，留给总管代理，群聊留痕。理由仍然成立：R5 的场景就是「人不在，机器继续」，把「人不在」解释成「停下来等」会让整套东西在最需要它的时段失效。
 - 工具授权 → **照发通知，不管时段**（`respectsWindow()` 对它返回 false）。这类事情停在那里的代价是一整夜白跑，而这已经越过了「别在半夜吵醒我」所要保护的东西。用户若真不想被吵，该关的是这个终端的监督，不是通知。

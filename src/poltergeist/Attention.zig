@@ -176,6 +176,15 @@ pub const Facts = struct {
     said_by: Bus.SaidBy,
     /// When `state` last changed.
     state_since_ms: u64,
+    /// **Whether `state == .awaiting_input` is the CLI's quiet "ready for
+    /// the next line" prompt** (`idle_prompt`, sent after a turn ended)
+    /// rather than a question that stops the work. Only an
+    /// `awaiting_input` whose own detail says `idle_prompt` is this;
+    /// `elicitation_dialog`, a tool approval and a supervisor's explicit
+    /// raise are not, and stay `needs_answer`. Not defaulted: whoever
+    /// builds `Facts` says which it is, so a new construction cannot
+    /// silently mean "no question" (`Facts.none` says not an idle prompt).
+    idle_prompt: bool,
     /// When the wait for the hooks began, or null while it has not
     /// (`Bus.Agent.expected_ms`).
     expected_ms: ?u64,
@@ -214,6 +223,8 @@ pub const Facts = struct {
         .state = .idle,
         .said_by = .hooks,
         .state_since_ms = 0,
+        // A plain terminal has no agent detail saying `idle_prompt`.
+        .idle_prompt = false,
         .expected_ms = 0,
         .last_event_ms = null,
         .waiting_on_background = false,
@@ -284,7 +295,17 @@ pub fn classify(f: Facts, t: Thresholds, now_ms: u64) Status {
         if (Bus.Agent.spoke(f.hooks, f.said_by) and f.process == .running) {
             const kind: Kind, const since: u64 = switch (f.state) {
                 .awaiting_approval => .{ .needs_approval, f.state_since_ms },
-                .awaiting_input => .{ .needs_answer, f.state_since_ms },
+                // Claude Code says `awaiting_input` for two different
+                // things: a question that stops the work, and the idle
+                // prompt it sends a minute after a turn ended. Only the
+                // second is ordinary idle -- a person is not needed to
+                // get anything moving again. A real elicitation, an
+                // approval, or a raise the supervisor made explicitly
+                // does not carry this fact and stays `needs_answer`.
+                .awaiting_input => if (f.idle_prompt)
+                    .{ .idle, f.state_since_ms }
+                else
+                    .{ .needs_answer, f.state_since_ms },
                 .failed => .{ .failed, f.state_since_ms },
                 // Working, for as long as a screen may be still before it
                 // is asked about; past that, the same "stuck?" -- a retry
@@ -817,6 +838,42 @@ test "Attention: a hook state decides approval, answer and failure" {
     try testing.expectEqual(@as(?u64, 60 * min), approval.age_ms);
     try testing.expectEqual(Kind.needs_answer, status(1, .awaiting_input, 0).kind);
     try testing.expectEqual(Kind.failed, status(1, .failed, 0).kind);
+}
+
+test "Attention: an idle prompt is idle, while a question still needs an answer" {
+    // The `idle_prompt` notification Claude Code sends a minute after a
+    // turn ended says "still sitting here", not "answer me".
+    var quiet = hooked(1, .awaiting_input, 0);
+    quiet.idle_prompt = true;
+    const idle = classify(quiet, T, now);
+    try testing.expectEqual(Kind.idle, idle.kind);
+    try testing.expectEqual(Source.hook, idle.source);
+
+    // The same state without that detail is a real question
+    // (`elicitation_dialog`, an approval, anything else).
+    try testing.expectEqual(Kind.needs_answer, status(1, .awaiting_input, 0).kind);
+
+    // A raise the supervisor made explicitly is not erased by an idle
+    // prompt arriving on the same terminal: it stands while it is newer
+    // than the state it was made in.
+    var raised = hooked(1, .awaiting_input, 5 * min);
+    raised.idle_prompt = true;
+    raised.raised_ms = 10 * min;
+    const asked = classify(raised, T, now);
+    try testing.expectEqual(Kind.needs_answer, asked.kind);
+    try testing.expectEqual(Source.self_report, asked.source);
+    try testing.expectEqual(@as(u64, 10 * min), asked.since_ms);
+
+    // The order that happens in practice: the supervisor raises, then an
+    // idle prompt arrives later and moves the state's clock forward.
+    // `ControlRoom` carries `max(raise, state start)`, and the raise still
+    // stands -- the idle prompt does not take it back.
+    var after = hooked(1, .awaiting_input, 20 * min);
+    after.idle_prompt = true;
+    after.raised_ms = 20 * min;
+    const still = classify(after, T, now);
+    try testing.expectEqual(Kind.needs_answer, still.kind);
+    try testing.expectEqual(Source.self_report, still.source);
 }
 
 test "Attention: the age is read off the last event, not the last change" {

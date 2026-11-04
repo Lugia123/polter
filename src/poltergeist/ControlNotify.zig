@@ -1,6 +1,17 @@
 //! When the control room calls the person: the system notification of
 //! dev-docs/poltergeist/control-room.md, section 9 (task 1505).
 //!
+//! ⚠️ **Out of the production path since task 2844 (2026-11-04).** The App
+//! used to call `step` and send `control_room_alert` from what it returned,
+//! which made the program decide to disturb the person from a state it
+//! deduced -- and it called again two minutes after a supervisor's own
+//! `notify_user`, so one question could arrive twice. The decision to
+//! notify the person now belongs to `notify_user` alone. The file and its
+//! tests are kept as the record of the rules that were tried; **nothing in
+//! the App calls `step` any more, and none of this is current policy.**
+//! The control room's list and counts still show waiting terminals -- that
+//! part never lived here.
+//!
 //! **Pure, apart from what it remembers.** Nothing here reads a clock, a
 //! window or the bus. The caller hands in the groups as the snapshot has
 //! them (`Row`), what the hosts said about where the person is

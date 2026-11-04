@@ -19,6 +19,7 @@ const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const ChatLog = @import("ChatLog.zig");
 const MentionRetry = @import("MentionRetry.zig");
+const notify = @import("notify.zig");
 const Plugin = @import("Plugin.zig");
 const Tasks = @import("Tasks.zig");
 const SquadStore = @import("SquadStore.zig");
@@ -630,9 +631,13 @@ pub const Request = union(Method) {
     group_project: struct { group: []const u8, action: ProjectAction },
 
     notify_user: struct {
-        /// `scheduling` or `authorisation`. The second is never held back
-        /// for quiet hours, because the terminal is stopped until it is
-        /// answered and the user may be the only one who can answer it.
+        /// `needs_user` (the name to use now: a human decision or action
+        /// the work depends on), `authorisation` (the same path, kept for
+        /// older prompts and for what plugins are handed) or `scheduling`
+        /// (a question the supervisor can settle itself). The first two
+        /// are never held back for quiet hours, because the work is
+        /// stopped until the person acts and the user may be the only one
+        /// who can. Any other word is refused as `BadReason`.
         ///
         /// ⚠️ **This used to read "because nobody may answer it for them",
         /// and `terminal_answer_prompt` made that false** for a terminal
@@ -9957,8 +9962,17 @@ fn dispatchOne(
         },
 
         .notify_user => |p| {
-            const said = host.notifyUser(alloc, p.reason, p.title, p.body, p.id, caller) catch
+            const said = host.notifyUser(alloc, p.reason, p.title, p.body, p.id, caller) catch |err| {
+                // The reason words are validated where the message is
+                // built (`App.notifyUser` → `notify.parseReason`), so a
+                // word the schema does not offer is named as such rather
+                // than reported as a failed attempt.
+                if (err == error.BadReason) return hostFailure(
+                    "BadReason",
+                    std.fmt.comptimePrint("reason must be {s}", .{notify.reason_words}),
+                );
                 return hostFailure("NotifyFailed", "could not attempt to notify");
+            };
             return .{ .text = said };
         },
 

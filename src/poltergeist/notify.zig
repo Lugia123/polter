@@ -25,6 +25,15 @@
 //! MCP authorisation prompt and the supervisor correctly refused to touch
 //! it -- and the terminal then sat there, because there was nowhere for
 //! the question to go. See `dev-docs/poltergeist/supervisor.md`.
+//!
+//! **The tool takes three words for two meanings** (task 2844).
+//! `needs_user` is what a supervisor says when the work is stopped on a
+//! human decision or action -- a design to approve, a choice, a login, a
+//! device to operate -- and it resolves to `authorisation`, the same
+//! system notification and the same `Bus.raise`. Plugins still receive
+//! `authorisation`: no published event changed. An unknown word is
+//! refused (`BadReason`) rather than quietly read as `scheduling`, which
+//! used to hold a misspelt request for a person back until morning.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -53,6 +62,76 @@ pub const Reason = enum {
         };
     }
 };
+
+/// The words `notify_user` accepts for its `reason`, in the order the tool
+/// schema lists them.
+///
+/// **`needs_user` is an alias, not a third reason.** It is what a
+/// supervisor says when the work is stopped on a human decision or action
+/// -- a design to approve, a choice only the person can make, a login, a
+/// device to operate. It means exactly what `authorisation` means to every
+/// path below, so the system notification, `Bus.raise` and the plugin
+/// event stay one code path, and **a plugin is still handed
+/// `authorisation`**: no feed event or plugin vocabulary changed.
+/// `authorisation` stays accepted because it is in older prompts and in
+/// every plugin's log. `scheduling` still means a question the supervisor
+/// can settle itself.
+///
+/// This list is the one source: the tool schema's `enum` is rendered from
+/// it (`reason_enum_json`) and `parseReason` reads it, so a word cannot be
+/// offered and then refused, or accepted while the schema hides it.
+pub const reason_names = [_][]const u8{ "needs_user", "authorisation", "scheduling" };
+
+/// `reason_names` as the `enum` array inside the tool's JSON schema.
+pub const reason_enum_json = blk: {
+    var out: []const u8 = "";
+    for (reason_names, 0..) |name, i| {
+        out = if (i == 0)
+            @as([]const u8, std.fmt.comptimePrint("\"{s}\"", .{name}))
+        else
+            @as([]const u8, std.fmt.comptimePrint("{s},\"{s}\"", .{ out, name }));
+    }
+    break :blk out;
+};
+
+/// The same words as a sentence, for a refusal that has to name them all.
+pub const reason_words = blk: {
+    var out: []const u8 = "";
+    for (reason_names, 0..) |name, i| {
+        out = if (i == 0)
+            name
+        else if (i + 1 == reason_names.len)
+            @as([]const u8, std.fmt.comptimePrint("{s} or {s}", .{ out, name }))
+        else
+            @as([]const u8, std.fmt.comptimePrint("{s}, {s}", .{ out, name }));
+    }
+    break :blk out;
+};
+
+/// The whole `notify_user` input schema, with the `reason` `enum` rendered
+/// from `reason_names` -- so the list the client is offered and the parse
+/// that runs are one list, rendered once here.
+pub const user_schema = std.fmt.comptimePrint(
+    "{{\"type\":\"object\",\"properties\":{{\"reason\":{{\"type\":\"string\",\"enum\":[{s}]}}," ++
+        "\"title\":{{\"type\":\"string\"}},\"body\":{{\"type\":\"string\"}}," ++
+        "\"id\":{{\"type\":\"string\",\"description\":\"The terminal this is about, if it is about one\"}}}}," ++
+        "\"required\":[\"reason\",\"title\"]}}",
+    .{reason_enum_json},
+);
+
+/// What `reason` a call names, or null for a word this build does not
+/// know. **An unknown word is refused**, never quietly treated as
+/// `scheduling`: that used to turn a misspelt request for a person into a
+/// question held back until morning.
+pub fn parseReason(text: []const u8) ?Reason {
+    for (reason_names) |name| {
+        if (!std.mem.eql(u8, text, name)) continue;
+        // The only split in the vocabulary: the two authorisation words
+        // are one meaning, and `scheduling` is the other.
+        return if (std.mem.eql(u8, name, "scheduling")) .scheduling else .authorisation;
+    }
+    return null;
+}
 
 /// One occasion for telling somebody something.
 pub const Event = struct {
@@ -404,6 +483,32 @@ const testing = std.testing;
 
 test {
     testing.refAllDecls(@This());
+}
+
+test "needs_user is the authorisation path, and an unknown reason is refused" {
+    try testing.expectEqual(Reason.authorisation, parseReason("needs_user").?);
+    try testing.expectEqual(Reason.authorisation, parseReason("authorisation").?);
+    try testing.expectEqual(Reason.scheduling, parseReason("scheduling").?);
+    // The alias goes out at any hour, like the prompt it stands for.
+    try testing.expect(!parseReason("needs_user").?.respectsWindow());
+
+    // A word this build does not know is refused, not read as scheduling.
+    try testing.expect(parseReason("needs_user ") == null);
+    try testing.expect(parseReason("authorization") == null);
+    try testing.expect(parseReason("") == null);
+
+    // The schema the supervisor reads is rendered from the list that is
+    // parsed, so every word it offers is accepted.
+    try testing.expectEqualStrings(
+        "\"needs_user\",\"authorisation\",\"scheduling\"",
+        reason_enum_json,
+    );
+    for (reason_names) |name| try testing.expect(parseReason(name) != null);
+
+    // The schema the client is handed embeds that same list, so a word is
+    // not offered and then refused (or accepted while hidden).
+    try testing.expect(std.mem.indexOf(u8, user_schema, reason_enum_json) != null);
+    try testing.expect(std.mem.indexOf(u8, user_schema, "\"required\":[\"reason\",\"title\"]") != null);
 }
 
 test "a window is parsed, and a broken one reads as no window" {

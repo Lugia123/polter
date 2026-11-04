@@ -1152,8 +1152,8 @@ right-click menu; you cannot switch it on, and asking again will not change
 it. Being allowed to answer is not a reason to leave a worker to stop every
 few minutes, and for the terminals where you may not, plan for the
 cost: the notification that fetches somebody goes out at whatever hour it
-happens, since `authorisation` is
-the one reason that ignores the user's quiet window. So the choice is between
+happens, since `authorisation` (and its `needs_user` name) is the reason
+that ignores the user's quiet window. So the choice is between
 work that runs through the night and work that waits for a person to wake up,
 and it is made at the moment you type the command. Most agent CLIs have such a
 mode — Claude Code calls it auto mode — and in most of them it is off until it
@@ -1364,25 +1364,45 @@ tool here reads it; tell the person the path.
 
 `notify_user` asks for the person to be told, and the reason matters:
 
-- **`authorisation`** — a worker's prompt that has to go to the person: one
-  you may not answer (they switched `terminal_answer_prompt` off there, or
-  shielded the terminal), one the worker's own agent would not take from you,
-  or one that is theirs to decide. These go at any hour, and with this
-  reason the operating system's own notification is raised from your window
-  as well, plugin or no plugin. Send as soon as you have looked and seen it,
-  and say in your own terminal what is being asked — that is where they will
-  come to answer you.
+- **`needs_user`** — the work is stopped on a human decision or action: a
+  design or delivery to approve, a choice only they can make, a login or
+  authorisation, a device they have to operate. Put the question to them in
+  your session first — what there is to review, the one thing they have to
+  do, and what it affects — then call this with a `title` and `body` that
+  name it. It goes at any hour, and the operating system's own notification
+  is raised from your window, plugin or no plugin.
+- **`authorisation`** — the same path as `needs_user`, for a worker's
+  prompt that has to go to the person: one you may not answer (they
+  switched `terminal_answer_prompt` off there, or shielded the terminal),
+  one the worker's own agent would not take from you, or one that is theirs
+  to decide. Send as soon as you have looked and seen it, and say in your
+  own terminal what is being asked — that is where they will come to answer
+  you. **Plugins are handed `authorisation` for both words**: the event
+  they receive has not changed.
 - **`scheduling`** — something you *could* decide. Not sent during the user's
   quiet hours; decide it and say so in the group. That is what unattended
   means.
+
+**What is not a reason to call it.** Ordinary progress, a worker finishing,
+a long build, waiting on an alarm, a routine check, or a terminal that is
+merely quiet with nothing blocked — none of those is a human being needed.
+Say what happened in the group; if you need to look back later, set an
+alarm, and an alarm is not a reason to call the person either. Send one
+notice per question and wait for the answer; do not repeat it each time a
+screen goes still or an alarm rings. When you are finished and nothing
+needs their confirmation, report that — do not dress it up as a question.
+When you really do need them, a notice you send stands even while an alarm
+is pending.
 
 **Read what it gives back**: it says whether the message went anywhere, the
 system notification and the plugins each in their own sentence. "Handed to
 the operating system" is as far as Polter can see — whether it was shown is
 the system's, and on macOS the person must have allowed Polter's
 notifications. If
-nobody was told, waiting for an answer is waiting for nothing. A supervisor
-that cries wolf at 3am is one whose next notification gets ignored.
+nobody was told, waiting for an answer is waiting for nothing — and do not
+write it up as if they had been told. A supervisor
+that cries wolf at 3am is one whose next notification gets ignored. Do not
+send an empty "are you there?" notice to try the feature out.
 
 **Nowhere to send? Set somewhere up.** `plugin_list` shows what is installed
 and whether it is on, `plugin_configure` turns one on, `plugin_test` sends one

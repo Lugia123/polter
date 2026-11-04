@@ -260,7 +260,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `terminal_open(cwd?, watch?)`                  | 起始目录与是否直接监督 | 新终端的 id | 仅总管   |
 | `clock_out(id, reason)`                        | 目标与理由           | ok / 拒绝原因 | 仅总管   |
 | `clock_in(id)`                                 | 目标                 | ok / 拒绝原因 | 仅总管   |
-| `notify_user(reason, title, body?, id?)`       | 类别（`scheduling` / `authorisation`）与正文 | 一句话：发布到了几条渠道 | 仅总管 |
+| `notify_user(reason, title, body?, id?)`       | 类别（`needs_user` / `authorisation` / `scheduling`；前两个同一条路）与正文 | 一句话：发布到了几条渠道 | 仅总管 |
 | `set_quiescence_threshold(id, duration)`       | 目标与时长           | ok / 拒绝原因 | 仅总管   |
 | `set_watch(id, watch?)`                        | 目标与是否监督       | ok / 拒绝原因 | 仅总管   |
 | `group_post(group, text)`                      | 群名与文本           | ok            | 成员     |

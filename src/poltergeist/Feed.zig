@@ -102,7 +102,10 @@ pub const Quiet = struct {
     n: u64 = 0,
     at_ms: i64,
 
-    /// `scheduling` or `authorisation`; see `notify.Reason`.
+    /// `scheduling` or `authorisation`; see `notify.Reason`. A
+    /// `notify_user` call with `reason: needs_user` arrives here as
+    /// `authorisation` -- it is an alias, and no feed event changed
+    /// (task 2844).
     reason: []const u8,
     title: []const u8,
     body: []const u8,

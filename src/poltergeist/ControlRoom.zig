@@ -430,9 +430,15 @@ wake_ms: ?u64,
 recomputes: u64,
 
 /// The groups' rows as of the last time the snapshot was worked out, in
-/// what the notifications need of them (`ControlNotify.Row`), in the
-/// snapshot's order. Lives in `notify_arena`; replaced on every working-out
-/// and left alone when a timer finds nothing to work out.
+/// what `ControlNotify.Row` asks of them, in the snapshot's order. Lives in
+/// `notify_arena`; replaced on every working-out and left alone when a
+/// timer finds nothing to work out.
+///
+/// ⚠️ **Nothing in production reads this since task 2844**: the App no
+/// longer calls `ControlNotify.step`, and no system notification is raised
+/// from a deduced state. It is kept (rather than deleting a type with many
+/// historical tests) so the old decision's tests still have their input;
+/// do not treat it as a notification policy.
 notify_rows: []const ControlNotify.Row,
 /// The same rows, in what a click on a notification needs of them
 /// (`groupToShow`). Lives beside them, in `notify_arena`.

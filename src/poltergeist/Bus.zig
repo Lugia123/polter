@@ -1133,7 +1133,8 @@ asks: std.AutoHashMapUnmanaged(Id, []u8) = .empty,
 pending_tools: std.AutoHashMapUnmanaged(Id, PendingToolKept) = .empty,
 
 /// What a supervisor has put in front of the person and not yet had looked
-/// at: `notify_user` with `authorisation`, by the terminal that called it.
+/// at: `notify_user` with `needs_user` (or its old name `authorisation`),
+/// by the terminal that called it.
 /// The sentence is owned; outside `Entry` for the reason `turns` is.
 raises: std.AutoHashMapUnmanaged(Id, RaiseKept) = .empty,
 
@@ -1205,7 +1206,7 @@ pub fn unregister(self: *Bus, id: Id) void {
 }
 
 /// Record that the supervisor in `id` has put something in front of the
-/// person (`notify_user`, `authorisation`): its group is one that is
+/// person (`notify_user`, `needs_user`/`authorisation`): its group is one that is
 /// waiting for them from this moment, in these words, without the minute a
 /// worker's prompt otherwise spends being the supervisor's.
 ///
@@ -2004,6 +2005,12 @@ pub fn facts(self: *const Bus, id: Id, now_ms: u64, outside: Attention.Facts.Out
         .state = e.agent.state,
         .said_by = e.agent.said_by,
         .state_since_ms = e.agent.since_ms,
+        // **Not "the detail mentions idle"**: only the awaited state whose
+        // own detail is exactly `idle_prompt` is the CLI's ready prompt.
+        // A detail left over from an earlier event, or a question
+        // (`elicitation_dialog`) in the same state, is not one.
+        .idle_prompt = e.agent.state == .awaiting_input and
+            sameText(e.agent.detail.get(), idle_prompt),
         .expected_ms = e.agent.expected_ms,
         .last_event_ms = e.agent.last_event_ms,
         .waiting_on_background = e.agent.waiting_on_background,
@@ -7785,6 +7792,29 @@ test "ControlRoom facts: everything the bus knows of a terminal, at one moment" 
     const seen = b.facts(worker, 3_000, .{ .process = .running, .seen_ms = 7, .raised_ms = 9 });
     try testing.expectEqual(@as(?u64, 7), seen.seen_ms);
     try testing.expectEqual(@as(?u64, 9), seen.raised_ms);
+}
+
+test "ControlRoom facts: only the idle prompt says the awaiting input is not a question" {
+    var b = try hookedBus();
+    defer b.deinit();
+
+    var idle = hookEv(.awaiting_input);
+    idle.detail = "idle_prompt";
+    try testing.expect(try b.agentEvent(worker, idle, 1_000));
+    const idle_facts = b.facts(worker, 2_000, .none);
+    try testing.expectEqual(AgentState.awaiting_input, idle_facts.state);
+    try testing.expect(idle_facts.idle_prompt);
+
+    // The same state, waiting on something else, is a question.
+    var asks = hookEv(.awaiting_input);
+    asks.detail = "which branch?";
+    _ = try b.agentEvent(worker, asks, 3_000);
+    try testing.expect(!b.facts(worker, 4_000, .none).idle_prompt);
+
+    // And a state that is no longer awaiting input keeps no such fact,
+    // whatever the detail slot last held.
+    _ = try b.agentEvent(worker, hookEv(.turn_started), 5_000);
+    try testing.expect(!b.facts(worker, 6_000, .none).idle_prompt);
 }
 
 test "ControlRoom facts: a sampler that failed is a failure with a time, not a still screen" {
