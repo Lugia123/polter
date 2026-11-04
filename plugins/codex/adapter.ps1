@@ -991,7 +991,7 @@ function Get-PyPercentS($v) {
 # gives `--ask-for-approval`, and whether it gives `--sandbox`.
 #
 # The three come back as `@($flags, $policy, $sandbox)`, the same shape
-# `Get-Gathered` hands three values back in. **Not `, @(,$flags), …`**: that
+# `Get-Gathered` hands three values back in. **Not `, @(,$flags), ...`**: that
 # comma wraps the list in an array of its own, so `$answer[0]` is that array
 # and `$flags[0]` is the whole `List` -- which stringified into a refusal
 # naming `System.Collections.Generic.List`1[System.Object]`, and hid the

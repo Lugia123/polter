@@ -102,6 +102,7 @@
 mod capture;
 mod chat_feed;
 mod chat_native;
+mod markdown_service;
 mod chat_read;
 mod close_scope;
 mod control_room;
@@ -3901,7 +3902,9 @@ extern "C" fn cb_action(_app: App, target: Target, action: Action) -> bool {
         }
         ACTION_SHOW_CHILD_EXITED => {
             alogf!(origin, "[action] show_child_exited");
-            true
+            // The host has no child-exit notice to show: this action is
+            // not performed here and must not tell the core it was.
+            false
         }
 
         // **A second top-level window.** Queued rather than made here for the

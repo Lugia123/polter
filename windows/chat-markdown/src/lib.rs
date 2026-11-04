@@ -12,9 +12,12 @@
 //! host. Keys and retained strings are counted by one `cost` function; a
 //! fallback caches its reason only, never a second copy of the source.
 
+use std::sync::Arc;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub mod cache;
+pub mod coordinator;
+pub mod layout;
 pub use cache::{Cache, Entry, Key};
 
 /// What one message came to.
@@ -83,8 +86,9 @@ pub struct Style {
     pub emphasis: bool,
     pub strike: bool,
     pub code: bool,
-    /// The link's destination. Metadata only: nothing is opened here.
-    pub link: Option<String>,
+    /// The link's destination, **shared**: a long URL must not be copied
+    /// once per styled run. Metadata only: nothing is opened here.
+    pub link: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,7 +541,8 @@ impl P {
             Tag::Strong => self.push_style(|s| s.strong = true),
             Tag::Strikethrough => self.push_style(|s| s.strike = true),
             Tag::Link { dest_url, .. } => {
-                self.push_style(|s| s.link = Some(dest_url.to_string()));
+                let link: Arc<str> = Arc::from(dest_url.as_ref());
+                self.push_style(move |s| s.link = Some(link.clone()));
             }
             Tag::Image { .. } => {
                 // Alt text is the image here; nothing is fetched or decoded.

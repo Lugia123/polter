@@ -7118,3 +7118,35 @@ msgstr "就绪"
 #: windows/control-room/src/tasks.rs
 msgid "Planned, not made yet"
 msgstr "计划中，尚未建立"
+
+#: windows/control-room/src/chat_rows.rs:1058
+msgid "Loading"
+msgstr "加载中"
+
+#: windows/control-room/src/chat_rows.rs:1059
+msgid "No messages yet."
+msgstr "暂无消息。"
+
+#: windows/control-room/src/chat_rows.rs:1060
+msgid "The chat could not be read."
+msgstr "无法读取群聊消息。"
+
+#: windows/control-room/src/chat_rows.rs:1061
+msgid "This chat is not available now."
+msgstr "此群聊暂不可用。"
+
+#: windows/control-room/src/chat_rows.rs:1062
+msgid "This page is too large to show."
+msgstr "此页内容过大，无法显示。"
+
+#: windows/control-room/src/chat_rows.rs:1063
+msgid "This history has expired."
+msgstr "此历史记录已过期。"
+
+#: windows/control-room/src/chat_rows.rs:1064
+msgid "This build cannot show the chat."
+msgstr "此版本无法显示群聊。"
+
+#: windows/control-room/src/chat_rows.rs:1065
+msgid "This message could not be measured."
+msgstr "无法计算此消息的显示尺寸。"

@@ -104,6 +104,95 @@ SWIFT_RULES = [
 ]
 
 
+# -- the exact exceptions -----------------------------------------------------
+#
+# Each key is **(path relative to the repository, rule name, the stripped code
+# line as the scanner sees it)**. The value is how many times that exact line
+# may appear and why it is not a decision about the snapshot:
+#
+#   * `chat_rows.rs` counts `rows` that are the host's **own laid-out page**
+#     (`RowBox`): capacity, the viewport scan's first/last index and its
+#     clamp. They size and walk what is drawn; they are not the number of
+#     `snapshot.groups` or `waiting` rows.
+#   * `ControlRoomChatFeed.swift`'s `rows` are the macOS feed's bounded
+#     in-memory window; the count is its eviction bound, not a group total.
+#   * `ControlRoomChatMarkdown*.swift`'s `kind` is the **local Markdown
+#     model** (`ListKind`, `OpenKind`, paragraph/item kinds) built while
+#     laying out a message, and `ControlRoomChatMarkdownView`'s `.ordered`
+#     is a list marker's style. None of them is the core snapshot's group
+#     `kind` or a group decision.
+#
+# An entry only exempts that exact (path, rule, line). The same line at any
+# other path, or under another rule, is still reported; a new copy of a line
+# past its count is reported; and an entry the current tree no longer matches
+# fails the run so it is removed rather than kept as a dead exemption.
+EXCEPTIONS = {
+    ("windows/control-room/src/chat_rows.rs", "counts rows",
+     "let mut out: Vec<RowBox> = Vec::with_capacity(rows.len());"):
+        (3, "capacity of the host's own laid-out RowBox page, not snapshot groups"),
+    ("windows/control-room/src/chat_rows.rs", "counts rows",
+     "let mut cache: Vec<Cached> = Vec::with_capacity(rows.len());"):
+        (1, "measurement cache sized to the rows being laid out"),
+    ("windows/control-room/src/chat_rows.rs", "counts rows",
+     "let mut first = self.rows.len();"):
+        (1, "start of the viewport scan over the host's own RowBox page"),
+    ("windows/control-room/src/chat_rows.rs", "counts rows",
+     "if first >= self.rows.len() {"):
+        (1, "the viewport scan's end bound, not a number shown"),
+    ("windows/control-room/src/chat_rows.rs", "counts rows",
+     "let last = (last + 1).min(self.rows.len());"):
+        (1, "clamping the viewport scan's last index"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift", "counts rows",
+     "while rows.count > Self.windowLimit || bytes > Self.windowBytes {"):
+        (1, "the macOS feed's bounded in-memory window eviction, not a group total"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdown.swift",
+     "reads the core's kind", "var kind: ListKind"):
+        (1, "local Markdown list kind while laying a message out, not the snapshot's group kind"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdown.swift",
+     "reads the core's kind", "switch component.kind {"):
+        (1, "dispatching on the local Markdown component model, not a snapshot group"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdown.swift",
+     "reads the core's kind", "var kind: OpenKind"):
+        (1, "local Markdown open-block kind while laying a message out"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdown.swift",
+     "reads the core's kind", "switch open.kind {"):
+        (1, "dispatching on the local Markdown open-block model, not a snapshot group"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdown.swift",
+     "reads the core's kind",
+     "if var current = open, case .paragraph = current.kind, current.key == noContainer {"):
+        (1, "local Markdown paragraph kind while laying a message out"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatMarkdownView.swift",
+     "reads the core's kind",
+     'Text(item.kind == .ordered ? "\\(item.ordinal)." : "\u2022")'):
+        (1, "local Markdown list marker style (.ordered), not a snapshot group kind"),
+}
+
+
+def exception_key(path, what, line):
+    return (os.path.relpath(path, ROOT).replace(os.sep, "/"), what, line)
+
+
+def is_exempt(path, what, line, used):
+    """Whether this exact hit is allowed, counting occurrences as it goes."""
+    key = exception_key(path, what, line)
+    entry = EXCEPTIONS.get(key)
+    if entry is None:
+        return False
+    used[key] = used.get(key, 0) + 1
+    return used[key] <= entry[0]
+
+
+def stale_exceptions(used):
+    """Entries the tree no longer matches exactly, or matches too rarely."""
+    out = []
+    for key, (want, why) in EXCEPTIONS.items():
+        got = used.get(key, 0)
+        if got != want:
+            out.append(f"{key[0]}: rule {key[1]!r} line {key[2]!r} matched {got}, "
+                       f"expected {want} ({why}); remove or correct the exception")
+    return out
+
+
 def strip_rust(text):
     """Code only: no comments, no string contents except field names, no test modules."""
     # A `#[cfg(test)] mod … { … }` at the end of a file is the convention here.
@@ -195,6 +284,38 @@ def self_test():
                 if hit != want:
                     return (f"self-test: `{line}` was {'caught' if hit else 'not caught'}, "
                             f"and should {'not ' if not want else ''}have been")
+
+    # **The exceptions are exact (path, rule, line)**, not a shape and not a
+    # file. The same line at a scratch path is still reported; each entry
+    # must match its own current source exactly as many times as it says,
+    # under its own rule, and under no other.
+    with tempfile.TemporaryDirectory() as d:
+        for (rel, what, line), (want, _) in EXCEPTIONS.items():
+            is_rust = rel.endswith(".rs")
+            rules = RUST_RULES if is_rust else SWIFT_RULES
+            strip = strip_rust if is_rust else strip_swift
+            scratch = os.path.join(d, "rows.rs" if is_rust else "rows.swift")
+            with open(scratch, "w", encoding="utf-8") as f:
+                f.write(line + "\n")
+            hits = scan(scratch, rules, strip)
+            if not hits or hits[0][1] != what:
+                return (f"self-test: exception line {line!r} is not caught under "
+                        f"{what!r} at a scratch path")
+            if is_exempt(scratch, what, line, {}):
+                return (f"self-test: the scratch path was exempted for {line!r}")
+            real = os.path.join(ROOT, rel)
+            real_hits = scan(real, rules, strip)
+            got = sum(1 for (_, w, l) in real_hits if w == what and l == line)
+            if got != want:
+                return (f"self-test: {rel}: {line!r} matched {got} as {what!r}, "
+                        f"expected {want}; the exception is stale or too wide")
+            if not is_exempt(real, what, line, {}):
+                return (f"self-test: {rel}: {line!r} is not exempt at its own path")
+            for other, _ in rules:
+                if other == what:
+                    continue
+                if is_exempt(real, other, line, {}):
+                    return (f"self-test: {rel}: {line!r} is exempt under {other!r} too")
     return None
 
 
@@ -209,37 +330,70 @@ def files(patterns):
     return out
 
 
+def subject_problem(rust, swift):
+    """Refuse before reading: an empty tree or an exception naming a file
+    that is not there is a missing subject, not a clean run."""
+    if not rust and not swift:
+        return ("scanned 0 files -- no control-room host sources were found, "
+                "so nothing was checked")
+    missing = [
+        rel for (rel, _, _) in EXCEPTIONS
+        if not os.path.isfile(os.path.join(ROOT, rel))
+    ]
+    if missing:
+        return f"missing subject {missing[0]} (an exception names a file that is not there)"
+    return None
+
+
 def main():
-    problem = self_test()
+    rust = files(RUST_GLOBS)
+    swift = files(SWIFT_GLOBS)
+    subject = subject_problem(rust, swift)
     if "--self-test" in sys.argv:
+        if subject:
+            print(f"FAIL: {subject}")
+            return 1
+        problem = self_test()
         print(problem or "self-test: each planted offender is caught, each allowed spelling is not")
         return 1 if problem else 0
+    if subject:
+        print(f"FAIL: {subject}")
+        return 1
+    problem = self_test()
     if problem:
         print(f"FAIL: {problem}")
         return 1
 
-    rust = files(RUST_GLOBS)
-    swift = files(SWIFT_GLOBS)
-    if not rust and not swift:
-        print("FAIL: scanned 0 files -- no control-room host sources were found, "
-              "so nothing was checked")
-        return 1
-
     bad = 0
+    exempted = 0
+    used = {}
     for path, rules, strip in [(p, RUST_RULES, strip_rust) for p in rust] + \
                               [(p, SWIFT_RULES, strip_swift) for p in swift]:
         for n, what, line in scan(path, rules, strip):
+            if is_exempt(path, what, line, used):
+                exempted += 1
+                continue
             bad += 1
             print(f"{os.path.relpath(path, ROOT)}:{n}: {what}: {line}")
 
+    stale = stale_exceptions(used)
     print(f"scanned {len(rust) + len(swift)} files ({len(rust)} Rust, {len(swift)} Swift)")
-    if bad:
-        print(f"FAIL: {bad} line(s) where a host decides what the snapshot already says. "
-              "Read the field the core sends (`shown`, `text`, `needs_me`, `waiter`, "
-              "`groups_needing_me`, `groups_other`, the order of `groups` and `pulses`) "
-              "instead of working it out.")
+    print(f"{exempted} exact exception line(s) matched the table")
+    if stale:
+        for line in stale:
+            print(f"STALE: {line}")
+    if bad or stale:
+        if bad:
+            print(f"FAIL: {bad} line(s) where a host decides what the snapshot already says. "
+                  "Read the field the core sends (`shown`, `text`, `needs_me`, `waiter`, "
+                  "`groups_needing_me`, `groups_other`, the order of `groups` and `pulses`) "
+                  "instead of working it out.")
+        if stale:
+            print("FAIL: the exception table does not match the tree exactly; "
+                  "each entry must hit its own current line and no more.")
         return 1
-    print("OK: no host compares a kind, counts rows, or sorts them")
+    print("OK: no host compares a kind, counts rows, or sorts them, "
+          "apart from the exact layout/Markdown lines listed")
     return 0
 
 

@@ -161,7 +161,12 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "host", "src"))
 #                 terminal, and only its surface says which pane goes.
 #  30 (task 2039): ACTION_SHOW_CHILD_EXITED joined. A chat's program
 #                 ended, and only its surface says which chat.
-MIN_CARRYING_ARMS = 30
+#  The floor is 29 now: that 30th arm handed its surface to the old TUI
+#  `chat_page`, which fbae removed entirely. The host has no child-exit
+#  notification to show, and the arm answers false today (see
+#  ACTION_SHOW_CHILD_EXITED in main.rs), so this path no longer carries a
+#  surface into a notification and must not be counted.
+MIN_CARRYING_ARMS = 29
 
 # The notifications that carry no address **today**, by `TAG -> module::fn`.
 #

@@ -208,6 +208,11 @@ path = "../settings-shell"
 [dependencies.polter-control-room]
 path = "../control-room"
 
+# A message's text as Markdown blocks (task 2802, W3a/W3b). Parsing only,
+# in its own crate so it is tested off Windows too.
+[dependencies.polter-chat-markdown]
+path = "../chat-markdown"
+
 # Where this host's own logs go and which of them may be deleted (task 1510).
 # Out here so the cleanup rule has tests that run on the Mac.
 [dependencies.polter-hostlog]

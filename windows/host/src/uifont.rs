@@ -49,6 +49,16 @@ pub fn menu_px(dpi: i32) -> i32 {
 /// A font `px` tall at 96 DPI, scaled to `dpi`, and never smaller than the
 /// menu's.
 pub fn make(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
+    make_styled(dpi, px, weight, false, face)
+}
+
+/// The same font, slanted: the emphasis face. The italic flag is part of
+/// the font the plan measures and draws with, not a second guess at paint.
+pub fn make_italic(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
+    make_styled(dpi, px, weight, true, face)
+}
+
+fn make_styled(dpi: i32, px: i32, weight: i32, italic: bool, face: PCWSTR) -> HFONT {
     let height = polter_settings_shell::text_px(px, dpi, menu_px(dpi));
     unsafe {
         CreateFontW(
@@ -57,7 +67,7 @@ pub fn make(dpi: i32, px: i32, weight: i32, face: PCWSTR) -> HFONT {
             0,
             0,
             weight,
-            0,
+            italic as u32,
             0,
             0,
             DEFAULT_CHARSET,

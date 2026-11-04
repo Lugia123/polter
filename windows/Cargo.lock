@@ -123,6 +123,7 @@ version = "0.1.0"
 name = "polter-host"
 version = "0.1.0"
 dependencies = [
+ "polter-chat-markdown",
  "polter-cliargs",
  "polter-control-room",
  "polter-droppath",

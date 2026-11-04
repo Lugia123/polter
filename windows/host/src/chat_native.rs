@@ -28,16 +28,21 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, SelectObject,
-    SetBkMode, SetTextColor, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HDC,
-    PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC, GetTextMetricsW,
+    IntersectClipRect, InvalidateRect, ReleaseDC, RestoreDC, SaveDC, SelectObject, SetBkMode,
+    SetTextColor, DT_CALCRECT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HDC, HFONT,
+    PAINTSTRUCT, TEXTMETRICW, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, SetFocus, VK_END, VK_HOME, VK_NEXT, VK_PRIOR,
+    GetCapture, GetFocus, ReleaseCapture, SetCapture, SetFocus, VK_END, VK_HOME, VK_LEFT, VK_NEXT,
+    VK_PRIOR, VK_RIGHT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use polter_chat_markdown::cache::Key as MdKey;
+use polter_chat_markdown::coordinator::{Completion, Owner};
+use polter_chat_markdown::layout::{self as md_layout, Face, FontKind, Fonts, Inputs, Plan};
 use polter_control_room::look;
 use polter_split_tree::Rect as TreeRect;
 
@@ -46,7 +51,7 @@ use crate::chat_read::{self, Transport, TransportError};
 use crate::ffi::Surface;
 use crate::{plogf, wlogf};
 use polter_control_room::chat_rows::{
-    self, FontKey, MeasureError, Measured, Metrics, RowInput, Sight,
+    self, FontKey, MeasureError, Measured, Metrics, RowIdentity, RowInput, Sight,
 };
 
 /// The most kept open at once.
@@ -76,7 +81,73 @@ struct Chat {
     layout: chat_rows::Layout,
     /// Pixels scrolled down from the first row.
     scroll: i32,
+    /// **This view's own identity**, not its HWND: a handle can be reused,
+    /// and a late Markdown answer must not land in whatever holds it next.
+    view: u64,
+    /// Measured plans for the messages in sight, and the width/DPI/font
+    /// they were measured for. **Bounded by what is on screen**: an entry
+    /// whose message left, or whose document left the cache, is dropped
+    /// and its `Arc` released.
+    plans: Vec<ViewPlan>,
+    plan_width: i32,
+    plan_dpi: i32,
+    plan_font: u64,
+    /// The block whose horizontal view the keyboard owns, and the mouse
+    /// drag. Both bind the **complete message/plan identity** and a block;
+    /// never a screen position or a reused block number alone.
+    hfocus: Option<chat_rows::DragTarget>,
+    hdrag: chat_rows::DragState,
 }
+
+/// One measured message.
+struct ViewPlan {
+    /// The feed's stable row id. **Not the canonical anchor**: a live row
+    /// keeps its `l:` id when history later names it by its `p:` anchor.
+    row_id: String,
+    group: String,
+    generation: u64,
+    /// The canonical anchor this plan's Markdown key used.
+    anchor: String,
+    version: u64,
+    doc_ptr: usize,
+    /// The width/DPI/font this plan was measured for. Paint compares them
+    /// with its own current values, so a resize before the next tick
+    /// cannot draw an old plan at a new size.
+    width: i32,
+    dpi: i32,
+    font: u64,
+    /// Held only while this message is in sight.
+    doc: std::sync::Arc<polter_chat_markdown::Document>,
+    plan: std::sync::Arc<Plan>,
+    /// **Horizontal offsets by block index**, this message's tables and
+    /// code blocks, independent of each other. Kept with the plan: a new
+    /// document is a new plan, and a row that leaves sight drops both --
+    /// the identity is the message, never a screen position.
+    hscroll: Vec<(usize, i32)>,
+}
+
+impl ViewPlan {
+    fn hoffset(&self, block: usize) -> i32 {
+        self.hscroll
+            .iter()
+            .find(|(b, _)| *b == block)
+            .map_or(0, |(_, o)| *o)
+    }
+
+    fn set_hoffset(&mut self, block: usize, offset: i32) {
+        let Some(horiz) = self.plan.horizontal(block) else {
+            return;
+        };
+        let offset = horiz.clamp(offset);
+        if let Some(slot) = self.hscroll.iter_mut().find(|(b, _)| *b == block) {
+            slot.1 = offset;
+        } else {
+            self.hscroll.push((block, offset));
+        }
+    }
+}
+
+static NEXT_VIEW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The child window's tick: one ordinary read at most, and only while the
 /// page is active.
@@ -131,8 +202,42 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSEWHEEL => {
             let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
             let line = Metrics::for_dpi(crate::dpi_for(hwnd) as i32).line;
-            // Three lines a notch, as the control room's list scrolls.
+            // Three lines a notch, as the control room's list scrolls. The
+            // wheel is the page's vertical scroll only: a table's own
+            // horizontal rail never takes it.
             scroll_by(hwnd, (delta / 120) * line * 3);
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let x = (lp.0 & 0xFFFF) as i16 as i32;
+            let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+            hscroll_press(hwnd, x, y);
+            // **A click is how the person says "keys go here".** This is
+            // the same entry a terminal pane's click uses; its CHATS borrow
+            // has ended above, so the keyboard can move now.
+            take_keyboard(hwnd);
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let x = (lp.0 & 0xFFFF) as i16 as i32;
+            if hscroll_drag(hwnd, x) {
+                LRESULT(0)
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+            }
+        }
+        WM_LBUTTONUP => {
+            hscroll_end(hwnd);
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // The mouse was taken away mid-drag: forget only our own drag
+            // and focus; the other window's capture is not ours to release.
+            hscroll_capture_lost(hwnd);
+            LRESULT(0)
+        }
+        WM_CANCELMODE => {
+            hscroll_cancel(hwnd);
             LRESULT(0)
         }
         WM_KEYDOWN => {
@@ -141,6 +246,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
             let page = (client.bottom - client.top - metrics.pad * 2).max(metrics.line);
             match wp.0 as u16 {
+                key if key == VK_LEFT.0 => {
+                    hscroll_key(hwnd, -metrics.line * 2);
+                    LRESULT(0)
+                }
+                key if key == VK_RIGHT.0 => {
+                    hscroll_key(hwnd, metrics.line * 2);
+                    LRESULT(0)
+                }
                 key if key == VK_PRIOR.0 => {
                     scroll_by(hwnd, page);
                     LRESULT(0)
@@ -335,6 +448,13 @@ fn create(frame: HWND, group: &str, r: TreeRect) -> Option<Chat> {
         pending_cancel: None,
         layout: chat_rows::Layout::new(),
         scroll: 0,
+        view: NEXT_VIEW.fetch_add(1, Ordering::Relaxed),
+        plans: Vec::new(),
+        plan_width: 0,
+        plan_dpi: 0,
+        plan_font: 0,
+        hfocus: None,
+        hdrag: chat_rows::DragState::default(),
     })
 }
 
@@ -345,6 +465,10 @@ fn close(mut chat: Chat, why: &str) {
     // **A window that goes takes its reading with it**: the feed is
     // stopped before the window dies, and a known job is cancelled.
     let mut cancels: Vec<String> = Vec::new();
+    let leave = chat.feed.as_ref().map(|feed| Owner {
+        view: chat.view,
+        epoch: feed.generation(),
+    });
     if let Some(pending) = chat.pending_cancel.take() {
         cancels.push(pending);
     }
@@ -364,6 +488,9 @@ fn close(mut chat: Chat, why: &str) {
     }
     for request in cancels {
         let _ = send_request(&request);
+    }
+    if let Some(owner) = leave {
+        crate::markdown_service::leave(owner);
     }
 }
 
@@ -413,6 +540,9 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
     let mut hide: Vec<isize> = Vec::new();
     let mut gone: Vec<Chat> = Vec::new();
     let mut cancels: Vec<String> = Vec::new();
+    let mut leaves: Vec<Owner> = Vec::new();
+    let mut release_input: Vec<isize> = Vec::new();
+    let mut repaint: Vec<isize> = Vec::new();
     let now = now_ms();
     CHATS.with(|c| {
         let mut c = c.borrow_mut();
@@ -447,6 +577,25 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                         // a known job is cancelled once. A cancel the feed
                         // already owed is drained here too: after the timer
                         // is killed no tick will come for it.
+                        if let Some(feed) = x.feed.as_ref() {
+                            leaves.push(Owner {
+                                view: x.view,
+                                epoch: feed.generation(),
+                            });
+                        }
+                        // **A page nobody sees keeps no plans or document
+                        // Arcs**; showing it again publishes fresh ones.
+                        x.plans.clear();
+                        // A drag or focus bound to one of those plans is
+                        // cancelled; both requested effects come back and
+                        // are executed after the borrow.
+                        let action = chat_rows::cancel_input(&mut x.hdrag, &mut x.hfocus);
+                        if action.release_own_capture {
+                            release_input.push(x.hwnd);
+                        }
+                        if action.invalidate {
+                            repaint.push(x.hwnd);
+                        }
                         if let Some(pending) = x.pending_cancel.take() {
                             cancels.push(pending);
                         }
@@ -480,6 +629,17 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
     // time, never inside the state machine's own bookkeeping.
     for request in cancels {
         let _ = send_request(&request);
+    }
+    // And the Markdown demand of a page nobody can see any more is
+    // withdrawn outside the borrow.
+    for owner in leaves {
+        crate::markdown_service::leave(owner);
+    }
+    for hwnd in release_input {
+        release_own_capture(HWND(hwnd as *mut c_void));
+    }
+    for hwnd in repaint {
+        let _ = unsafe { InvalidateRect(Some(HWND(hwnd as *mut c_void)), None, false) };
     }
 
     // A hidden chat with the keyboard in it gives it to the panel first.
@@ -636,9 +796,11 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             return;
         };
         let Chat {
+            group,
             feed,
             layout,
             scroll,
+            plans,
             ..
         } = chat;
         let Some(feed) = feed.as_ref() else {
@@ -648,58 +810,6 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
         let left = client.left + metrics.pad;
         let width = (client.right - client.left - metrics.pad * 2).max(1);
         let view_h = (client.bottom - client.top - metrics.pad * 2).max(1);
-
-        // The rows as the layout wants them: the feed's own stable id and
-        // content version, and the words as written.
-        let inputs: Vec<RowInput<'_>> = feed
-            .rows()
-            .iter()
-            .map(|row| {
-                let author = if row.message.author.is_empty() {
-                    row.message.from.as_str()
-                } else {
-                    row.message.author.as_str()
-                };
-                RowInput {
-                    id: row.id.as_str(),
-                    version: row.message.content_version,
-                    author,
-                    text: row.message.text.as_str(),
-                }
-            })
-            .collect();
-
-        // **An update keeps the reader where they were**: the row at the
-        // top and its pixel offset are remembered before the body changes
-        // and looked up again after, by id -- never by index.
-        // The `PCWSTR` must outlive the slice borrowed from it: bind the
-        // handle first (E0716 when the temporary was borrowed directly).
-        let face_holder = crate::uifont::ui_face();
-        let force = unsafe { face_holder.as_wide() };
-        let key = FontKey {
-            dpi: dpi as i32,
-            // **The size the font was actually made at**, including the
-            // system menu floor `uifont::make` applies.
-            size_px: polter_settings_shell::text_px(
-                look::font::BODY.round() as i32,
-                dpi as i32,
-                crate::uifont::menu_px(dpi as i32),
-            ),
-            weight: look::font::WEIGHT_BODY.round() as i32,
-            face: String::from_utf16_lossy(force),
-        };
-        let anchor = layout.anchor(*scroll).map(|(id, off)| (id.to_owned(), off));
-        let changed = layout.update_measured(&inputs, width, &metrics, &key, &mut |row, w| {
-            measure_row(dc, row.author, row.text, w)
-        });
-        if changed {
-            if let Some((id, off)) = anchor {
-                if let Some(at) = layout.scroll_for(&id, off) {
-                    *scroll = at;
-                }
-            }
-        }
-        *scroll = layout.clamp(*scroll, view_h);
 
         let mut top = client.top + metrics.pad;
         // **Loading is not empty, and a raw code is not product copy.** The
@@ -764,7 +874,59 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
                         theme.text_secondary,
                     );
                 } else {
-                    draw_block(dc, &row.message.text, left, text_top, width, text_bottom);
+                    // **Paint consumes a plan the tick measured** (B2):
+                    // never lays text out here. Anything without one --
+                    // pending, fallback, evicted -- keeps the verified
+                    // original-text path.
+                    // **Only a plan matching the published height is
+                    // drawn**: a stale or raw row shows its original text
+                    // inside the published rectangle, clipped to the row
+                    // and the window.
+                    let row_bottom = text_bottom.min(client.bottom).max(text_top);
+                    // **The plan's own metadata must be current**: a
+                    // resize or DPI move before the next tick leaves the
+                    // old plan in the list, and it must not be drawn at
+                    // the new size. Look up by the feed's stable row id,
+                    // then let the published identity decide.
+                    let font_id = plan_font_id(dpi as i32);
+                    let found = plans.iter().find(|p| {
+                        p.row_id == row.id
+                            && p.anchor == row.message.anchor
+                            && p.version == row.message.content_version
+                            && p.group == *group
+                            && p.generation == feed.generation()
+                            && p.width == width
+                            && p.dpi == dpi as i32
+                            && p.font == font_id
+                    });
+                    let current = found.map(|entry| chat_rows::Identity {
+                        group: group.clone(),
+                        generation: feed.generation(),
+                        anchor: row.message.anchor.clone(),
+                        version: row.message.content_version,
+                        doc: entry.doc_ptr,
+                        width,
+                        dpi: dpi as i32,
+                        font: font_id,
+                    });
+                    match found {
+                        Some(entry) if current.is_some_and(|c| measured.draws(&c)) => draw_plan(
+                            dc,
+                            &entry.doc,
+                            &entry.plan,
+                            &entry.hscroll,
+                            dpi as i32,
+                            text_top,
+                            left,
+                            client.right,
+                            width,
+                            row_bottom,
+                            *theme,
+                        ),
+                        _ => {
+                            draw_block(dc, &row.message.text, left, text_top, width, row_bottom)
+                        }
+                    }
                 }
             }
         }
@@ -844,6 +1006,352 @@ fn draw_author(
     }
 }
 
+/// The faces a message plan draws with, made from the page's own fonts.
+struct PlanFonts {
+    body: windows::Win32::Graphics::Gdi::HFONT,
+    strong: windows::Win32::Graphics::Gdi::HFONT,
+    emphasis: windows::Win32::Graphics::Gdi::HFONT,
+    code: windows::Win32::Graphics::Gdi::HFONT,
+    fonts: Fonts,
+}
+
+fn face_of(dc: HDC, font: windows::Win32::Graphics::Gdi::HFONT) -> Face {
+    unsafe {
+        let old = SelectObject(dc, font.into());
+        let mut tm = windows::Win32::Graphics::Gdi::TEXTMETRICW::default();
+        let _ = windows::Win32::Graphics::Gdi::GetTextMetricsW(dc, &mut tm);
+        SelectObject(dc, old);
+        Face {
+            ascent: tm.tmAscent as i32,
+            descent: tm.tmDescent as i32,
+        }
+    }
+}
+
+fn plan_fonts(dc: HDC, dpi: i32) -> PlanFonts {
+    let make = |weight: f64, mono: bool, italic: bool| {
+        let face = if mono {
+            crate::uifont::mono_face()
+        } else {
+            crate::uifont::ui_face()
+        };
+        let px = look::font::BODY.round() as i32;
+        if italic {
+            crate::uifont::make_italic(dpi, px, weight as i32, face)
+        } else {
+            crate::uifont::make(dpi, px, weight as i32, face)
+        }
+    };
+    let body = make(look::font::WEIGHT_BODY, false, false);
+    let strong = make(look::font::WEIGHT_STRONG, false, false);
+    let emphasis = make(look::font::WEIGHT_BODY, false, true);
+    let code = make(look::font::WEIGHT_BODY, true, false);
+    let fonts = Fonts {
+        body: face_of(dc, body),
+        strong: face_of(dc, strong),
+        emphasis: face_of(dc, emphasis),
+        code: face_of(dc, code),
+    };
+    PlanFonts {
+        body,
+        strong,
+        emphasis,
+        code,
+        fonts,
+    }
+}
+
+fn plan_font(fonts: &PlanFonts, kind: FontKind) -> windows::Win32::Graphics::Gdi::HFONT {
+    match kind {
+        FontKind::Body => fonts.body,
+        FontKind::Strong => fonts.strong,
+        FontKind::Emphasis => fonts.emphasis,
+        FontKind::Code => fonts.code,
+    }
+}
+
+fn measure_in(dc: HDC, font: windows::Win32::Graphics::Gdi::HFONT, text: &str) -> i32 {
+    unsafe {
+        let old = SelectObject(dc, font.into());
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut size = windows::Win32::Foundation::SIZE::default();
+        let _ = crate::gdi_text::get_text_extent_point32_w(dc, &wide, &mut size);
+        SelectObject(dc, old);
+        size.cx
+    }
+}
+
+/// **Plan and draw one message from its parsed document.** The rectangles
+/// here are the ones the plan produced; the host does no second wrap. Styles
+/// choose the face; a wide table or long code line is clipped for now --
+/// its own horizontal view arrives with the rest of B2.
+fn draw_plan(
+    dc: HDC,
+    doc: &polter_chat_markdown::Document,
+    plan: &Plan,
+    hscroll: &[(usize, i32)],
+    dpi: i32,
+    top: i32,
+    left: i32,
+    right: i32,
+    width: i32,
+    bottom: i32,
+    theme: look::Theme,
+) {
+    let fonts = plan_fonts(dc, dpi);
+    let handle_h = md_layout::handle_height(dpi as f64 / 96.0);
+    unsafe {
+        let saved = SaveDC(dc);
+        let clip_bottom = bottom.min(top.saturating_add(plan.height.max(1))).max(top);
+        IntersectClipRect(dc, left, top, right, clip_bottom);
+        for (block_index, block) in plan.blocks.iter().enumerate() {
+            let block_top = top.saturating_add(block.rect.y);
+            let horiz = plan.horizontal(block_index);
+            let off = hscroll
+                .iter()
+                .find(|(b, _)| *b == block_index)
+                .map_or(0, |(_, o)| *o);
+            let draw_left = left.saturating_sub(off);
+            let block_saved = SaveDC(dc);
+            if horiz.is_some() {
+                // **Only this block moves horizontally**, and only inside
+                // its own rectangle: the page's vertical clip stays.
+                let block_bottom = block_top
+                    .saturating_add(block.rect.h)
+                    .min(clip_bottom)
+                    .max(block_top);
+                IntersectClipRect(dc, left, block_top, left + width.max(1), block_bottom);
+            }
+            match &block.kind {
+                md_layout::BlockKind::Rule => {
+                    let brush = CreateSolidBrush(crate::control_room::rgb(theme.text_secondary));
+                    let r = windows::Win32::Foundation::RECT {
+                        left,
+                        top: block_top,
+                        right: left + width,
+                        bottom: block_top + 1,
+                    };
+                    FillRect(dc, &r, brush);
+                    let _ = DeleteObject(brush.into());
+                }
+                md_layout::BlockKind::Table => {
+                    // **By the source block index, never by the compact
+                    // `tables` position**: those differ whenever a table
+                    // is not the first block.
+                    let Some(table) = plan.table_at(block_index) else {
+                        let _ = RestoreDC(dc, block_saved);
+                        continue;
+                    };
+                    let Some(polter_chat_markdown::Block::Table(src)) = doc.blocks.get(table.block)
+                    else {
+                        let _ = RestoreDC(dc, block_saved);
+                        continue;
+                    };
+                    let head_brush = CreateSolidBrush(crate::control_room::rgb(theme.surface_row));
+                    for cell in &table.header {
+                        let r = windows::Win32::Foundation::RECT {
+                            left: draw_left + cell.rect.x,
+                            top: top + cell.rect.y,
+                            right: draw_left + cell.rect.x + cell.rect.w.max(1),
+                            bottom: top + cell.rect.y + cell.rect.h.max(1),
+                        };
+                        let _ = FillRect(dc, &r, head_brush);
+                    }
+                    let _ = DeleteObject(head_brush.into());
+                    for (c, cell) in table.header.iter().enumerate() {
+                        let runs = src.header.get(c).map_or(&[][..], |r| r.as_slice());
+                        for line in &cell.lines {
+                            for piece in &line.pieces {
+                                draw_piece(
+                                    dc,
+                                    &fonts,
+                                    piece,
+                                    runs,
+                                    table_top(&table.block, top),
+                                    draw_left,
+                                    theme,
+                                );
+                            }
+                        }
+                    }
+                    for (ri, row) in table.rows.iter().enumerate() {
+                        for (c, cell) in row.iter().enumerate() {
+                            let runs = src
+                                .rows
+                                .get(ri)
+                                .and_then(|r| r.get(c))
+                                .map_or(&[][..], |r| r.as_slice());
+                            for line in &cell.lines {
+                                for piece in &line.pieces {
+                                    draw_piece(
+                                        dc,
+                                        &fonts,
+                                        piece,
+                                        runs,
+                                        table_top(&table.block, top),
+                                        draw_left,
+                                        theme,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if let Some((text, rect)) = &block.prefix {
+                        let mut wide: Vec<u16> = text.encode_utf16().collect();
+                        let mut r = windows::Win32::Foundation::RECT {
+                            left: left + rect.x,
+                            top: top + rect.y,
+                            right: left + rect.x + rect.w.max(1),
+                            bottom: top + rect.y + rect.h,
+                        };
+                        SetTextColor(dc, crate::control_room::rgb(theme.text_secondary));
+                        SelectObject(dc, fonts.body.into());
+                        let _ = crate::gdi_text::draw_text_w(
+                            dc,
+                            &mut wide,
+                            &mut r,
+                            DrawTextFlags::single_line(),
+                        );
+                    }
+                    let runs = match doc.blocks.get(block_index) {
+                        Some(polter_chat_markdown::Block::Paragraph(r))
+                        | Some(polter_chat_markdown::Block::Heading { runs: r, .. })
+                        | Some(polter_chat_markdown::Block::Quote { runs: r, .. }) => r.as_slice(),
+                        Some(polter_chat_markdown::Block::ListItem(i)) => i.runs.as_slice(),
+                        Some(polter_chat_markdown::Block::Code { text, .. }) => {
+                            // A code plan's line is the whole line; its
+                            // piece range indexes the block's text.
+                            let _ = text;
+                            &[][..]
+                        }
+                        _ => &[][..],
+                    };
+                    let code_text = match doc.blocks.get(block_index) {
+                        Some(polter_chat_markdown::Block::Code { text, .. }) => Some(text.as_str()),
+                        _ => None,
+                    };
+                    if code_text.is_some() {
+                        let brush = CreateSolidBrush(crate::control_room::rgb(theme.surface_row));
+                        let r = windows::Win32::Foundation::RECT {
+                            left,
+                            top: top + block.rect.y,
+                            right: left + width.max(1),
+                            bottom: top + block.rect.y + block.rect.h.max(1),
+                        };
+                        let _ = FillRect(dc, &r, brush);
+                        let _ = DeleteObject(brush.into());
+                    }
+                    for line in &block.lines {
+                        for piece in &line.pieces {
+                            if let Some(code) = code_text {
+                                let slice = code.get(piece.text.clone()).unwrap_or("");
+                                draw_text_slice(
+                                    dc,
+                                    &fonts,
+                                    piece,
+                                    slice,
+                                    top,
+                                    draw_left,
+                                    theme,
+                                );
+                            } else {
+                                draw_piece(dc, &fonts, piece, runs, block_top, draw_left, theme);
+                            }
+                        }
+                    }
+                }
+            }
+            // **Each scrollable block owns a visible rail and thumb**, at
+            // the same rectangles the mouse drags.
+            if let Some(horiz) = horiz {
+                let rect = md_layout::Rect {
+                    x: 0,
+                    y: block.rect.y,
+                    w: width.max(1),
+                    h: block.rect.h,
+                };
+                let (track, thumb) = horiz.thumb(rect, handle_h, off);
+                let rail_brush =
+                    CreateSolidBrush(crate::control_room::rgb(theme.text_tertiary));
+                let rail = windows::Win32::Foundation::RECT {
+                    left: left + track.x,
+                    top: top + track.y,
+                    right: left + track.x + track.w,
+                    bottom: top + track.y + track.h,
+                };
+                let _ = FillRect(dc, &rail, rail_brush);
+                let _ = DeleteObject(rail_brush.into());
+                let thumb_brush =
+                    CreateSolidBrush(crate::control_room::rgb(theme.text_secondary));
+                let bar = windows::Win32::Foundation::RECT {
+                    left: left + thumb.x,
+                    top: top + thumb.y,
+                    right: left + thumb.x + thumb.w,
+                    bottom: top + thumb.y + thumb.h,
+                };
+                let _ = FillRect(dc, &bar, thumb_brush);
+                let _ = DeleteObject(thumb_brush.into());
+            }
+            let _ = RestoreDC(dc, block_saved);
+        }
+        let _ = RestoreDC(dc, saved);
+    }
+    unsafe {
+        for font in [fonts.body, fonts.strong, fonts.emphasis, fonts.code] {
+            let _ = DeleteObject(font.into());
+        }
+    }
+}
+
+fn draw_piece(
+    dc: HDC,
+    fonts: &PlanFonts,
+    piece: &md_layout::Piece,
+    runs: &[polter_chat_markdown::Run],
+    base_top: i32,
+    left: i32,
+    theme: look::Theme,
+) {
+    let Some(run) = runs.get(piece.run) else {
+        return;
+    };
+    let slice = run.text.get(piece.text.clone()).unwrap_or("");
+    draw_text_slice(dc, fonts, piece, slice, base_top, left, theme);
+}
+
+fn draw_text_slice(
+    dc: HDC,
+    fonts: &PlanFonts,
+    piece: &md_layout::Piece,
+    text: &str,
+    base_top: i32,
+    left: i32,
+    theme: look::Theme,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    let mut r = windows::Win32::Foundation::RECT {
+        left: left + piece.rect.x,
+        top: base_top + piece.rect.y,
+        right: left + piece.rect.x + piece.rect.w.max(1) + 2,
+        bottom: base_top + piece.rect.y + piece.rect.h.max(1),
+    };
+    unsafe {
+        let old_font = SelectObject(dc, plan_font(fonts, piece.kind).into());
+        SetTextColor(dc, crate::control_room::rgb(theme.text));
+        let _ = crate::gdi_text::draw_text_w(dc, &mut wide, &mut r, DrawTextFlags::single_line());
+        SelectObject(dc, old_font);
+    }
+}
+
+fn table_top(_block: &usize, top: i32) -> i32 {
+    top
+}
+
 /// One single-line string at `y`; its own height is the answer.
 fn draw_text(dc: HDC, text: &str, left: i32, y: i32, width: i32, colour: look::Rgba) -> i32 {
     let mut wide: Vec<u16> = text.encode_utf16().collect();
@@ -899,6 +1407,431 @@ impl DrawTextFlags {
     fn wrap() -> windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT {
         DT_LEFT | DT_WORDBREAK | DT_NOPREFIX
     }
+}
+
+/// What the mouse found under it: the **complete message/plan identity**
+/// plus the block, and where the plan's rects are on screen.
+struct HSpot {
+    target: chat_rows::DragTarget,
+    left: i32,
+    width: i32,
+    /// The message's plan origin on screen.
+    plan_top: i32,
+    /// The block's plan-local top and height.
+    block_rect_y: i32,
+    block_h: i32,
+    horiz: md_layout::Horiz,
+    offset: i32,
+    /// The point is on the fixed rail (viewport rect), not the content.
+    on_bar: bool,
+}
+
+/// The horizontal spot at one point. **Rails are hit first, in viewport
+/// coordinates and without any content offset**; only content goes through
+/// `Plan::hit_scrolled`.
+fn hspot_at(hwnd: HWND, x: i32, y: i32) -> Option<HSpot> {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let dpi = crate::dpi_for(hwnd) as i32;
+    let metrics = Metrics::for_dpi(dpi);
+    let width = (client.right - client.left - metrics.pad * 2).max(1);
+    let view_h = (client.bottom - client.top - metrics.pad * 2).max(1);
+    let font_id = plan_font_id(dpi);
+    let handle_h = md_layout::handle_height(dpi as f64 / 96.0);
+    let left = client.left + metrics.pad;
+    CHATS.with(|c| {
+        let Ok(c) = c.try_borrow() else {
+            return None;
+        };
+        let chat = c.iter().find(|x| x.hwnd == key)?;
+        if !chat.shown {
+            return None;
+        }
+        let feed = chat.feed.as_ref()?;
+        let group = chat.group.as_str();
+        let generation = feed.generation();
+        for i in chat.layout.visible(chat.scroll, view_h) {
+            let Some(row) = feed.rows().get(i) else {
+                continue;
+            };
+            let Some(measured) = chat.layout.rows().get(i) else {
+                continue;
+            };
+            let text_top =
+                client.top + metrics.pad + measured.top - chat.scroll + measured.author_height;
+            let plan_y = y - text_top;
+            if plan_y < 0 {
+                continue;
+            }
+            let Some(entry) = chat.plans.iter().find(|p| {
+                p.row_id == row.id
+                    && p.version == row.message.content_version
+                    && p.group == group
+                    && p.generation == generation
+                    && p.width == width
+                    && p.dpi == dpi
+                    && p.font == font_id
+            }) else {
+                continue;
+            };
+            if plan_y >= entry.plan.height {
+                continue;
+            }
+            let target = |block: usize| chat_rows::DragTarget {
+                row_id: row.id.clone(),
+                version: row.message.content_version,
+                doc: entry.doc_ptr,
+                width,
+                dpi,
+                font: font_id,
+                block,
+            };
+            let (block, horiz, on_bar) =
+                if let Some(bar) = entry
+                    .plan
+                    .bar_at(x - left, plan_y, |b| entry.hoffset(b), handle_h)
+                {
+                    (bar.block, bar.horiz, true)
+                } else {
+                    let hit = entry
+                        .plan
+                        .hit_scrolled(x - left, plan_y, |b| entry.hoffset(b));
+                    let block = match hit {
+                        Some(md_layout::Hit::Cell { table, .. }) => {
+                            let Some(table) = entry.plan.tables.get(table) else {
+                                continue;
+                            };
+                            table.block
+                        }
+                        Some(md_layout::Hit::Block(block)) => block,
+                        None => continue,
+                    };
+                    let Some(horiz) = entry.plan.horizontal(block) else {
+                        continue;
+                    };
+                    (block, horiz, false)
+                };
+            let Some(block_plan) = entry.plan.blocks.get(block) else {
+                continue;
+            };
+            return Some(HSpot {
+                target: target(block),
+                left,
+                width,
+                plan_top: text_top,
+                block_rect_y: block_plan.rect.y,
+                block_h: block_plan.rect.h,
+                horiz,
+                offset: entry.hoffset(block),
+                on_bar,
+            });
+        }
+        None
+    })
+}
+
+/// The held-plan view of one chat, projected for the pure liveness check.
+/// **Only independent fields are borrowed** (`plans`, `hdrag`, `hfocus`),
+/// so a surviving `feed`/row reference elsewhere is never invalidated. The
+/// block lists live in `owned`.
+fn drop_dead_for(
+    plans: &[ViewPlan],
+    drag: &mut chat_rows::DragState,
+    focus: &mut Option<chat_rows::DragTarget>,
+) -> chat_rows::InputAction {
+    let owned: Vec<Vec<usize>> = plans
+        .iter()
+        .map(|p| {
+            p.plan
+                .blocks
+                .iter()
+                .enumerate()
+                .filter(|(b, _)| p.plan.horizontal(*b).is_some())
+                .map(|(b, _)| b)
+                .collect()
+        })
+        .collect();
+    let held: Vec<chat_rows::HeldPlan<'_>> = plans
+        .iter()
+        .zip(&owned)
+        .map(|(p, blocks)| chat_rows::HeldPlan {
+            row_id: &p.row_id,
+            version: p.version,
+            doc: p.doc_ptr,
+            width: p.width,
+            dpi: p.dpi,
+            font: p.font,
+            blocks,
+        })
+        .collect();
+    chat_rows::drop_dead_input(drag, focus, &held)
+}
+
+/// Set one exact plan's block offset; the plan clamps it.
+fn set_hoffset(hwnd: HWND, target: &chat_rows::DragTarget, offset: i32) -> bool {
+    let key = hwnd.0 as isize;
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return false;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return false;
+        };
+        let Some(entry) = chat.plans.iter_mut().find(|p| {
+            p.row_id == target.row_id
+                && p.version == target.version
+                && p.doc_ptr == target.doc
+                && p.width == target.width
+                && p.dpi == target.dpi
+                && p.font == target.font
+        }) else {
+            return false;
+        };
+        let before = entry.hoffset(target.block);
+        entry.set_hoffset(target.block, offset);
+        entry.hoffset(target.block) != before
+    })
+}
+
+/// **Only this window's own capture** is released, and only after the
+/// CHATS borrow has ended.
+fn release_own_capture(hwnd: HWND) {
+    unsafe {
+        if GetCapture() == hwnd {
+            let _ = ReleaseCapture();
+        }
+    }
+}
+
+/// A press: the rail starts a drag (after a valid target exists) and jumps
+/// the thumb under the pointer; content only gives the keyboard a target.
+fn hscroll_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let Some(spot) = hspot_at(hwnd, x, y) else {
+        return false;
+    };
+    let target = spot.target.clone();
+    CHATS.with(|c| {
+        if let Ok(mut c) = c.try_borrow_mut() {
+            if let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) {
+                chat.hfocus = Some(target.clone());
+                if spot.on_bar {
+                    chat.hdrag.start(target.clone());
+                }
+            }
+        }
+    });
+    if !spot.on_bar {
+        return false;
+    }
+    // The target is set: the drag may own the mouse now.
+    unsafe {
+        SetCapture(hwnd);
+    }
+    let offset = spot.horiz.offset_at(spot.width, x - spot.left);
+    let changed = set_hoffset(hwnd, &target, offset);
+    if changed {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    true
+}
+
+/// A drag: the thumb follows the pointer while the complete target still
+/// exists. A target that left sight, was rebuilt or lost its document is
+/// dropped here; **the returned action is applied after the borrow**.
+fn hscroll_drag(hwnd: HWND, x: i32) -> bool {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+    let width = (client.right - client.left - metrics.pad * 2).max(1);
+    let left = client.left + metrics.pad;
+
+    enum Step {
+        None,
+        Moved(chat_rows::DragTarget, i32),
+        Dead(chat_rows::InputAction),
+    }
+    let step = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return Step::None;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return Step::None;
+        };
+        let mut action =
+            drop_dead_for(&chat.plans, &mut chat.hdrag, &mut chat.hfocus);
+        let Some(target) = chat.hdrag.target().cloned() else {
+            return if action == chat_rows::InputAction::NONE {
+                Step::None
+            } else {
+                Step::Dead(action)
+            };
+        };
+        let Some(entry) = chat.plans.iter().find(|p| {
+            p.row_id == target.row_id
+                && p.version == target.version
+                && p.doc_ptr == target.doc
+                && p.width == target.width
+                && p.dpi == target.dpi
+                && p.font == target.font
+        }) else {
+            action = action.merge(chat_rows::cancel_input(&mut chat.hdrag, &mut chat.hfocus));
+            return Step::Dead(action);
+        };
+        let Some(horiz) = entry.plan.horizontal(target.block) else {
+            action = action.merge(chat_rows::cancel_input(&mut chat.hdrag, &mut chat.hfocus));
+            return Step::Dead(action);
+        };
+        let offset = horiz.offset_at(width, x - left);
+        Step::Moved(target, offset)
+    });
+    match step {
+        Step::None => false,
+        Step::Dead(action) => {
+            // Every requested effect, even when the drag was already clear.
+            if action.release_own_capture {
+                release_own_capture(hwnd);
+            }
+            if action.invalidate {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            true
+        }
+        Step::Moved(target, offset) => {
+            let changed = set_hoffset(hwnd, &target, offset);
+            if changed {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            }
+            true
+        }
+    }
+}
+
+/// Hide/leave/close/`WM_CANCELMODE`: cancel the drag and focus, then run
+/// the action after the borrow. **The capture release is asked for even
+/// when the drag was already cleared.**
+fn hscroll_cancel(hwnd: HWND) {
+    let action = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return chat_rows::InputAction::NONE;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return chat_rows::InputAction::NONE;
+        };
+        chat_rows::cancel_input(&mut chat.hdrag, &mut chat.hfocus)
+    });
+    if action.release_own_capture {
+        release_own_capture(hwnd);
+    }
+    if action.invalidate {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// The button came up: end the drag; a still-valid focus is kept, and the
+/// tick's liveness check drops it later if its plan is gone.
+fn hscroll_end(hwnd: HWND) {
+    let action = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return chat_rows::InputAction::NONE;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return chat_rows::InputAction::NONE;
+        };
+        chat.hdrag.end()
+    });
+    if action.release_own_capture {
+        release_own_capture(hwnd);
+    }
+    if action.invalidate {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// `WM_CAPTURECHANGED`: another window took the capture. Forget only our
+/// drag/focus; never release that other window's capture.
+fn hscroll_capture_lost(hwnd: HWND) {
+    let action = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return chat_rows::InputAction::NONE;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return chat_rows::InputAction::NONE;
+        };
+        // Capture and keyboard focus are separate: ending the drag here
+        // must not drop the block the person selected with the click.
+        chat_rows::capture_lost_input(&mut chat.hdrag)
+    });
+    if action.invalidate {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// Arrow keys move the focused block's own horizontal view. Without a
+/// click, the first scrollable block in sight takes the focus. **Every
+/// early return carries the action** the liveness check produced.
+fn hscroll_key(hwnd: HWND, step: i32) -> bool {
+    let key = hwnd.0 as isize;
+    let (action, changed) = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return (chat_rows::InputAction::NONE, false);
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return (chat_rows::InputAction::NONE, false);
+        };
+        let mut action =
+            drop_dead_for(&chat.plans, &mut chat.hdrag, &mut chat.hfocus);
+        if action.invalidate || action.release_own_capture {
+            // The dead target already produced its action; return it
+            // before touching any plan.
+            return (action, false);
+        }
+        if chat.hfocus.is_none() {
+            let first = chat.plans.iter().find_map(|p| {
+                p.plan
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .find(|(b, _)| p.plan.horizontal(*b).is_some())
+                    .map(|(b, _)| chat_rows::DragTarget {
+                        row_id: p.row_id.clone(),
+                        version: p.version,
+                        doc: p.doc_ptr,
+                        width: p.width,
+                        dpi: p.dpi,
+                        font: p.font,
+                        block: b,
+                    })
+            });
+            chat.hfocus = first;
+        }
+        let Some(target) = chat.hfocus.clone() else {
+            return (action, false);
+        };
+        let Some(entry) = chat.plans.iter_mut().find(|p| {
+            p.row_id == target.row_id
+                && p.version == target.version
+                && p.doc_ptr == target.doc
+                && p.width == target.width
+                && p.dpi == target.dpi
+                && p.font == target.font
+        }) else {
+            chat.hfocus = None;
+            action = action.merge(chat_rows::InputAction::invalidate());
+            return (action, false);
+        };
+        let before = entry.hoffset(target.block);
+        entry.set_hoffset(target.block, before.saturating_add(step));
+        (action, entry.hoffset(target.block) != before)
+    });
+    if action.release_own_capture {
+        release_own_capture(hwnd);
+    }
+    if action.invalidate || changed {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    changed
 }
 
 /// Wheel and keys move the view; both are bounded by the content, and both
@@ -970,6 +1903,425 @@ fn row_at(hwnd: HWND, y: i32) -> Option<String> {
     out
 }
 
+/// **The real plan builder**: the selected fonts, their real metrics, the
+/// page's pixel width and one measuring callback. The `HFONT`s are released
+/// before it returns; the plan keeps no font resource.
+fn build_plan(dc: HDC, doc: &polter_chat_markdown::Document, width: i32, dpi: i32) -> Plan {
+    let fonts = plan_fonts(dc, dpi);
+    let measure = |kind: FontKind, text: &str| measure_in(dc, plan_font(&fonts, kind), text);
+    let input = Inputs {
+        width,
+        scale: dpi as f64 / 96.0,
+        fonts: fonts.fonts,
+        measure: &measure,
+    };
+    let plan = md_layout::layout(doc, &input);
+    unsafe {
+        for font in [fonts.body, fonts.strong, fonts.emphasis, fonts.code] {
+            let _ = DeleteObject(font.into());
+        }
+    }
+    plan
+}
+
+/// The raw path's heights with the same body face: one author line and the
+/// wrapped body, measured by DrawText with the flags it is drawn with.
+fn measure_raw(dc: HDC, author: &str, text: &str, width: i32, dpi: i32) -> (i32, i32) {
+    let fonts = plan_fonts(dc, dpi);
+    let measure_body = |text: &str| unsafe {
+        let old = SelectObject(dc, fonts.body.into());
+        let height = calc_height(dc, text, width.max(1), DrawTextFlags::wrap());
+        SelectObject(dc, old);
+        height
+    };
+    let author_height = unsafe {
+        let old = SelectObject(dc, fonts.body.into());
+        let h = calc_height(dc, author, width.max(1), DrawTextFlags::single_line());
+        SelectObject(dc, old);
+        h
+    };
+    let text_height = if text.is_empty() {
+        measure_body("Mg")
+    } else {
+        measure_body(text)
+    };
+    unsafe {
+        for font in [fonts.body, fonts.strong, fonts.emphasis, fonts.code] {
+            let _ = DeleteObject(font.into());
+        }
+    }
+    (author_height.max(1), text_height.max(1))
+}
+
+/// The semantic identity of the faces a plan is measured with: the DPI,
+/// the body size and weight, and the interface face's name. Never an
+/// `HFONT` handle, which is new every time one is made.
+fn plan_font_id(dpi: i32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let face_holder = unsafe { crate::uifont::ui_face() };
+    let face = unsafe { face_holder.as_wide() };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    dpi.hash(&mut hasher);
+    face.hash(&mut hasher);
+    look::font::BODY.to_bits().hash(&mut hasher);
+    look::font::WEIGHT_BODY.to_bits().hash(&mut hasher);
+    look::font::WEIGHT_STRONG.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// **Measure at most four messages a tick**, for the rows in sight and one
+/// either side, and keep only those plans. A message whose document has
+/// left the cache, or whose width/DPI/font changed, is measured again; a
+/// plan for a row no longer in sight is dropped together with its document
+/// `Arc`, so this cache never keeps an old document alive outside the
+/// host's 200-entry parse cache.
+fn publish_heights(hwnd: HWND) {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let dpi = crate::dpi_for(hwnd) as i32;
+    let metrics = Metrics::for_dpi(dpi);
+    let width = (client.right - client.left - metrics.pad * 2).max(1);
+    let view_h = (client.bottom - client.top - metrics.pad * 2).max(1);
+    let font_id = plan_font_id(dpi);
+    let dc = unsafe { GetDC(Some(hwnd)) };
+    if dc.0.is_null() {
+        return;
+    }
+    let mut invalidate = false;
+    let mut release_input = false;
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return;
+        };
+        if !chat.shown {
+            return;
+        }
+        let Some(feed) = chat.feed.as_ref() else {
+            return;
+        };
+        let group = chat.group.clone();
+        let generation = feed.generation();
+        if chat.plan_width != width || chat.plan_dpi != dpi || chat.plan_font != font_id {
+            chat.plans.clear();
+            // A drag or focus on the old plans is dead: clear the state
+            // here and **accumulate** both requested effects, never
+            // overwrite them.
+            let action = chat_rows::cancel_input(&mut chat.hdrag, &mut chat.hfocus);
+            release_input = release_input || action.release_own_capture;
+            invalidate = invalidate || action.invalidate;
+            chat.plan_width = width;
+            chat.plan_dpi = dpi;
+            chat.plan_font = font_id;
+        }
+        let identities: Vec<RowIdentity<'_>> = feed
+            .rows()
+            .iter()
+            .map(|r| RowIdentity {
+                id: r.id.as_str(),
+                version: r.message.content_version,
+            })
+            .collect();
+        let range = chat.layout.visible(chat.scroll, view_h);
+
+        struct Candidate {
+            index: usize,
+            /// The feed's stable row id, **never** the canonical anchor.
+            id: String,
+            version: u64,
+            /// The complete semantic this row's current content, document,
+            /// size and font imply.
+            identity: chat_rows::Identity,
+            doc: Option<std::sync::Arc<polter_chat_markdown::Document>>,
+        }
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for i in range {
+            let Some(row) = feed.rows().get(i) else {
+                continue;
+            };
+            let anchor = row.message.anchor.clone();
+            let version = row.message.content_version;
+            let md_key = MdKey {
+                group: group.clone(),
+                generation,
+                anchor: anchor.clone(),
+                content_version: version,
+            };
+            let doc = crate::markdown_service::document(&md_key);
+            let doc_ptr = doc
+                .as_ref()
+                .map(|d| std::sync::Arc::as_ptr(d) as usize)
+                .unwrap_or(0);
+            candidates.push(Candidate {
+                index: i,
+                id: row.id.clone(),
+                version,
+                identity: chat_rows::Identity {
+                    group: group.clone(),
+                    generation,
+                    anchor,
+                    version,
+                    doc: doc_ptr,
+                    width,
+                    dpi,
+                    font: font_id,
+                },
+                doc,
+            });
+        }
+        chat.plans.retain(|p| {
+            candidates
+                .iter()
+                .any(|c| c.id == p.row_id && c.version == p.version && c.identity.doc == p.doc_ptr)
+        });
+        // Eviction, a rebuilt plan, a new document or a vanished block
+        // kills the drag/focus here, in the same pure criterion the tests
+        // use -- borrowing only the independent fields, so the feed/row
+        // references used above stay valid.
+        let action = drop_dead_for(&chat.plans, &mut chat.hdrag, &mut chat.hfocus);
+        release_input = release_input || action.release_own_capture;
+        invalidate = invalidate || action.invalidate;
+
+        // **Explicit projection** from the host's bookkeeping (index, doc
+        // `Arc`, plan lookup) into the pure candidate type. `draw_ready`
+        // is true for a raw row (its text is in the feed) and for a
+        // Markdown row only when this view still holds a plan measured for
+        // exactly this identity -- a cached document alone is not enough.
+        let pure: Vec<chat_rows::Candidate> = candidates
+            .iter()
+            .map(|c| {
+                let plan_present = c.doc.as_ref().is_some_and(|doc| {
+                    let ptr = std::sync::Arc::as_ptr(doc) as usize;
+                    chat.plans.iter().any(|p| {
+                        p.row_id == c.id
+                            && p.group == group
+                            && p.generation == generation
+                            && p.anchor == c.identity.anchor
+                            && p.version == c.version
+                            && p.doc_ptr == ptr
+                            && p.width == width
+                            && p.dpi == dpi
+                            && p.font == font_id
+                    })
+                });
+                chat_rows::view_candidate(
+                    &c.id,
+                    c.version,
+                    c.identity.clone(),
+                    c.doc.is_some(),
+                    plan_present,
+                )
+            })
+            .collect();
+
+        // **The host's actual decision path is this pure function**: a
+        // fresh row costs no budget, only a genuinely invalid one is
+        // measured, four at most, in page order.
+        let plan = chat_rows::schedule(chat.layout.rows(), &pure, 4);
+        let mut decisions: Vec<chat_rows::Decision<'_>> = Vec::with_capacity(plan.len());
+        for entry in &plan {
+            match entry.action {
+                chat_rows::Action::Fresh => decisions.push(chat_rows::Decision::KeepFresh {
+                    id: entry.id,
+                    version: entry.version,
+                }),
+                chat_rows::Action::Stale => decisions.push(chat_rows::Decision::KeepStale {
+                    id: entry.id,
+                    version: entry.version,
+                }),
+                chat_rows::Action::Measure => {
+                    let Some(candidate) = candidates
+                        .iter()
+                        .find(|c| c.id == entry.id && c.version == entry.version)
+                    else {
+                        continue;
+                    };
+                    let Some(row) = feed.rows().get(candidate.index) else {
+                        continue;
+                    };
+                    let author = if row.message.author.is_empty() {
+                        row.message.from.as_str()
+                    } else {
+                        row.message.author.as_str()
+                    };
+                    let (source, author_height, text_height) = match &candidate.doc {
+                        Some(doc) => {
+                            let ptr = std::sync::Arc::as_ptr(doc) as usize;
+                            let known = chat
+                                .plans
+                                .iter()
+                                .find(|p| {
+                                    p.row_id == candidate.id
+                                        && p.group == group
+                                        && p.generation == generation
+                                        && p.anchor == candidate.identity.anchor
+                                        && p.version == candidate.version
+                                        && p.doc_ptr == ptr
+                                        && p.width == width
+                                        && p.dpi == dpi
+                                        && p.font == font_id
+                                })
+                                .map(|p| p.plan.clone());
+                            let plan = match known {
+                                Some(plan) => plan,
+                                None => {
+                                    let plan = std::sync::Arc::new(build_plan(dc, doc, width, dpi));
+                                    chat.plans.push(ViewPlan {
+                                        row_id: candidate.id.clone(),
+                                        group: group.clone(),
+                                        generation,
+                                        anchor: candidate.identity.anchor.clone(),
+                                        version: candidate.version,
+                                        doc_ptr: ptr,
+                                        width,
+                                        dpi,
+                                        font: font_id,
+                                        doc: doc.clone(),
+                                        plan: plan.clone(),
+                                        hscroll: Vec::new(),
+                                    });
+                                    plan
+                                }
+                            };
+                            let (author_height, _) = measure_raw(dc, author, "", width, dpi);
+                            (chat_rows::Source::Markdown, author_height, plan.height.max(1))
+                        }
+                        None => {
+                            let (author_height, text_height) =
+                                measure_raw(dc, author, &row.message.text, width, dpi);
+                            (chat_rows::Source::Raw, author_height, text_height)
+                        }
+                    };
+                    decisions.push(chat_rows::Decision::Replace(
+                        chat_rows::PublishedHeight {
+                            id: candidate.id.as_str(),
+                            version: candidate.version,
+                            source,
+                            identity: &candidate.identity,
+                            author_height,
+                            text_height,
+                        },
+                    ));
+                }
+            }
+        }
+
+        let anchor = chat
+            .layout
+            .anchor(chat.scroll)
+            .map(|(id, offset)| (id.to_owned(), offset));
+        let changed = chat
+            .layout
+            .publish(&identities, &decisions, &metrics, width);
+        if let Some((id, offset)) = anchor {
+            if let Some(at) = chat.layout.scroll_for(&id, offset) {
+                chat.scroll = at;
+            }
+        }
+        chat.scroll = chat.layout.clamp(chat.scroll, view_h);
+        invalidate = invalidate || changed;
+    });
+    unsafe {
+        ReleaseDC(Some(hwnd), dc);
+    }
+    if release_input {
+        release_own_capture(hwnd);
+    }
+    if invalidate {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// What the visible page asks to have parsed: the rows in sight and one
+/// either side, and nothing else -- never the whole 500-row window. The
+/// keys are the feed's own identities; the source is shared.
+fn demand_in_sight(hwnd: HWND) {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+    let view_h = (client.bottom - client.top - metrics.pad * 2).max(1);
+    let demand = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return None;
+        };
+        let chat = c.iter_mut().find(|x| x.hwnd == key)?;
+        if !chat.shown {
+            return None;
+        }
+        let feed = chat.feed.as_ref()?;
+        let owner = Owner {
+            view: chat.view,
+            epoch: feed.generation(),
+        };
+        let group = chat.group.clone();
+        let generation = feed.generation();
+        let range = chat.layout.visible(chat.scroll, view_h);
+        let mut items = Vec::new();
+        for i in range {
+            let Some(row) = feed.rows().get(i) else {
+                continue;
+            };
+            items.push((
+                MdKey {
+                    group: group.clone(),
+                    generation,
+                    anchor: row.message.anchor.clone(),
+                    content_version: row.message.content_version,
+                },
+                std::sync::Arc::<str>::from(row.message.text.as_str()),
+            ));
+        }
+        Some((owner, items))
+    });
+    if let Some((owner, items)) = demand {
+        if !items.is_empty() {
+            crate::markdown_service::demand(owner, items);
+        } else {
+            // Nothing in sight is still a demand of nothing: the owner's
+            // old set goes with it.
+            crate::markdown_service::demand(owner, Vec::new());
+        }
+    }
+}
+
+/// Whether an owner is still the view and epoch it asked as. **The UI's
+/// answer**, not the service's: it keeps no window handles.
+fn owner_live(owner: Owner) -> bool {
+    CHATS.with(|c| {
+        c.try_borrow().ok().is_some_and(|c| {
+            c.iter().any(|x| {
+                x.view == owner.view
+                    && x.shown
+                    && x.feed
+                        .as_ref()
+                        .is_some_and(|f| f.generation() == owner.epoch)
+            })
+        })
+    })
+}
+
+/// A document arrived for an owner that still asks: ask that view to draw.
+/// B1 draws the original text, so this is only a repaint; the parsed
+/// document itself lives in the one shared cache.
+fn repaint_completions(completion: &Completion) {
+    for owner in &completion.owners {
+        let hwnd = CHATS.with(|c| {
+            c.try_borrow().ok().and_then(|c| {
+                c.iter()
+                    .find(|x| x.view == owner.view)
+                    .map(|x| HWND(x.hwnd as *mut c_void))
+            })
+        });
+        if let Some(hwnd) = hwnd {
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        }
+    }
+}
+
 /// A fresh request id: process-unique nonce plus a monotonic counter,/// A fresh request id: process-unique nonce plus a monotonic counter,
 /// rendered as the 32 lowercase hex characters W1 accepts. No new crate.
 fn next_request_id() -> Option<String> {
@@ -1012,6 +2364,19 @@ fn send_request(request: &str) -> Result<Transport, TransportError> {
 fn tick(hwnd: HWND) {
     let key = hwnd.0 as isize;
     let now = now_ms();
+
+    // **Answers first**: keep the one cache, and repaint only owners that
+    // are still alive under the epoch they asked with. Nothing is drawn or
+    // parsed here.
+    let completions = crate::markdown_service::poll(&owner_live);
+    for completion in completions {
+        repaint_completions(&completion);
+    }
+    // **Every tick, whatever the core is doing**: what is in sight is what
+    // wants parsing. An idle core (no action ready) must not stop it.
+    demand_in_sight(hwnd);
+    // And the tick -- not the paint -- publishes the heights it consumes.
+    publish_heights(hwnd);
 
     let owed = CHATS.with(|c| {
         let mut c = c.borrow_mut();

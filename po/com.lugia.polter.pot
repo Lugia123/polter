@@ -6886,3 +6886,35 @@ msgstr ""
 #: windows/control-room/src/tasks.rs
 msgid "Planned, not made yet"
 msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1058
+msgid "Loading"
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1059
+msgid "No messages yet."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1060
+msgid "The chat could not be read."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1061
+msgid "This chat is not available now."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1062
+msgid "This page is too large to show."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1063
+msgid "This history has expired."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1064
+msgid "This build cannot show the chat."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1065
+msgid "This message could not be measured."
+msgstr ""

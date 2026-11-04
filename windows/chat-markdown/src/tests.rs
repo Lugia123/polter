@@ -1,9 +1,12 @@
 use super::*;
+use std::sync::Arc;
 
 fn doc(source: &str) -> Document {
     match parse(source) {
         Parsed::Document(d) => d,
-        Parsed::PlainFallback(r) => panic!("expected a document, got fallback {r:?} for {source:?}"),
+        Parsed::PlainFallback(r) => {
+            panic!("expected a document, got fallback {r:?} for {source:?}")
+        }
     }
 }
 
@@ -71,7 +74,10 @@ fn a_quote_carries_its_depth() {
         .blocks
         .iter()
         .any(|b| matches!(b, Block::Quote { depth: 2, .. })));
-    assert!(d.blocks.iter().any(|b| matches!(b, Block::Quote { depth: 1, .. })));
+    assert!(d
+        .blocks
+        .iter()
+        .any(|b| matches!(b, Block::Quote { depth: 1, .. })));
 }
 
 #[test]
@@ -115,7 +121,10 @@ fn a_trailing_html_block_keeps_its_text_after_a_heading() {
     let d = doc("# title\n\n<div>tail</div>\n");
     let text = visible_text(&d);
     assert!(text.contains("title"), "{text:?}");
-    assert!(text.contains("tail"), "the trailing HTML block was swallowed: {text:?}");
+    assert!(
+        text.contains("tail"),
+        "the trailing HTML block was swallowed: {text:?}"
+    );
 }
 
 #[test]
@@ -166,7 +175,12 @@ fn nesting_counts_every_tag_not_only_blocks() {
         nesting: 1,
         ..Limits::default()
     };
-    assert_eq!(parse_with_limits("plain", one), Parsed::Document(Document { blocks: doc("plain").blocks }));
+    assert_eq!(
+        parse_with_limits("plain", one),
+        Parsed::Document(Document {
+            blocks: doc("plain").blocks
+        })
+    );
     assert_eq!(
         parse_with_limits("a *b*", one),
         Parsed::PlainFallback(Reason::Limit)
@@ -179,7 +193,10 @@ fn the_parse_bounds_refuse_without_reading_further() {
         input_bytes: 4,
         ..Limits::default()
     };
-    assert_eq!(parse_with_limits("12345", limits), Parsed::PlainFallback(Reason::Limit));
+    assert_eq!(
+        parse_with_limits("12345", limits),
+        Parsed::PlainFallback(Reason::Limit)
+    );
 
     let mut nested = String::new();
     for _ in 0..40 {
@@ -220,10 +237,7 @@ fn the_parse_bounds_refuse_without_reading_further() {
     // More columns than the bound allows, before any cell is built.
     let wide: String = (0..65).map(|i| format!("| c{i} ")).collect::<String>() + "|\n";
     let rule: String = (0..65).map(|_| "|---").collect::<String>() + "|\n";
-    assert_eq!(
-        parse(&(wide + &rule)),
-        Parsed::PlainFallback(Reason::Limit)
-    );
+    assert_eq!(parse(&(wide + &rule)), Parsed::PlainFallback(Reason::Limit));
 
     // Cells: one cell allowed, a two-cell table needs two.
     let one_cell = Limits {
@@ -234,6 +248,111 @@ fn the_parse_bounds_refuse_without_reading_further() {
         parse_with_limits("| a | b |\n|---|---|\n| 1 | 2 |", one_cell),
         Parsed::PlainFallback(Reason::Limit)
     );
+}
+
+#[test]
+fn the_cost_counts_containers_and_link_bytes_not_only_text() {
+    let key = Key {
+        group: "g".to_owned(),
+        generation: 1,
+        anchor: "a".to_owned(),
+        content_version: 0,
+    };
+    let long = "https://example.invalid/a/very/long/link";
+    let mut runs = Vec::new();
+    for i in 0..300 {
+        runs.push(Run {
+            text: if i % 2 == 0 {
+                "a".to_owned()
+            } else {
+                "b".to_owned()
+            },
+            style: Style {
+                link: Some(Arc::from(long)),
+                ..Style::default()
+            },
+        });
+    }
+    let dense = Document {
+        blocks: vec![Block::Paragraph(runs)],
+    };
+    let cost = cache::cost(&key, &Entry::Document(Arc::new(dense)));
+    assert!(
+        cost > 300 * (std::mem::size_of::<Run>() + long.len()),
+        "containers and link bytes are counted: {cost}"
+    );
+
+    // A table of empty cells: each cell's Vec descriptor counts even with
+    // no runs in it, so a budget is not fooled by "no text".
+    let row: Vec<Vec<Run>> = (0..8).map(|_| Vec::new()).collect();
+    let table = Table {
+        columns: vec![Align::Left; 8],
+        header: row.clone(),
+        rows: vec![row; 16],
+    };
+    let cells = 8 * 17;
+    let doc = Document {
+        blocks: vec![Block::Table(table.clone())],
+    };
+    let cell_cost = cache::cost(&key, &Entry::Document(Arc::new(doc)));
+    assert!(
+        cell_cost > cells * std::mem::size_of::<Vec<Run>>(),
+        "empty cells still cost their descriptor: {cell_cost}"
+    );
+    let mut small = Cache::with_limits(10, 1024);
+    small.insert(
+        key.clone(),
+        Entry::Document(Arc::new(Document {
+            blocks: vec![Block::Table(table)],
+        })),
+    );
+    assert!(
+        small.is_empty(),
+        "an entry this size is refused, not miscounted in"
+    );
+    assert_eq!(small.bytes(), 0);
+}
+
+#[test]
+fn one_long_link_is_one_shared_allocation_across_styled_runs() {
+    let d = doc("[**a** *b* `c`](https://example.invalid/very/long/path?query=1)");
+    let runs = runs_of(&d.blocks[0]);
+    let links: Vec<&Arc<str>> = runs.iter().filter_map(|r| r.style.link.as_ref()).collect();
+    assert!(
+        links.len() >= 2,
+        "styled runs share one link style: {runs:?}"
+    );
+    for link in &links {
+        assert!(
+            Arc::ptr_eq(links[0], link),
+            "the link bytes are one allocation"
+        );
+    }
+}
+
+#[test]
+fn a_cache_hit_shares_the_same_document_allocation() {
+    let mut c = Cache::with_limits(10, 1 << 20);
+    let key = Key {
+        group: "g".to_owned(),
+        generation: 1,
+        anchor: "a".to_owned(),
+        content_version: 0,
+    };
+    let Entry::Document(first) = c.parse_cached(key.clone(), "# t") else {
+        panic!("expected a document");
+    };
+    let Entry::Document(second) = c.parse_cached(key.clone(), "# t") else {
+        panic!("expected a document");
+    };
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a hit shares, it does not clone"
+    );
+    let Entry::Document(held) = c.peek(&key).expect("cached") else {
+        panic!("expected a document");
+    };
+    assert!(Arc::ptr_eq(&first, held));
 }
 
 #[test]
@@ -298,6 +417,9 @@ fn the_byte_budget_evicts_and_refuses_an_entry_that_cannot_fit() {
     // Far larger than the whole budget: not cached at all.
     let mut small = Cache::with_limits(100, 100);
     let parsed = small.parse_cached(key("big"), &"y".repeat(10_000));
-    assert!(matches!(parsed, Entry::Document(_)), "parsed, just not cached");
+    assert!(
+        matches!(parsed, Entry::Document(_)),
+        "parsed, just not cached"
+    );
     assert!(small.is_empty());
 }
