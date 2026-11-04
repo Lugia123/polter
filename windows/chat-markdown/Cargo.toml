@@ -1,0 +1,15 @@
+[package]
+name = "polter-chat-markdown"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A message's text as the blocks the native chat draws (task 2802, W3a).
+# Parsing only: no host, no UI, no files, no network. The one dependency is
+# the official CommonMark parser, with only the three extensions the
+# confirmed design uses switched on.
+[dependencies]
+# The three extensions are `Options` flags at run time, not Cargo
+# features (0.13.4's features are default/html/simd/serde/...). `parse`
+# turns on exactly tables, strikethrough and task lists.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
