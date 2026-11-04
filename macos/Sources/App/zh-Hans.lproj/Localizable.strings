@@ -1172,6 +1172,11 @@
 "Archive" = "归档";
 "Delete Group" = "删除群";
 "Jump to Supervisor" = "跳到总管";
+"Close Supervisor…" = "关闭总管…";
+"Close the supervisor terminal of %@?" = "关闭 %@ 这个群的总管终端？";
+"The supervisor that is running will end. The group's record, its tasks and its workers are kept." = "正在运行的总管会结束。群的记录、任务和 worker 都保留。";
+"Close Supervisor" = "关闭总管";
+"The group's supervisor is not the terminal this was meant for any more; nothing was closed." = "这个群的总管已经不是菜单打开时那个终端了，什么都没关。";
 "Let the Control Room Take Over…" = "让总控台接管…";
 "Start Supervisor, Going On with the Last Session" = "启动总管，接着上次的会话";
 "Start Supervisor, New Session" = "启动总管，用新会话";

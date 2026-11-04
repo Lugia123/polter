@@ -87,9 +87,11 @@ pub fn entries(state: State) -> Vec<Entry> {
         vec![vec![item("reveal")], vec![item("unarchive")], vec![item("delete")]]
     } else {
         let has = state.sup != Sup::None;
+        // "Close Supervisor…" sits directly under "Jump to Supervisor"
+        // (task 2889): the one terminal that is the supervisor.
         let go: Vec<Entry> = match state.sup {
-            Sup::Hooked => vec![item("jump_to_supervisor")],
-            Sup::Hookless => vec![item("jump_to_supervisor"), item("take_over")],
+            Sup::Hooked => vec![item("jump_to_supervisor"), item("close_supervisor")],
+            Sup::Hookless => vec![item("jump_to_supervisor"), item("close_supervisor"), item("take_over")],
             // "Going on" can only be the last supervisor's CLI, and asks
             // nothing; a new session asks which, when there is a choice.
             Sup::None if state.resumable && state.clis > 1 => vec![item("start_resume"), opens("start_new")],
@@ -196,6 +198,7 @@ pub fn every_state() -> Vec<State> {
 pub fn label(id: &str) -> Option<&'static str> {
     Some(match id {
         "jump_to_supervisor" => n_("Go to Supervisor"),
+        "close_supervisor" => n_("Close Supervisor…"),
         "take_over" => n_("Let the Control Room Take Over…"),
         "start_resume" => n_("Start Supervisor, Going On with the Last Session"),
         "start_new" => n_("Start Supervisor with a New Session"),
@@ -286,7 +289,7 @@ mod tests {
     fn the_four_menus_the_user_chose() {
         assert_eq!(
             ids(st(false, Sup::Hooked, false, false, false)),
-            "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
+            "jump_to_supervisor close_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
         );
         assert_eq!(
             ids(st(false, Sup::None, true, false, false)),
@@ -294,12 +297,30 @@ mod tests {
         );
         assert_eq!(
             ids(st(false, Sup::Hookless, false, false, false)),
-            "jump_to_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
+            "jump_to_supervisor close_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete"
         );
         assert_eq!(
             ids(st(false, Sup::Hooked, false, true, true)),
-            "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete"
+            "jump_to_supervisor close_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete"
         );
+    }
+
+    /// Task 2889: "Close Supervisor…" directly under "Jump to Supervisor"
+    /// for a running supervisor of either reporting kind, and nowhere else.
+    #[test]
+    fn closing_the_supervisor_is_offered_only_where_there_is_one() {
+        for sup in [Sup::Hooked, Sup::Hookless] {
+            let e = entries(st(false, sup, false, false, false));
+            assert_eq!(e[0], Entry::Item { id: "jump_to_supervisor", submenu: false });
+            assert_eq!(e[1], Entry::Item { id: "close_supervisor", submenu: false });
+        }
+        for sup in Sup::ALL {
+            for archived in [false, true] {
+                let e = entries(State { archived, ..st(false, sup, false, false, false) });
+                let has = e.contains(&Entry::Item { id: "close_supervisor", submenu: false });
+                assert_eq!(has, !archived && sup != Sup::None, "{sup:?} archived={archived}");
+            }
+        }
     }
 
     #[test]

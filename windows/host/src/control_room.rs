@@ -2352,6 +2352,7 @@ fn row_item_works(id: &str) -> bool {
     matches!(
         id,
         "jump_to_supervisor"
+            | "close_supervisor"
             | "take_over"
             | "start_resume"
             | "start_new"
@@ -2548,6 +2549,12 @@ fn row_menu(hwnd: HWND, x: i32, y: i32) {
         crate::project_link_ui::pick(hwnd, &row, id);
         return;
     }
+    // The supervisor's id as the menu caught it (task 2889), rather than
+    // looked up again here: that is what is held to what the core says now.
+    if id == "close_supervisor" {
+        close_supervisor(hwnd, &group, row.steward.as_deref());
+        return;
+    }
     row_item(hwnd, &group, id);
 }
 
@@ -2637,6 +2644,50 @@ fn row_item(hwnd: HWND, group: &str, id: &str) {
 /// Ask `q`; whether its first button was pressed.
 fn ask(frame: HWND, q: &polter_control_room::confirm::Question) -> bool {
     crate::projects_ui::ask_with_default(frame, "[control-room]", &q.main, &q.body, &q.buttons, q.default, q.warning) == Some(0)
+}
+
+/// "Close Supervisor…" (task 2889): the one terminal the group's supervisor
+/// is in -- not the tab around it, not a worker beside it, and not the
+/// control room's own tab when the terminal is shown there.
+///
+/// `target` is the id the menu caught. The group and that id are asked of
+/// the core again before the question and again after it, so a supervisor
+/// that ended or was replaced while the box was up is not closed in a later
+/// one's place. Nothing goes through `tabs::close_pane_asking`: its loan
+/// rule would close the control room's tab instead of the pane.
+fn close_supervisor(hwnd: HWND, group: &str, target: Option<&str>) {
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let Some(target) = target else {
+        wlogf!(frame, "[control-room] close supervisor: {:?} has none", group);
+        return;
+    };
+    let steward = |group: &str| {
+        source::with(|data| match data {
+            Data::Ready(r) => r.list.row(group).and_then(|row| row.steward.clone()),
+            Data::NotYet => None,
+            Data::Unreadable(_) => None,
+        })
+    };
+    if steward(group).as_deref() != Some(target) {
+        wlogf!(frame, "[control-room] close supervisor of {:?}: it is not {} any more; nothing closed", group, target);
+        return;
+    }
+    let q = polter_control_room::confirm::close_supervisor(group, &|s| tr(s));
+    if !ask(frame, &q) {
+        wlogf!(frame, "[control-room] close supervisor of {:?}: not confirmed", group);
+        return;
+    }
+    if steward(group).as_deref() != Some(target) {
+        wlogf!(frame, "[control-room] close supervisor of {:?}: changed while asked; nothing closed", group);
+        return;
+    }
+    match crate::tabs::place_of_terminal(target) {
+        Some((home, pane)) => {
+            crate::tabs::post_op(home, crate::tabs::Op::ClosePane(pane), "close supervisor");
+            wlogf!(frame, "[control-room] close supervisor of {:?}: closing {} (pane {})", group, target, pane);
+        }
+        None => wlogf!(frame, "[control-room] close supervisor of {:?}: {} is in no window here; nothing closed", group, target),
+    }
 }
 
 /// "Delete Group…": asked with what the core says it would take, and sent

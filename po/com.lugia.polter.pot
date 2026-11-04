@@ -5359,6 +5359,22 @@ msgstr ""
 msgid "Delete the group {}?"
 msgstr ""
 
+#: windows/control-room/src/rowmenu.rs:201
+msgid "Close Supervisor…"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:44
+msgid "Close the supervisor terminal of {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:45
+msgid "The supervisor that is running will end. The group's record, its tasks and its workers are kept."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:46
+msgid "Close Supervisor"
+msgstr ""
+
 #: windows/control-room/src/confirm.rs:39
 msgid "This group still has {} members. Deleting does not close their terminals, but they leave the group."
 msgstr ""

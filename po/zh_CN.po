@@ -6373,6 +6373,22 @@ msgstr "归档"
 msgid "Delete the group {}?"
 msgstr "删除 {} 这个群？"
 
+#: windows/control-room/src/rowmenu.rs:201
+msgid "Close Supervisor…"
+msgstr "关闭总管…"
+
+#: windows/control-room/src/confirm.rs:44
+msgid "Close the supervisor terminal of {}?"
+msgstr "关闭 {} 这个群的总管终端？"
+
+#: windows/control-room/src/confirm.rs:45
+msgid "The supervisor that is running will end. The group's record, its tasks and its workers are kept."
+msgstr "正在运行的总管会结束。群的记录、任务和 worker 都保留。"
+
+#: windows/control-room/src/confirm.rs:46
+msgid "Close Supervisor"
+msgstr "关闭总管"
+
 #: windows/control-room/src/confirm.rs:39
 msgid "This group still has {} members. Deleting does not close their terminals, but they leave the group."
 msgstr "这个群里还有 {} 个成员。删除不会关掉它们的终端，但它们会离开这个群。"

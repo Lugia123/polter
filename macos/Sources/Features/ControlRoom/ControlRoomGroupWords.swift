@@ -249,4 +249,22 @@ enum ControlRoomGroupWords {
     static func notDelivered(_ why: String) -> String {
         String(format: String(localized: "Not delivered: %@", comment: "总控台：群行下的一行，没送进总管的终端，冒号后是原因"), why)
     }
+
+    // MARK: Closing the supervisor
+
+    /// What the question to close a group's supervisor says (task 2889):
+    /// the group's name, and that only the running supervisor ends.
+    static func closeSupervisorQuestion(name: String) -> (title: String, body: String) {
+        (String(format: String(localized: "Close the supervisor terminal of %@?", comment: "总控台：关闭总管确认框的标题，%@ 是群名"), name),
+         String(localized: "The supervisor that is running will end. The group's record, its tasks and its workers are kept.",
+                        comment: "总控台：关闭总管确认框的正文"))
+    }
+
+    /// Under the row when "Close Supervisor…" came to nothing because the
+    /// group's supervisor is not the terminal the menu caught any more: it
+    /// was closed, or replaced by another, and that one is left alone.
+    static var supervisorChanged: String {
+        String(localized: "The group's supervisor is not the terminal this was meant for any more; nothing was closed.",
+               comment: "总控台：确认关闭总管时，群的总管已经换了或没了，什么都没关")
+    }
 }

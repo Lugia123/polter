@@ -40,6 +40,10 @@ pub mod msg {
     pub const DELETE_RATHER: &str = n_("If you would rather not delete this much, archive it instead.");
     pub const DELETE: &str = n_("Delete Group");
     pub const TAKE_OVER: &str = n_("Take Over");
+    pub const CLOSE_SUPERVISOR_MAIN: &str = n_("Close the supervisor terminal of {}?");
+    pub const CLOSE_SUPERVISOR_BODY: &str =
+        n_("The supervisor that is running will end. The group's record, its tasks and its workers are kept.");
+    pub const CLOSE_SUPERVISOR: &str = n_("Close Supervisor");
 }
 
 /// Fill the `{}`s of `template` in order.
@@ -111,6 +115,19 @@ pub fn take_over(question: &str, tr: &dyn Fn(&str) -> String) -> Question {
     }
 }
 
+/// "Close the supervisor terminal of {group}?" (task 2889), the group row
+/// menu's own one question: **Return cancels**, since what it closes cannot
+/// be brought back, and the button that does it is the destructive one.
+pub fn close_supervisor(name: &str, tr: &dyn Fn(&str) -> String) -> Question {
+    Question {
+        main: fill(&tr(msg::CLOSE_SUPERVISOR_MAIN), name),
+        body: tr(msg::CLOSE_SUPERVISOR_BODY),
+        buttons: vec![tr(msg::CLOSE_SUPERVISOR), tr(msg::CANCEL)],
+        default: 1,
+        warning: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +165,17 @@ mod tests {
         for word in [q.main.as_str(), q.buttons[0].as_str(), q.buttons[1].as_str()] {
             assert!(MAC.contains(&format!("\"{word}\" = ")), "{word:?} is not a macOS string");
         }
+    }
+
+    /// Task 2889: the group's supervisor is asked about once, with Cancel on
+    /// Return and the button that closes it marked as the destructive one.
+    #[test]
+    fn closing_the_supervisor_says_no_on_return() {
+        let q = close_supervisor("web-app", &same);
+        assert_eq!(q.main, "Close the supervisor terminal of web-app?");
+        assert_eq!(q.body, msg::CLOSE_SUPERVISOR_BODY);
+        assert_eq!(q.buttons, vec!["Close Supervisor", "Cancel"]);
+        assert_eq!((q.default, q.warning), (1, true));
     }
 
     #[test]

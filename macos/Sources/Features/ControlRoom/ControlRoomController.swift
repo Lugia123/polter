@@ -141,6 +141,15 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             self.giveListTheKeyboardIfNobodyHasIt()
         }
         model.onGoToSupervisor = { [weak self] in self?.goToSupervisor() }
+        // "Close Supervisor…" (task 2889): the terminal's own tab runs its
+        // usual close with no second question -- the row menu asked already
+        // -- so a shared tab loses one leaf and a tab of its own goes.
+        model.effects.closeTerminal = { terminal in
+            guard let view = ControlRoomLender.surface(for: terminal),
+                  let controller = BaseTerminalController.controller(owning: view) else { return false }
+            controller.closeSurface(view, withConfirmation: false)
+            return true
+        }
         model.pageSource = .core(ghostty)
         model.onRefreshWorkdirs = { [weak self] in self?.refreshWorkdirs() }
         refreshWorkdirs()

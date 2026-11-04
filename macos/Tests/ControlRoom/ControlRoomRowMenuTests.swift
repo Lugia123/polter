@@ -16,13 +16,33 @@ struct ControlRoomRowMenuTests {
 
     @Test func theFourMenusTheUserChose() {
         #expect(items(false, .hooked, false, false, false)
-            == "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
+            == "jump_to_supervisor close_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .none, true, false, false)
             == "start_resume start_new - reveal - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .hookless, false, false, false)
-            == "jump_to_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
+            == "jump_to_supervisor close_supervisor take_over - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - pin mute> - rename edit_note project> - archive delete")
         #expect(items(false, .hooked, false, true, true)
-            == "jump_to_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete")
+            == "jump_to_supervisor close_supervisor - report_progress close_idle_workers tidy_workers - reveal copy_supervisor_id - unpin unmute - rename edit_note project> - archive delete")
+    }
+
+    /// Task 2889: "Close Supervisor…" directly under "Jump to Supervisor",
+    /// for a running supervisor of either reporting kind, and nowhere else.
+    @Test func closingTheSupervisorIsOfferedOnlyWhereThereIsOne() {
+        func has(_ archived: Bool, _ sup: Menu.Supervisor) -> Bool {
+            Menu.entries(.init(archived: archived, supervisor: sup, resumable: false,
+                               pinned: false, muted: false))
+                .contains { $0 == .item(.closeSupervisor) }
+        }
+        func afterJump(_ sup: Menu.Supervisor) -> Bool {
+            let items = Menu.entries(.init(archived: false, supervisor: sup, resumable: false,
+                                           pinned: false, muted: false))
+            guard case .item(let first)? = items.first, first == .jumpToSupervisor else { return false }
+            guard items.count > 1, case .item(let second) = items[1] else { return false }
+            return second == .closeSupervisor
+        }
+        #expect(afterJump(.hooked) && afterJump(.hookless))
+        #expect(!has(false, .none))
+        for sup in Menu.Supervisor.allCases { #expect(!has(true, sup)) }
     }
 
     @Test func anOldGroupHasOneStartAndAnArchivedOneThreeItems() {

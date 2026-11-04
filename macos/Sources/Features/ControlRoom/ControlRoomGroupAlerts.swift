@@ -107,6 +107,24 @@ enum ControlRoomGroupAlerts {
         return Question(alert: alert, act: 1, cancel: 0)
     }
 
+    /// "Close Supervisor…" (task 2889): one question, Cancel where Return
+    /// and Escape land, the button that closes it marked destructive.
+    static func closeSupervisor(name: String) -> Question {
+        let q = ControlRoomGroupWords.closeSupervisorQuestion(name: name)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.icon = cautionIcon()
+        alert.messageText = q.title
+        alert.informativeText = q.body
+        // First is at the right: Cancel, which takes Return.
+        let no = alert.addButton(withTitle: cancel)
+        no.keyEquivalent = "\r"
+        let go = alert.addButton(withTitle: String(localized: "Close Supervisor", comment: "总控台：关闭总管确认框的关闭按钮"))
+        go.hasDestructiveAction = true
+        go.keyEquivalent = ""
+        return Question(alert: alert, act: 1, cancel: 0)
+    }
+
     /// The app's icon with the system's caution sign over its lower right
     /// corner, the sign half the icon's side.
     static func cautionIcon() -> NSImage {

@@ -39,6 +39,7 @@ struct ControlRoomRowMenuModelTests {
         var later: [(TimeInterval, () -> Void)] = []
         var told: [String] = []
         var tookOver: [(String, String)] = []
+        var closed: [String] = []
 
         init() throws {
             var snapshot = try #require(try JSONSerialization.jsonObject(with: ControlRoomListTests.fixture()) as? [String: Any])
@@ -74,7 +75,11 @@ struct ControlRoomRowMenuModelTests {
                 locale: Locale(identifier: "zh_CN"),
                 after: { [unowned self] seconds, run in self.later.append((seconds, run)) },
                 tell: { [unowned self] in self.told.append($0) },
-                takeOver: { [unowned self] in self.tookOver.append(($0, $1)) })
+                takeOver: { [unowned self] in self.tookOver.append(($0, $1)) },
+                closeTerminal: { [unowned self] in
+                    self.closed.append($0)
+                    return true
+                })
         }
 
         static func name(_ act: ControlRoomActions.Act) -> String {
@@ -83,6 +88,17 @@ struct ControlRoomRowMenuModelTests {
 
         func row(_ id: String) throws -> ControlRoomList.Row {
             try #require(model.list?.rows.first { $0.id == id })
+        }
+
+        /// The snapshot again, with `group`'s supervisor now the terminal
+        /// `id` (task 2889: what the core says may change under a question).
+        func setSteward(_ group: String, to id: String) throws {
+            var snapshot = try #require(try JSONSerialization.jsonObject(with: Data(core.json.utf8)) as? [String: Any])
+            var groups = try #require(snapshot["groups"] as? [[String: Any]])
+            let i = try #require(groups.firstIndex { $0["name"] as? String == group })
+            groups[i]["steward"] = id
+            snapshot["groups"] = groups
+            core.say(try #require(String(bytes: try JSONSerialization.data(withJSONObject: snapshot), encoding: .utf8)))
         }
     }
 
@@ -138,7 +154,7 @@ struct ControlRoomRowMenuModelTests {
         let docs = try rig.row("docs-site")
         #expect(rig.model.menuState(docs).supervisor == .hookless)
         let keys = rig.model.menu(for: docs).items.compactMap { $0.representedObject as? String }
-        #expect(keys.prefix(2) == ["jump_to_supervisor", "take_over"])
+        #expect(keys.prefix(3) == ["jump_to_supervisor", "close_supervisor", "take_over"])
         rig.model.choose("take_over", on: docs)
         let question = try #require(docs.supervisor?.takeOver?.confirm)
         #expect(rig.tookOver.map(\.0) == ["docs-site"])
@@ -370,6 +386,57 @@ struct ControlRoomRowMenuModelTests {
         #expect(rig.told == [ControlRoomActions.Refusal(name: "DeleteFailed").message])
         #expect(rig.model.rowLines["web-app"] == nil)
         #expect(rig.asked.count == 1)
+    }
+
+    // MARK: Closing the supervisor (task 2889)
+
+    /// Cancel closes nothing, and the question names the group whose row
+    /// was chosen, not the one selected.
+    @Test func closingASupervisorAsksAndCancelClosesNothing() throws {
+        let rig = try Rig()
+        rig.model.choose("notes")
+        rig.answers = [false]
+        rig.model.choose("close_supervisor", on: try rig.row("web-app"))
+        #expect(rig.asked.count == 1)
+        #expect(rig.asked.last?.alert.messageText.contains("web-app") == true)
+        #expect(rig.closed.isEmpty)
+        #expect(rig.sent.isEmpty)
+    }
+
+    /// Yes closes the terminal the menu caught, once; the group, its tasks
+    /// and its workers are sent no act at all.
+    @Test func closingTheSupervisorClosesThatTerminalOnce() throws {
+        let rig = try Rig()
+        rig.answers = [true]
+        rig.model.choose("close_supervisor", on: try rig.row("web-app"))
+        #expect(rig.asked.count == 1, "one question; the close itself asks none")
+        #expect(rig.closed == ["0x00000000000000a1"])
+        #expect(rig.sent.isEmpty, "no group act: its tasks and workers stay")
+    }
+
+    /// The supervisor changed while the question was up: the terminal named
+    /// now is left alone, and the row says so.
+    @Test func aSupervisorThatChangedWhileAskedIsNotClosed() throws {
+        let rig = try Rig()
+        rig.model.effects.ask = { [unowned rig] _, answer in
+            try? rig.setSteward("web-app", to: "0x00000000000000b2")  // same call, now on the rig
+            answer(true)
+        }
+        rig.model.choose("close_supervisor", on: try rig.row("web-app"))
+        #expect(rig.closed.isEmpty)
+        #expect(rig.model.rowLines["web-app"]?.text == ControlRoomGroupWords.supervisorChanged)
+    }
+
+    /// A row caught before the supervisor changed is refused before the
+    /// question is even shown.
+    @Test func aRowWhoseSupervisorAlreadyChangedAsksNothing() throws {
+        let rig = try Rig()
+        let web = try rig.row("web-app")
+        try rig.setSteward("web-app", to: "0x00000000000000b2")
+        rig.model.choose("close_supervisor", on: web)
+        #expect(rig.asked.isEmpty)
+        #expect(rig.closed.isEmpty)
+        #expect(rig.model.rowLines["web-app"]?.text == ControlRoomGroupWords.supervisorChanged)
     }
 
     @Test func anArchivedGroupsMenuRevealsUnarchivesAndDeletes() throws {

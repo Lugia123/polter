@@ -1123,6 +1123,11 @@
 "Archive" = "Archive";
 "Delete Group" = "Delete Group";
 "Jump to Supervisor" = "Jump to Supervisor";
+"Close Supervisor…" = "Close Supervisor…";
+"Close the supervisor terminal of %@?" = "Close the supervisor terminal of %@?";
+"The supervisor that is running will end. The group's record, its tasks and its workers are kept." = "The supervisor that is running will end. The group's record, its tasks and its workers are kept.";
+"Close Supervisor" = "Close Supervisor";
+"The group's supervisor is not the terminal this was meant for any more; nothing was closed." = "The group's supervisor is not the terminal this was meant for any more; nothing was closed.";
 "Let the Control Room Take Over…" = "Let the Control Room Take Over…";
 "Start Supervisor, Going On with the Last Session" = "Start Supervisor, Going On with the Last Session";
 "Start Supervisor, New Session" = "Start Supervisor, New Session";

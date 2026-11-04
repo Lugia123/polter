@@ -18,6 +18,9 @@ import Foundation
 ///   alone when the group never kept one.
 /// - "Let the control room take over…" only for a supervisor that is
 ///   running with no hooks (#1635), next to "Jump to Supervisor".
+/// - "Close Supervisor…" sits directly under "Jump to Supervisor" (task
+///   2889): the one terminal that is the group's supervisor, and nothing
+///   else.
 /// - An archived group's menu is three items: reveal, unarchive, delete.
 /// - A group of items with nothing left in it is left out with its line;
 ///   no line at either end.
@@ -62,6 +65,7 @@ enum ControlRoomRowMenu {
     /// One item. The raw value is what both hosts print.
     enum Item: String, CaseIterable {
         case jumpToSupervisor = "jump_to_supervisor"
+        case closeSupervisor = "close_supervisor"
         case takeOver = "take_over"
         case startResume = "start_resume"
         case startNew = "start_new"
@@ -117,8 +121,8 @@ enum ControlRoomRowMenu {
             // nothing; a new session asks which when there is a choice
             // (`opens`).
             case .none: go = state.resumable ? [.startResume, .startNew] : [.start]
-            case .hooked: go = [.jumpToSupervisor]
-            case .hookless: go = [.jumpToSupervisor, .takeOver]
+            case .hooked: go = [.jumpToSupervisor, .closeSupervisor]
+            case .hookless: go = [.jumpToSupervisor, .closeSupervisor, .takeOver]
             }
             groups = [
                 go,

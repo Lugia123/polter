@@ -41,6 +41,7 @@ enum ControlRoomRowMenuItems {
     static func title(_ key: String) -> String? {
         switch key {
         case "jump_to_supervisor": return String(localized: "Jump to Supervisor", comment: "总控台：群行右键菜单，跳到总管")
+        case "close_supervisor": return String(localized: "Close Supervisor…", comment: "总控台：群行右键菜单，关掉这个群的总管终端（要确认）")
         case "take_over": return String(localized: "Let the Control Room Take Over…", comment: "总控台：群行右键菜单，总管没接钩子时让总控台接管（要确认）")
         case "start_resume": return String(localized: "Start Supervisor, Going On with the Last Session", comment: "总控台：群行右键菜单，没有总管时：启动总管，接着上次的会话")
         case "start_new": return String(localized: "Start Supervisor, New Session", comment: "总控台：群行右键菜单，没有总管时：启动总管，用新会话")
@@ -72,6 +73,7 @@ enum ControlRoomRowMenuItems {
     static func symbol(_ key: String) -> String? {
         switch key {
         case "jump_to_supervisor": return "arrow.up.forward.square"
+        case "close_supervisor": return "xmark.octagon"
         case "take_over": return "link"
         case "start_resume": return "arrow.counterclockwise"
         case "start_new", "start": return "play"
@@ -93,8 +95,8 @@ enum ControlRoomRowMenuItems {
         }
     }
 
-    /// The one item set in red: it cannot be undone.
-    static func isDestructive(_ key: String) -> Bool { key == "delete" }
+    /// The items set in red: they cannot be undone.
+    static func isDestructive(_ key: String) -> Bool { key == "delete" || key == "close_supervisor" }
 
     /// The menu for `lines`.
     ///

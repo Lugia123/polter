@@ -60,6 +60,12 @@ enum ControlRoomRowMenuState {
         /// question to ask before it (#1635). Nil is the model's own
         /// `takeOver(group:question:)`; a test hands in its own.
         var takeOver: ((String, String) -> Void)? = nil
+        /// "Close Supervisor…" (task 2889): close the terminal the core
+        /// names, and nothing else; false when no tab holds it any more.
+        /// Set where the terminal controllers are reachable -- the control
+        /// room's own window controller -- because this file may not name
+        /// them (task 2634 M2); a test hands in its own.
+        var closeTerminal: ((String) -> Bool)? = nil
 
         static var system: Effects {
             Effects(
@@ -195,6 +201,8 @@ extension ControlRoomModel {
         case "jump_to_supervisor":
             choose(group)
             goToSupervisor()
+        case "close_supervisor":
+            closeSupervisor(of: row)
         case "take_over":
             // The core's question, as the frame's own button asks it; the
             // rule offers the item only when there is one.
@@ -461,5 +469,38 @@ extension ControlRoomModel {
                 self.say(Self.refusal(error).message, under: group, delivered: false)
             }
         }
+    }
+
+    // MARK: Closing the supervisor
+
+    /// "Close Supervisor…" (task 2889): the one terminal the group's
+    /// supervisor is in, and nothing else -- not the tab it shares with
+    /// workers, not a supervisor that replaced it. The id was caught when
+    /// the menu was built; the group is asked again before the question and
+    /// again after it, so what is closed is that terminal or nothing.
+    func closeSupervisor(of row: Row) {
+        let group = row.id
+        guard let target = row.facts?.steward, currentSteward(of: group) == target else {
+            say(ControlRoomGroupWords.supervisorChanged, under: group, delivered: false)
+            return
+        }
+        effects.ask(ControlRoomGroupAlerts.closeSupervisor(name: group)) { [weak self] yes in
+            guard let self, yes else { return }
+            // One question, already answered: the close itself runs with
+            // the terminal's own confirmation left off (`closeTerminal`), so
+            // a shared tab loses the leaf and keeps its workers, and a tab
+            // of its own goes with the usual lifecycle.
+            guard self.currentSteward(of: group) == target,
+                  self.effects.closeTerminal?(target) == true else {
+                self.say(ControlRoomGroupWords.supervisorChanged, under: group, delivered: false)
+                return
+            }
+        }
+    }
+
+    /// The terminal the core names as `group`'s supervisor in the list the
+    /// panel holds now; nil when it names none.
+    func currentSteward(of group: String) -> String? {
+        list?.rows.first { $0.id == group && $0.alone == nil }?.facts?.steward
     }
 }
