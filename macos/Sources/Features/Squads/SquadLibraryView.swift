@@ -191,7 +191,10 @@ final class SquadLibraryEditor: ObservableObject {
         selection = squad.key
         original = library.catalog.squads.first { $0.key == squad.key } ?? squad
         draft = original
-        member = nil
+        // Saving is not leaving: the seat's page stays on screen, with the
+        // tab and scroll position it had, so the person can go on editing
+        // (task 2807). Only Back leaves.
+        member = SquadRules.seatAfterSave(member, in: original ?? squad)
         adding = false
         status = nil
         return true
@@ -895,7 +898,7 @@ struct SquadLibraryView: View {
         let options = SquadCliOptions.of(role: role, member: member, in: clis.clis)
         return VStack(alignment: .leading, spacing: SettingsLayout.rowGap) {
             formRow(String(localized: "CLI", comment: "角色库：字段名，Agent CLI")) {
-                Picker("", selection: cliBinding(member)) {
+                Picker("", selection: cliBinding(member, role: role)) {
                     ForEach(options.options) { option in
                         Text(option.label).tag(option.key)
                     }
@@ -908,7 +911,14 @@ struct SquadLibraryView: View {
                         member.override.cli == nil ? .inherited : .overridden,
                         back: member.override.cli == nil
                             ? nil
-                            : { editor.updateMember(member.alias) { $0.override.cli = nil } })
+                            : { editor.updateMember(member.alias) { squad in
+                                // The same legal set the picker cleans by:
+                                // with no CLI named, only the role's own
+                                // entries may stay (`squad.zig:353`).
+                                squad.override.cli = nil
+                                squad.override.retainCliChoices(
+                                    named: nil, roleClis: role.clis.map(\.cli))
+                            } })
                     // The state of the selection, in words (rule 5: the
                     // four things that look alike get told apart). A
                     // selection with no row is the defect the person
@@ -950,10 +960,20 @@ struct SquadLibraryView: View {
         }
     }
 
-    private func cliBinding(_ member: SquadMember) -> Binding<String> {
+    private func cliBinding(_ member: SquadMember, role: Role) -> Binding<String> {
         Binding(
             get: { member.override.cli ?? "" },
-            set: { key in editor.updateMember(member.alias) { $0.override.cli = key.isEmpty ? nil : key } })
+            set: { key in
+                let cli = key.isEmpty ? nil : key
+                editor.updateMember(member.alias) { squad in
+                    squad.override.cli = cli
+                    // The entry the old CLI had in `clis` is not the new
+                    // one's, and the core refuses one that is neither this
+                    // seat's CLI nor a CLI the role is set up for -- the
+                    // whole template then reads as bad (`squad.zig:353`).
+                    squad.override.retainCliChoices(named: cli, roleClis: role.clis.map(\.cli))
+                }
+            })
     }
 
     // MARK: Bottom band

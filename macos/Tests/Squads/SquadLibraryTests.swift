@@ -177,6 +177,48 @@ struct SquadLibraryTests {
         #expect(override.jsonObject["clis"] == nil)
     }
 
+    @Test func movingASeatToAnotherCliDropsTheEntryTheOldOneLeft() {
+        // Tinia's 开发 seat on disk (2026-11-04): `cli` is a launcher and
+        // `clis` holds one entry for that same launcher. The person picks
+        // another one; the picker only rewrites `cli`, so the old entry is
+        // still there -- and the core refuses a `clis` entry that is neither
+        // this seat's CLI nor a CLI the role is set up for (`squad.zig:353`),
+        // which the window shows as the generic BadSquad.
+        let onDisk: [String: Any] = [
+            "cli": "claude-deepseek-flash",
+            "clis": [
+                "claude-deepseek-flash": ["args": ["1"]],
+                "codex": ["model": "gpt-5"],
+            ],
+        ]
+        var moved = SquadOverride(json: onDisk)
+        moved.cli = "claude-bobot-deepseek-flash"
+        // `dev-worker` is set up for antigravity and codex only.
+        moved.retainCliChoices(named: moved.cli, roleClis: ["antigravity", "codex"])
+
+        #expect(moved.cli == "claude-bobot-deepseek-flash")
+        #expect(moved.cliChoice("claude-deepseek-flash") == nil)
+        // The role's own CLI keeps what the seat said about it: still legal.
+        #expect(moved.cliChoice("codex")?.model == "gpt-5")
+        // And what is written back carries no entry the core would refuse.
+        let written = moved.jsonObject["clis"] as? [String: Any]
+        #expect(Set(written?.keys.map { $0 } ?? []) == Set(["codex"]))
+    }
+
+    @Test func followingTheRoleAgainDropsTheLaunchersEntryToo() {
+        // `cli` nil is "follow the role": only the role's own CLIs are legal
+        // keys then, so a launcher's entry has to go the same way.
+        var followed = SquadOverride(json: [
+            "cli": "claude-bobot-deepseek-flash",
+            "clis": ["claude-bobot-deepseek-flash": ["model": "flash"], "antigravity": ["options": ["mode": "auto"]]],
+        ])
+        followed.cli = nil
+        followed.retainCliChoices(named: nil, roleClis: ["antigravity", "codex"])
+
+        #expect(followed.clis.map(\.cli) == ["antigravity"])
+        #expect(followed.jsonObject["cli"] == nil)
+    }
+
     @Test func anUnknownCliInTheFileIsKeptRatherThanDropped() {
         // Not this window's business whether the CLI is installed: a seat
         // that names one is a fact about the file, and dropping it here
@@ -235,6 +277,23 @@ struct SquadLibraryTests {
         #expect(mine.jsonObject["reason"] == nil)
 
         #expect(bare.jsonData != nil)
+    }
+
+    // MARK: Staying where the person was
+
+    @Test func savingKeepsTheSeatPageOpenUntilBackIsPressed() {
+        // Task 2807: a save used to clear the open seat, so the page fell
+        // back to the seats table and the tab and scroll position the person
+        // was working in went with it. Saving now keeps the seat.
+        let squad = Squad(key: "tinia", name: "Tinia", members: [
+            SquadMember(alias: "审核", role: "reviewer"),
+            SquadMember(alias: "开发", role: "dev-worker"),
+        ])
+        #expect(SquadRules.seatAfterSave("开发", in: squad) == "开发")
+        // The template's own page was open: a save stays on it.
+        #expect(SquadRules.seatAfterSave(nil, in: squad) == nil)
+        // The one case a seat cannot stay: the saved template lost it.
+        #expect(SquadRules.seatAfterSave("设计", in: squad) == nil)
     }
 
     // MARK: Which roles may join

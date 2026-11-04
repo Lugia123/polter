@@ -1066,6 +1066,39 @@ test "squad: 角色无该 CLI 条目时底为空，只用小队写的" {
     try testing.expectEqual(@as(?[]const u8, null), r2.choice.model);
 }
 
+test "squad: 换了 CLI 还留着旧 CLI 的 clis 条目，核心整份拒绝为 BadField" {
+    var a = arena();
+    defer a.deinit();
+    const aa = a.allocator();
+    var diag: Diag = .{ .where = "" };
+
+    // The shape the settings window wrote before task 2807 was fixed: the
+    // seat's CLI moved to another launcher and the old launcher's entry is
+    // still in `clis`. A launcher is not in the role's own `clis` (here
+    // `dev-worker` has antigravity and codex), and it is not the CLI the
+    // member names, so the entry is `BadField` -- which SquadStore.put
+    // reports as the generic `BadSquad`.
+    const mine = [_]persona.Persona{
+        .{ .key = "dev-worker", .name = "Developer", .clis = &.{
+            .{ .cli = "antigravity" },
+            .{ .cli = "codex" },
+        } },
+    };
+    const roles: persona.Set = .{ .personas = &mine };
+    const stale =
+        \\{"version":1,"squads":[{"key":"squad-tinia","name":"T","members":[{"alias":"开发","role":"dev-worker","required":true,"override":{"cli":"claude-bobot-deepseek-flash","clis":{"claude-deepseek-flash":{"args":["1"]}}}}]}]}
+    ;
+    try testing.expectError(error.BadField, parseLeaky(aa, stale, roles, &diag));
+    try testing.expect(std.mem.indexOf(u8, diag.where, "开发") != null);
+
+    // The same member with the stale entry gone reads: the picked CLI is
+    // enough on its own, and a role CLI's entry would be legal as well.
+    const clean =
+        \\{"version":1,"squads":[{"key":"squad-tinia","name":"T","members":[{"alias":"开发","role":"dev-worker","required":true,"override":{"cli":"claude-bobot-deepseek-flash","clis":{"codex":{"model":"gpt-5"}}}}]}]}
+    ;
+    _ = try parseLeaky(aa, clean, roles, &diag);
+}
+
 test "squad: 覆盖不能触碰 polter/tools，写入即拒" {
     var a = arena();
     defer a.deinit();

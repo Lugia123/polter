@@ -305,6 +305,23 @@ struct SquadOverride: Equatable {
         clis.first { $0.cli == key }
     }
 
+    /// Drop the `clis` entries the core would refuse once this seat's CLI is
+    /// `cli`: an entry is legal only for the CLI it names or one the role is
+    /// set up for (`squad.zig:353-360`, `error.BadField`).
+    ///
+    /// **What moving a seat used to do** (task 2807): changing the CLI wrote
+    /// `override.cli` and left the old CLI's entry in `clis`, which the core
+    /// then refused for the whole template -- and the window shows every
+    /// refusal as the generic `BadSquad` ("it needs a name and a key, and
+    /// every member an alias and a role"), which named nothing that was
+    /// actually wrong. The old settings are not the new CLI's to keep
+    /// (`squad.resolve` drops the same way at launch), so they go here.
+    mutating func retainCliChoices(named cli: String?, roleClis: [String]) {
+        var legal = Set(roleClis)
+        if let cli { legal.insert(cli) }
+        clis.removeAll { !legal.contains($0.cli) }
+    }
+
     mutating func setCliChoice(_ key: String, _ change: (inout SquadCliChoice) -> Void) {
         if let i = clis.firstIndex(where: { $0.cli == key }) {
             change(&clis[i])
@@ -530,6 +547,18 @@ enum SquadRules {
     /// (`persona.isValidKey`).
     static func isValidKey(_ key: String) -> Bool {
         Role.isValidKey(key)
+    }
+
+    /// The seat whose page is still open after `squad` was saved, given the
+    /// seat the person was on (`nil` when the template's own page was).
+    ///
+    /// **Saving is not leaving** (task 2807). The person is usually in the
+    /// middle of a seat -- its instructions, its CLI, its skills -- and a
+    /// save that drops back to the seats table loses the tab and the scroll
+    /// position they were working in, so the seat it was showing stays. The
+    /// one case it cannot stay is a saved template that no longer has it.
+    static func seatAfterSave(_ alias: String?, in squad: Squad) -> String? {
+        alias.flatMap { squad.member($0)?.alias }
     }
 
     /// A template as the list row shows it: its name, and what its members
