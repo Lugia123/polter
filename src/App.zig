@@ -17973,11 +17973,11 @@ fn chatHistoryPoll(
     // group deleted or a membership withdrawn in between must not receive
     // the page.
     if (!self.chat.exists(job.group)) {
-        self.history_jobs.cancel(job.id) catch {};
+        if (self.history_jobs.cancel(job.id)) |_| {} else |_| {}
         return "{\"error\":\"NoSuchGroup\"}";
     }
     if (!self.chat.isMember(job.group, poltergeistpkg.Chat.user_id)) {
-        self.history_jobs.cancel(job.id) catch {};
+        if (self.history_jobs.cancel(job.id)) |_| {} else |_| {}
         return "{\"error\":\"NotAMember\"}";
     }
 
