@@ -4649,6 +4649,11 @@ const PageWorld = struct {
         app.resource_overall = null;
         app.overall_wall_ms_for_test = null;
         app.group_log = null;
+        // Read by `renderTasks` through `taskTreePath`; left undefined, CI
+        // read it as 0xaaaaaaaa and aborted in test 2015 (GitHub run
+        // 41260995672 @ 865e835). One of the optional fixtures, with the
+        // two above.
+        app.poltergeist_worktrees = null;
         app.resource_seq = 1;
         app.poltergeist = .init(alloc, .{});
         app.file_tickets = .init(alloc, std.testing.io);
@@ -4774,6 +4779,11 @@ test "2015: control_page answers a group's 24 hours and 7 days, its tasks, and r
         try testing.expectEqual(@as(usize, 1), open.len);
         try testing.expectEqualStrings("ocr-mask", open[0].object.get("owner").?.string);
         try testing.expectEqual(@as(i64, 1), v.object.get("closed_count").?.integer);
+        // No tree planned, so the row says none: null, not a branch
+        // (`TaskPage.Row.worktree`, and test 2614's rule for the same row).
+        // This page is the read that an uninitialised worktree ledger
+        // crashed on in CI.
+        try testing.expect(open[0].object.get("worktree") == null or open[0].object.get("worktree").? == .null);
     }
 
     // What it will not answer.
