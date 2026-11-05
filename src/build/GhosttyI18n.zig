@@ -233,6 +233,27 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
     xgettext.addArg(report_path);
     xgettext.addFileInput(b.path(report_path));
 
+    // The control room's three remaining pages: the task page's filter and
+    // its rows, the resource page's cards, and the memory judge's sentences.
+    // **All three had their strings entered by hand** before a template was
+    // regenerated for task 2793: the regeneration dropped 121 of them, and
+    // the next `msgmerge` moved their Chinese translations into the obsolete
+    // `#~` block, which `msgfmt` does not compile. Nothing failed -- the
+    // template is not checked against the sources it is made from, and both
+    // translation gates look from a catalogue towards the template, never
+    // the other way. Listed here so a regenerated template carries them.
+    const task_page_path = "src/poltergeist/TaskPage.zig";
+    xgettext.addArg(task_page_path);
+    xgettext.addFileInput(b.path(task_page_path));
+
+    const resource_page_path = "src/poltergeist/ResourcePage.zig";
+    xgettext.addArg(resource_page_path);
+    xgettext.addFileInput(b.path(resource_page_path));
+
+    const judge_path = "src/poltergeist/judge.zig";
+    xgettext.addArg(judge_path);
+    xgettext.addFileInput(b.path(judge_path));
+
     // Add support for localizing our `nautilus` integration
     const xgettext_py = b.addSystemCommand(&.{
         "xgettext",

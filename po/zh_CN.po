@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-11-06 00:31+0800\n"
+"POT-Creation-Date: 2026-11-06 01:34+0800\n"
 "PO-Revision-Date: 2026-09-13 10:50+0800\n"
 "Last-Translator: Lukas <134181853+bo2themax@users.noreply.github.com>\n"
 "Language-Team: Chinese (simplified) <i18n-zh@googlegroups.com>\n"
@@ -2632,6 +2632,507 @@ msgstr "。正在重试；它报了什么错见 Polter 的日志。"
 #: src/poltergeist/report.zig:676
 msgid ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json"
 msgstr "。它的设置在 $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+
+#: src/poltergeist/TaskPage.zig:158
+msgid "No."
+msgstr "号"
+
+#: src/poltergeist/TaskPage.zig:159
+msgid "State"
+msgstr "状态"
+
+#: src/poltergeist/TaskPage.zig:160
+msgid "Title"
+msgstr "标题"
+
+#: src/poltergeist/TaskPage.zig:161
+msgid "Owner"
+msgstr "负责人"
+
+#: src/poltergeist/TaskPage.zig:162
+msgid "Quiet for"
+msgstr "多久没动"
+
+#: src/poltergeist/TaskPage.zig:163
+msgid "Queued"
+msgstr "排着"
+
+#: src/poltergeist/TaskPage.zig:164
+msgid "In progress"
+msgstr "在做"
+
+#: src/poltergeist/TaskPage.zig:165
+msgid "Stuck"
+msgstr "卡住"
+
+#: src/poltergeist/TaskPage.zig:166
+msgid "Done, to close"
+msgstr "做完待关"
+
+#: src/poltergeist/TaskPage.zig:167
+msgid "Closed"
+msgstr "关了"
+
+#: src/poltergeist/TaskPage.zig:168
+msgid "Cancelled"
+msgstr "取消了"
+
+#: src/poltergeist/TaskPage.zig:169
+msgid "Nobody yet"
+msgstr "未指派"
+
+#: src/poltergeist/TaskPage.zig:170
+msgid "Just now"
+msgstr "刚刚"
+
+#: src/poltergeist/TaskPage.zig:171
+msgid "{1} min"
+msgstr "{1} 分钟"
+
+#: src/poltergeist/TaskPage.zig:172
+msgid "{1} h"
+msgstr "{1} 小时"
+
+#: src/poltergeist/TaskPage.zig:173
+msgid "Yesterday"
+msgstr "昨天"
+
+#: src/poltergeist/TaskPage.zig:174
+msgid "{1} days ago"
+msgstr "{1} 天前"
+
+#: src/poltergeist/TaskPage.zig:175
+msgid "The task"
+msgstr "任务原文"
+
+#: src/poltergeist/TaskPage.zig:176
+msgid "What happened"
+msgstr "经过"
+
+#: src/poltergeist/TaskPage.zig:177
+msgid "What the group said about #{1}"
+msgstr "群里提到 #{1} 的消息"
+
+#: src/poltergeist/TaskPage.zig:178 src/poltergeist/ResourcePage.zig:263
+#: windows/control-room/src/lend.rs:442 windows/control-room/src/list.rs:161
+msgid "Supervisor"
+msgstr "总管"
+
+#: src/poltergeist/TaskPage.zig:179
+msgid "Made this task"
+msgstr "建了这条任务"
+
+#: src/poltergeist/TaskPage.zig:180
+msgid "Gave it to {1}"
+msgstr "派给 {1}"
+
+#: src/poltergeist/TaskPage.zig:181
+msgid "Took it back"
+msgstr "收回了"
+
+#: src/poltergeist/TaskPage.zig:182
+msgid "Started"
+msgstr "开始做"
+
+#: src/poltergeist/TaskPage.zig:183
+msgid "Said it is stuck"
+msgstr "报卡住"
+
+#: src/poltergeist/TaskPage.zig:184
+msgid "Said it is done"
+msgstr "说做完了"
+
+#: src/poltergeist/TaskPage.zig:185
+msgid "Put it back in the queue"
+msgstr "放回排队"
+
+#: src/poltergeist/TaskPage.zig:186
+msgid "Closed it"
+msgstr "关了它"
+
+#: src/poltergeist/TaskPage.zig:187
+msgid "Cancelled it"
+msgstr "取消了它"
+
+#: src/poltergeist/TaskPage.zig:188
+msgid "Changed its title"
+msgstr "改了标题"
+
+#: src/poltergeist/TaskPage.zig:189
+msgid "(What came before was merged)"
+msgstr "（这之前的经过已合并）"
+
+#: src/poltergeist/TaskPage.zig:190
+msgid "Back after a restart, the same session ({1})"
+msgstr "重启后凭同一会话接回（{1}）"
+
+#: src/poltergeist/TaskPage.zig:191
+msgid "{1} min later"
+msgstr "隔了 {1} 分钟"
+
+#: src/poltergeist/TaskPage.zig:192
+msgid "Pick a task"
+msgstr "选任务"
+
+#: src/poltergeist/TaskPage.zig:193
+msgid "Fold its story"
+msgstr "收起这条的经过"
+
+#: src/poltergeist/TaskPage.zig:194
+msgid "Open its story"
+msgstr "展开这条的经过"
+
+#: src/poltergeist/TaskPage.zig:197
+msgid "{1} closed or cancelled tasks hidden"
+msgstr "已隐藏 {1} 条已关闭或已取消的任务"
+
+#: src/poltergeist/TaskPage.zig:198
+msgid "{1} closed or cancelled"
+msgstr "已关闭或已取消的 {1} 条"
+
+#: src/poltergeist/TaskPage.zig:199
+msgid "{1} more closed with \"{2}\" in the title"
+msgstr "已关闭的里还有 {1} 条标题含「{2}」"
+
+#: src/poltergeist/TaskPage.zig:200
+msgid "or click this row to show them"
+msgstr "或点这一行显示"
+
+#: src/poltergeist/TaskPage.zig:201
+msgid "Hide"
+msgstr "隐藏"
+
+#: src/poltergeist/TaskPage.zig:202
+msgid "Show the {1} closed"
+msgstr "显示已关闭的 {1} 条"
+
+#: src/poltergeist/TaskPage.zig:203
+msgid "Hide the closed"
+msgstr "隐藏已关闭的"
+
+#: src/poltergeist/TaskPage.zig:205
+msgid "Filter by title"
+msgstr "按标题筛选"
+
+#: src/poltergeist/TaskPage.zig:206
+msgid "Pick among the results"
+msgstr "在结果里选"
+
+#: src/poltergeist/TaskPage.zig:207
+msgid "Clear the filter"
+msgstr "清空筛选"
+
+#: src/poltergeist/TaskPage.zig:208
+msgid "{1} / {2}"
+msgstr "{1} / {2} 条"
+
+#: src/poltergeist/TaskPage.zig:209
+msgid "Clear filter"
+msgstr "清空"
+
+#: src/poltergeist/TaskPage.zig:210
+msgid "No task has \"{1}\" in its title"
+msgstr "没有标题里含「{1}」的任务"
+
+#: src/poltergeist/TaskPage.zig:213
+msgid ""
+"{1} closed ones have \"{2}\" in the title; press c to show them. Press Esc "
+"to clear the filter."
+msgstr "已关闭的里有 {1} 条标题含「{2}」，按 c 显示。按 Esc 清空筛选。"
+
+#: src/poltergeist/TaskPage.zig:214
+msgid "The closed ones were searched too. Press Esc to clear the filter."
+msgstr "已关闭的也找过了。按 Esc 清空筛选。"
+
+#: src/poltergeist/ResourcePage.zig:225
+msgid "Machine"
+msgstr "整机"
+
+#: src/poltergeist/ResourcePage.zig:226
+msgid "/ {1}"
+msgstr "/ {1}"
+
+#: src/poltergeist/ResourcePage.zig:227
+msgid "Swap {1}"
+msgstr "交换 {1}"
+
+#: src/poltergeist/ResourcePage.zig:228
+msgid "Memory pressure {1}"
+msgstr "内存压力 {1}"
+
+#: src/poltergeist/ResourcePage.zig:229
+msgid "normal"
+msgstr "正常"
+
+#: src/poltergeist/ResourcePage.zig:230
+msgid "high"
+msgstr "偏高"
+
+#: src/poltergeist/ResourcePage.zig:231
+msgid "critical"
+msgstr "紧张"
+
+#: src/poltergeist/ResourcePage.zig:232
+msgid "{1} terminals in this group"
+msgstr "这一群 {1} 个终端"
+
+#: src/poltergeist/ResourcePage.zig:233
+msgid "In 24 hours: stopped {1} times · {2} warnings"
+msgstr "24 小时内中断 {1} 次 · 预警 {2} 次"
+
+#: src/poltergeist/ResourcePage.zig:234
+msgid "Now {1} terminals · {2} warning · {3} stopped"
+msgstr "现在 {1} 个终端 · {2} 个在预警 · {3} 个已中断"
+
+#: src/poltergeist/ResourcePage.zig:235
+msgid "Every 2 s · a full dial is the line written in its gap"
+msgstr "每 2 秒更新 · 表盘满格 = 缺口里写的那条线"
+
+#: src/poltergeist/ResourcePage.zig:236
+msgid "24 hours"
+msgstr "24 小时"
+
+#: src/poltergeist/ResourcePage.zig:237
+msgid "7 days"
+msgstr "7 天"
+
+#: src/poltergeist/ResourcePage.zig:238
+msgid "Last 24 hours"
+msgstr "最近 24 小时"
+
+#: src/poltergeist/ResourcePage.zig:239
+msgid "Last 7 days"
+msgstr "最近 7 天"
+
+#: src/poltergeist/ResourcePage.zig:240
+msgid "A cell is 30 minutes, coloured by the highest level in it"
+msgstr "每格 30 分钟，颜色是那段时间里最高的档位"
+
+#: src/poltergeist/ResourcePage.zig:241
+msgid "A cell is 4 hours, coloured by the highest level in it"
+msgstr "每格 4 小时，颜色是那段时间里最高的档位"
+
+#: src/poltergeist/ResourcePage.zig:242
+msgid "Absent"
+msgstr "不在"
+
+#: src/poltergeist/ResourcePage.zig:243
+msgid "Normal"
+msgstr "正常"
+
+#: src/poltergeist/ResourcePage.zig:244 src/poltergeist/ResourcePage.zig:265
+msgid "Warning {1}"
+msgstr "预警 {1}"
+
+#: src/poltergeist/ResourcePage.zig:245
+msgid "Stopped"
+msgstr "中断"
+
+#: src/poltergeist/ResourcePage.zig:246
+msgid "Yesterday {1}"
+msgstr "昨天 {1}"
+
+#: src/poltergeist/ResourcePage.zig:247
+msgid "Now"
+msgstr "现在"
+
+#: src/poltergeist/ResourcePage.zig:248
+msgid "{1}  {2} was stopped"
+msgstr "{1}  {2} 被中断"
+
+#: src/poltergeist/ResourcePage.zig:249
+msgid "{1}  {2} was over its kill line, not stopped"
+msgstr "{1}  {2} 过了中断线，没有中断"
+
+#: src/poltergeist/ResourcePage.zig:250
+msgid "{1}  {2} went over warn line {3}"
+msgstr "{1}  {2} 过了预警线 {3}"
+
+#: src/poltergeist/ResourcePage.zig:251
+msgid "{1}  {2} held at most {3}"
+msgstr "{1}  {2} 最多占了 {3}"
+
+#: src/poltergeist/ResourcePage.zig:252
+msgid "Memory {1}, over the kill line {2} for {3} s"
+msgstr "内存 {1}，过了中断线 {2}，持续 {3} 秒"
+
+#: src/poltergeist/ResourcePage.zig:253
+msgid "Memory {1}, over 1.5 times the kill line {2}"
+msgstr "内存 {1}，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/ResourcePage.zig:254
+msgid "Memory {1}, over the warn line {2}"
+msgstr "内存 {1}，过了预警线 {2}"
+
+#: src/poltergeist/ResourcePage.zig:255
+msgid "{1} processes, over the kill line {2} for {3} s"
+msgstr "{1} 个进程，过了中断线 {2}，持续 {3} 秒"
+
+#: src/poltergeist/ResourcePage.zig:256
+msgid "{1} processes, over 1.5 times the kill line {2}"
+msgstr "{1} 个进程，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/ResourcePage.zig:257
+msgid "{1} processes, over the warn line {2}"
+msgstr "{1} 个进程，过了预警线 {2}"
+
+#: src/poltergeist/ResourcePage.zig:258
+msgid "Largest: {1} ×{2}"
+msgstr "最大的进程：{1} ×{2}"
+
+#: src/poltergeist/ResourcePage.zig:259
+msgid "You and the supervisor were told"
+msgstr "已通知你和总管"
+
+#: src/poltergeist/ResourcePage.zig:260
+msgid "The supervisor was told, with the command to resume"
+msgstr "总管已收到通知和接回命令"
+
+#: src/poltergeist/ResourcePage.zig:261
+msgid "You were told"
+msgstr "已通知你"
+
+#: src/poltergeist/ResourcePage.zig:262
+msgid "Nobody was told: told of it under ten minutes before"
+msgstr "没有通知：十分钟内已经说过"
+
+#: src/poltergeist/ResourcePage.zig:264
+msgid "Your terminal"
+msgstr "你的终端"
+
+#: src/poltergeist/ResourcePage.zig:266
+msgid "Over, not stopped"
+msgstr "过线未中断"
+
+#: src/poltergeist/ResourcePage.zig:267
+msgid "Stopped {1}"
+msgstr "已中断 {1}"
+
+#: src/poltergeist/ResourcePage.zig:268
+msgid "Kill line {1}"
+msgstr "中断线 {1}"
+
+#: src/poltergeist/ResourcePage.zig:269
+msgid "Machine {1}"
+msgstr "整机 {1}"
+
+#: src/poltergeist/ResourcePage.zig:270
+msgid "↗ +{1}/min"
+msgstr "↗ +{1}/分"
+
+#: src/poltergeist/ResourcePage.zig:271
+msgid "↘ −{1}/min"
+msgstr "↘ −{1}/分"
+
+#: src/poltergeist/ResourcePage.zig:272
+msgid "→ Steady"
+msgstr "→ 平稳"
+
+#: src/poltergeist/ResourcePage.zig:273
+msgid "↓ Stopped"
+msgstr "↓ 已停"
+
+#: src/poltergeist/ResourcePage.zig:274
+msgid "About {1} min to the line"
+msgstr "约 {1} 分后到线"
+
+#: src/poltergeist/ResourcePage.zig:275
+msgid "{1} to go"
+msgstr "还差 {1}"
+
+#: src/poltergeist/ResourcePage.zig:276
+msgid "No kill line"
+msgstr "不设中断线"
+
+#: src/poltergeist/ResourcePage.zig:277
+msgid "Stopped at {1}"
+msgstr "{1} 被中断"
+
+#: src/poltergeist/ResourcePage.zig:278
+msgid "Over the line"
+msgstr "已过线"
+
+#: src/poltergeist/ResourcePage.zig:279
+msgid "CPU {1} cores · {2} processes"
+msgstr "CPU {1} 核 · {2} 进程"
+
+#: src/poltergeist/ResourcePage.zig:280
+msgid "{1} processes"
+msgstr "{1} 进程"
+
+#: src/poltergeist/ResourcePage.zig:281
+msgid "Ran {1}"
+msgstr "运行 {1}"
+
+#: src/poltergeist/ResourcePage.zig:282
+msgid "Resume command given to the supervisor"
+msgstr "接回命令已给总管"
+
+#: src/poltergeist/judge.zig:255
+msgid ""
+"Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s"
+msgstr "Polter 中断了这一格：内存 {1}，超过中断线 {2} 已持续 {3} 秒"
+
+#: src/poltergeist/judge.zig:256
+msgid ""
+"Polter stopped this pane at once: memory {1}, over 1.5 times its kill line "
+"of {2}"
+msgstr "Polter 立即中断了这一格：内存 {1}，超过中断线 {2} 的 1.5 倍"
+
+#: src/poltergeist/judge.zig:257
+msgid ""
+"Polter stopped this pane: {1} processes, over its kill line of {2} for {3} s"
+msgstr "Polter 中断了这一格：进程 {1} 个，超过中断线 {2} 个已持续 {3} 秒"
+
+#: src/poltergeist/judge.zig:258
+msgid ""
+"Polter stopped this pane at once: {1} processes, over 1.5 times its kill "
+"line of {2}"
+msgstr "Polter 立即中断了这一格：进程 {1} 个，超过中断线 {2} 个的 1.5 倍"
+
+#: src/poltergeist/judge.zig:259
+msgid "Memory {1}, over warn line {2} of {3}"
+msgstr "内存 {1}，过了预警 {2}（{3}）"
+
+#: src/poltergeist/judge.zig:260
+msgid "{1} processes, over warn line {2} of {3}"
+msgstr "进程 {1} 个，过了预警 {2}（{3} 个）"
+
+#: src/poltergeist/judge.zig:261
+msgid ""
+"Memory {1}, over its kill line of {2}; it is held or shielded, so it was not "
+"stopped"
+msgstr "内存 {1}，过了中断线 {2}；这一格被保持或屏蔽，所以没有中断"
+
+#: src/poltergeist/judge.zig:262
+msgid ""
+"{1} processes, over its kill line of {2}; it is held or shielded, so it was "
+"not stopped"
+msgstr "进程 {1} 个，过了中断线 {2} 个；这一格被保持或屏蔽，所以没有中断"
+
+#: src/poltergeist/judge.zig:263
+msgid "{1}; most of it was {2} ({3} processes)"
+msgstr "{1}；占得最多的是 {2}（{3} 个进程）"
+
+#: src/poltergeist/judge.zig:264
+msgid "Polter stopped a pane"
+msgstr "Polter 中断了一格"
+
+#: src/poltergeist/judge.zig:265
+msgid "A pane is over a line"
+msgstr "有一格过了资源线"
+
+#: src/poltergeist/judge.zig:266
+msgid "The machine is short of memory"
+msgstr "整机内存紧张"
+
+#: src/poltergeist/judge.zig:267
+msgid "Memory pressure is high. Holding the most: {1}"
+msgstr "内存压力偏高。占用最多的：{1}"
+
+#: src/poltergeist/judge.zig:268
+msgid "Memory pressure is critical. Holding the most: {1}"
+msgstr "内存压力已到严重。占用最多的：{1}"
 
 #: windows/host/src/chat_native.rs:1042
 msgid "Today"
@@ -5650,10 +6151,6 @@ msgstr "关闭总管"
 msgid "The supervisor's terminal is no longer open."
 msgstr "总管的终端已经不在了。"
 
-#: windows/control-room/src/lend.rs:442 windows/control-room/src/list.rs:161
-msgid "Supervisor"
-msgstr "总管"
-
 #: windows/control-room/src/list.rs:148
 msgid "No group is waiting for you"
 msgstr "没有群在等你"
@@ -6858,382 +7355,6 @@ msgstr "标签页“{}”已经是项目“{}”的一页。先把它从那个�
 
 #~ msgid "Needs setup"
 #~ msgstr "缺配置"
-
-#~ msgid ""
-#~ "Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s"
-#~ msgstr "Polter 中断了这一格：内存 {1}，超过中断线 {2} 已持续 {3} 秒"
-
-#~ msgid ""
-#~ "Polter stopped this pane at once: memory {1}, over 1.5 times its kill "
-#~ "line of {2}"
-#~ msgstr "Polter 立即中断了这一格：内存 {1}，超过中断线 {2} 的 1.5 倍"
-
-#~ msgid ""
-#~ "Polter stopped this pane: {1} processes, over its kill line of {2} for "
-#~ "{3} s"
-#~ msgstr "Polter 中断了这一格：进程 {1} 个，超过中断线 {2} 个已持续 {3} 秒"
-
-#~ msgid ""
-#~ "Polter stopped this pane at once: {1} processes, over 1.5 times its kill "
-#~ "line of {2}"
-#~ msgstr "Polter 立即中断了这一格：进程 {1} 个，超过中断线 {2} 个的 1.5 倍"
-
-#~ msgid "Memory {1}, over warn line {2} of {3}"
-#~ msgstr "内存 {1}，过了预警 {2}（{3}）"
-
-#~ msgid "{1} processes, over warn line {2} of {3}"
-#~ msgstr "进程 {1} 个，过了预警 {2}（{3} 个）"
-
-#~ msgid ""
-#~ "Memory {1}, over its kill line of {2}; it is held or shielded, so it was "
-#~ "not stopped"
-#~ msgstr "内存 {1}，过了中断线 {2}；这一格被保持或屏蔽，所以没有中断"
-
-#~ msgid ""
-#~ "{1} processes, over its kill line of {2}; it is held or shielded, so it "
-#~ "was not stopped"
-#~ msgstr "进程 {1} 个，过了中断线 {2} 个；这一格被保持或屏蔽，所以没有中断"
-
-#~ msgid "{1}; most of it was {2} ({3} processes)"
-#~ msgstr "{1}；占得最多的是 {2}（{3} 个进程）"
-
-#~ msgid "Polter stopped a pane"
-#~ msgstr "Polter 中断了一格"
-
-#~ msgid "A pane is over a line"
-#~ msgstr "有一格过了资源线"
-
-#~ msgid "The machine is short of memory"
-#~ msgstr "整机内存紧张"
-
-#~ msgid "Memory pressure is high. Holding the most: {1}"
-#~ msgstr "内存压力偏高。占用最多的：{1}"
-
-#~ msgid "Memory pressure is critical. Holding the most: {1}"
-#~ msgstr "内存压力已到严重。占用最多的：{1}"
-
-#~ msgid "Machine"
-#~ msgstr "整机"
-
-#~ msgid "/ {1}"
-#~ msgstr "/ {1}"
-
-#~ msgid "Swap {1}"
-#~ msgstr "交换 {1}"
-
-#~ msgid "Memory pressure {1}"
-#~ msgstr "内存压力 {1}"
-
-#~ msgid "normal"
-#~ msgstr "正常"
-
-#~ msgid "high"
-#~ msgstr "偏高"
-
-#~ msgid "critical"
-#~ msgstr "紧张"
-
-#~ msgid "{1} terminals in this group"
-#~ msgstr "这一群 {1} 个终端"
-
-#~ msgid "In 24 hours: stopped {1} times · {2} warnings"
-#~ msgstr "24 小时内中断 {1} 次 · 预警 {2} 次"
-
-#~ msgid "Now {1} terminals · {2} warning · {3} stopped"
-#~ msgstr "现在 {1} 个终端 · {2} 个在预警 · {3} 个已中断"
-
-#~ msgid "Every 2 s · a full dial is the line written in its gap"
-#~ msgstr "每 2 秒更新 · 表盘满格 = 缺口里写的那条线"
-
-#~ msgid "24 hours"
-#~ msgstr "24 小时"
-
-#~ msgid "7 days"
-#~ msgstr "7 天"
-
-#~ msgid "Last 24 hours"
-#~ msgstr "最近 24 小时"
-
-#~ msgid "Last 7 days"
-#~ msgstr "最近 7 天"
-
-#~ msgid "A cell is 30 minutes, coloured by the highest level in it"
-#~ msgstr "每格 30 分钟，颜色是那段时间里最高的档位"
-
-#~ msgid "A cell is 4 hours, coloured by the highest level in it"
-#~ msgstr "每格 4 小时，颜色是那段时间里最高的档位"
-
-#~ msgid "Absent"
-#~ msgstr "不在"
-
-#~ msgid "Normal"
-#~ msgstr "正常"
-
-#~ msgid "Warning {1}"
-#~ msgstr "预警 {1}"
-
-#~ msgid "Stopped"
-#~ msgstr "中断"
-
-#~ msgid "Yesterday {1}"
-#~ msgstr "昨天 {1}"
-
-#~ msgid "Now"
-#~ msgstr "现在"
-
-#~ msgid "{1}  {2} was stopped"
-#~ msgstr "{1}  {2} 被中断"
-
-#~ msgid "{1}  {2} was over its kill line, not stopped"
-#~ msgstr "{1}  {2} 过了中断线，没有中断"
-
-#~ msgid "{1}  {2} went over warn line {3}"
-#~ msgstr "{1}  {2} 过了预警线 {3}"
-
-#~ msgid "{1}  {2} held at most {3}"
-#~ msgstr "{1}  {2} 最多占了 {3}"
-
-#~ msgid "Memory {1}, over the kill line {2} for {3} s"
-#~ msgstr "内存 {1}，过了中断线 {2}，持续 {3} 秒"
-
-#~ msgid "Memory {1}, over 1.5 times the kill line {2}"
-#~ msgstr "内存 {1}，超过中断线 {2} 的 1.5 倍"
-
-#~ msgid "Memory {1}, over the warn line {2}"
-#~ msgstr "内存 {1}，过了预警线 {2}"
-
-#~ msgid "{1} processes, over the kill line {2} for {3} s"
-#~ msgstr "{1} 个进程，过了中断线 {2}，持续 {3} 秒"
-
-#~ msgid "{1} processes, over 1.5 times the kill line {2}"
-#~ msgstr "{1} 个进程，超过中断线 {2} 的 1.5 倍"
-
-#~ msgid "{1} processes, over the warn line {2}"
-#~ msgstr "{1} 个进程，过了预警线 {2}"
-
-#~ msgid "Largest: {1} ×{2}"
-#~ msgstr "最大的进程：{1} ×{2}"
-
-#~ msgid "You and the supervisor were told"
-#~ msgstr "已通知你和总管"
-
-#~ msgid "The supervisor was told, with the command to resume"
-#~ msgstr "总管已收到通知和接回命令"
-
-#~ msgid "You were told"
-#~ msgstr "已通知你"
-
-#~ msgid "Nobody was told: told of it under ten minutes before"
-#~ msgstr "没有通知：十分钟内已经说过"
-
-#~ msgid "Your terminal"
-#~ msgstr "你的终端"
-
-#~ msgid "Over, not stopped"
-#~ msgstr "过线未中断"
-
-#~ msgid "Stopped {1}"
-#~ msgstr "已中断 {1}"
-
-#~ msgid "Kill line {1}"
-#~ msgstr "中断线 {1}"
-
-#~ msgid "Machine {1}"
-#~ msgstr "整机 {1}"
-
-#~ msgid "↗ +{1}/min"
-#~ msgstr "↗ +{1}/分"
-
-#~ msgid "↘ −{1}/min"
-#~ msgstr "↘ −{1}/分"
-
-#~ msgid "→ Steady"
-#~ msgstr "→ 平稳"
-
-#~ msgid "↓ Stopped"
-#~ msgstr "↓ 已停"
-
-#~ msgid "About {1} min to the line"
-#~ msgstr "约 {1} 分后到线"
-
-#~ msgid "{1} to go"
-#~ msgstr "还差 {1}"
-
-#~ msgid "No kill line"
-#~ msgstr "不设中断线"
-
-#~ msgid "Stopped at {1}"
-#~ msgstr "{1} 被中断"
-
-#~ msgid "Over the line"
-#~ msgstr "已过线"
-
-#~ msgid "CPU {1} cores · {2} processes"
-#~ msgstr "CPU {1} 核 · {2} 进程"
-
-#~ msgid "{1} processes"
-#~ msgstr "{1} 进程"
-
-#~ msgid "Ran {1}"
-#~ msgstr "运行 {1}"
-
-#~ msgid "Resume command given to the supervisor"
-#~ msgstr "接回命令已给总管"
-
-#~ msgid "No."
-#~ msgstr "号"
-
-#~ msgid "State"
-#~ msgstr "状态"
-
-#~ msgid "Title"
-#~ msgstr "标题"
-
-#~ msgid "Owner"
-#~ msgstr "负责人"
-
-#~ msgid "Quiet for"
-#~ msgstr "多久没动"
-
-#~ msgid "Queued"
-#~ msgstr "排着"
-
-#~ msgid "In progress"
-#~ msgstr "在做"
-
-#~ msgid "Stuck"
-#~ msgstr "卡住"
-
-#~ msgid "Done, to close"
-#~ msgstr "做完待关"
-
-#~ msgid "Closed"
-#~ msgstr "关了"
-
-#~ msgid "Cancelled"
-#~ msgstr "取消了"
-
-#~ msgid "Nobody yet"
-#~ msgstr "未指派"
-
-#~ msgid "Just now"
-#~ msgstr "刚刚"
-
-#~ msgid "{1} min"
-#~ msgstr "{1} 分钟"
-
-#~ msgid "{1} h"
-#~ msgstr "{1} 小时"
-
-#~ msgid "Yesterday"
-#~ msgstr "昨天"
-
-#~ msgid "{1} days ago"
-#~ msgstr "{1} 天前"
-
-#~ msgid "The task"
-#~ msgstr "任务原文"
-
-#~ msgid "What happened"
-#~ msgstr "经过"
-
-#~ msgid "What the group said about #{1}"
-#~ msgstr "群里提到 #{1} 的消息"
-
-#~ msgid "Made this task"
-#~ msgstr "建了这条任务"
-
-#~ msgid "Gave it to {1}"
-#~ msgstr "派给 {1}"
-
-#~ msgid "Took it back"
-#~ msgstr "收回了"
-
-#~ msgid "Started"
-#~ msgstr "开始做"
-
-#~ msgid "Said it is stuck"
-#~ msgstr "报卡住"
-
-#~ msgid "Said it is done"
-#~ msgstr "说做完了"
-
-#~ msgid "Put it back in the queue"
-#~ msgstr "放回排队"
-
-#~ msgid "Closed it"
-#~ msgstr "关了它"
-
-#~ msgid "Cancelled it"
-#~ msgstr "取消了它"
-
-#~ msgid "Changed its title"
-#~ msgstr "改了标题"
-
-#~ msgid "(What came before was merged)"
-#~ msgstr "（这之前的经过已合并）"
-
-#~ msgid "Back after a restart, the same session ({1})"
-#~ msgstr "重启后凭同一会话接回（{1}）"
-
-#~ msgid "{1} min later"
-#~ msgstr "隔了 {1} 分钟"
-
-#~ msgid "Pick a task"
-#~ msgstr "选任务"
-
-#~ msgid "Fold its story"
-#~ msgstr "收起这条的经过"
-
-#~ msgid "Open its story"
-#~ msgstr "展开这条的经过"
-
-#~ msgid "{1} closed or cancelled tasks hidden"
-#~ msgstr "已隐藏 {1} 条已关闭或已取消的任务"
-
-#~ msgid "{1} closed or cancelled"
-#~ msgstr "已关闭或已取消的 {1} 条"
-
-#~ msgid "{1} more closed with \"{2}\" in the title"
-#~ msgstr "已关闭的里还有 {1} 条标题含「{2}」"
-
-#~ msgid "or click this row to show them"
-#~ msgstr "或点这一行显示"
-
-#~ msgid "Hide"
-#~ msgstr "隐藏"
-
-#~ msgid "Show the {1} closed"
-#~ msgstr "显示已关闭的 {1} 条"
-
-#~ msgid "Hide the closed"
-#~ msgstr "隐藏已关闭的"
-
-#~ msgid "Filter by title"
-#~ msgstr "按标题筛选"
-
-#~ msgid "Pick among the results"
-#~ msgstr "在结果里选"
-
-#~ msgid "Clear the filter"
-#~ msgstr "清空筛选"
-
-#~ msgid "{1} / {2}"
-#~ msgstr "{1} / {2} 条"
-
-#~ msgid "Clear filter"
-#~ msgstr "清空"
-
-#~ msgid "No task has \"{1}\" in its title"
-#~ msgstr "没有标题里含「{1}」的任务"
-
-#~ msgid ""
-#~ "{1} closed ones have \"{2}\" in the title; press c to show them. Press "
-#~ "Esc to clear the filter."
-#~ msgstr "已关闭的里有 {1} 条标题含「{2}」，按 c 显示。按 Esc 清空筛选。"
-
-#~ msgid "The closed ones were searched too. Press Esc to clear the filter."
-#~ msgstr "已关闭的也找过了。按 Esc 清空筛选。"
 
 #~ msgid "Filter by key"
 #~ msgstr "按键名筛选"

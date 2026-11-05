@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-11-06 00:31+0800\n"
+"POT-Creation-Date: 2026-11-06 01:34+0800\n"
 "PO-Revision-Date: 2026-09-12 18:00+0200\n"
 "Last-Translator: Giacomo Bettini <giaco.bettini@gmail.com>\n"
 "Language-Team: Italian <tp@lists.linux.it>\n"
@@ -2727,6 +2727,507 @@ msgstr ""
 
 #: src/poltergeist/report.zig:676
 msgid ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:158
+msgid "No."
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:159
+msgid "State"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:160
+msgid "Title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:161
+msgid "Owner"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:162
+msgid "Quiet for"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:163
+msgid "Queued"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:164
+msgid "In progress"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:165
+msgid "Stuck"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:166
+msgid "Done, to close"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:167
+msgid "Closed"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:168
+msgid "Cancelled"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:169
+msgid "Nobody yet"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:170
+msgid "Just now"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:171
+msgid "{1} min"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:172
+msgid "{1} h"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:173
+msgid "Yesterday"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:174
+msgid "{1} days ago"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:175
+msgid "The task"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:176
+msgid "What happened"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:177
+msgid "What the group said about #{1}"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:178 src/poltergeist/ResourcePage.zig:263
+#: windows/control-room/src/lend.rs:442 windows/control-room/src/list.rs:161
+msgid "Supervisor"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:179
+msgid "Made this task"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:180
+msgid "Gave it to {1}"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:181
+msgid "Took it back"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:182
+msgid "Started"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:183
+msgid "Said it is stuck"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:184
+msgid "Said it is done"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:185
+msgid "Put it back in the queue"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:186
+msgid "Closed it"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:187
+msgid "Cancelled it"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:188
+msgid "Changed its title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:189
+msgid "(What came before was merged)"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:190
+msgid "Back after a restart, the same session ({1})"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:191
+msgid "{1} min later"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:192
+msgid "Pick a task"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:193
+msgid "Fold its story"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:194
+msgid "Open its story"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:197
+msgid "{1} closed or cancelled tasks hidden"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:198
+msgid "{1} closed or cancelled"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:199
+msgid "{1} more closed with \"{2}\" in the title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:200
+msgid "or click this row to show them"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:201
+msgid "Hide"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:202
+msgid "Show the {1} closed"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:203
+msgid "Hide the closed"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:205
+msgid "Filter by title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:206
+msgid "Pick among the results"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:207
+msgid "Clear the filter"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:208
+msgid "{1} / {2}"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:209
+msgid "Clear filter"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:210
+msgid "No task has \"{1}\" in its title"
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:213
+msgid ""
+"{1} closed ones have \"{2}\" in the title; press c to show them. Press Esc "
+"to clear the filter."
+msgstr ""
+
+#: src/poltergeist/TaskPage.zig:214
+msgid "The closed ones were searched too. Press Esc to clear the filter."
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:225
+msgid "Machine"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:226
+msgid "/ {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:227
+msgid "Swap {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:228
+msgid "Memory pressure {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:229
+msgid "normal"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:230
+msgid "high"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:231
+msgid "critical"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:232
+msgid "{1} terminals in this group"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:233
+msgid "In 24 hours: stopped {1} times · {2} warnings"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:234
+msgid "Now {1} terminals · {2} warning · {3} stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:235
+msgid "Every 2 s · a full dial is the line written in its gap"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:236
+msgid "24 hours"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:237
+msgid "7 days"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:238
+msgid "Last 24 hours"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:239
+msgid "Last 7 days"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:240
+msgid "A cell is 30 minutes, coloured by the highest level in it"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:241
+msgid "A cell is 4 hours, coloured by the highest level in it"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:242
+msgid "Absent"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:243
+msgid "Normal"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:244 src/poltergeist/ResourcePage.zig:265
+msgid "Warning {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:245
+msgid "Stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:246
+msgid "Yesterday {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:247
+msgid "Now"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:248
+msgid "{1}  {2} was stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:249
+msgid "{1}  {2} was over its kill line, not stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:250
+msgid "{1}  {2} went over warn line {3}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:251
+msgid "{1}  {2} held at most {3}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:252
+msgid "Memory {1}, over the kill line {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:253
+msgid "Memory {1}, over 1.5 times the kill line {2}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:254
+msgid "Memory {1}, over the warn line {2}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:255
+msgid "{1} processes, over the kill line {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:256
+msgid "{1} processes, over 1.5 times the kill line {2}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:257
+msgid "{1} processes, over the warn line {2}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:258
+msgid "Largest: {1} ×{2}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:259
+msgid "You and the supervisor were told"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:260
+msgid "The supervisor was told, with the command to resume"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:261
+msgid "You were told"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:262
+msgid "Nobody was told: told of it under ten minutes before"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:264
+msgid "Your terminal"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:266
+msgid "Over, not stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:267
+msgid "Stopped {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:268
+msgid "Kill line {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:269
+msgid "Machine {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:270
+msgid "↗ +{1}/min"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:271
+msgid "↘ −{1}/min"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:272
+msgid "→ Steady"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:273
+msgid "↓ Stopped"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:274
+msgid "About {1} min to the line"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:275
+msgid "{1} to go"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:276
+msgid "No kill line"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:277
+msgid "Stopped at {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:278
+msgid "Over the line"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:279
+msgid "CPU {1} cores · {2} processes"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:280
+msgid "{1} processes"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:281
+msgid "Ran {1}"
+msgstr ""
+
+#: src/poltergeist/ResourcePage.zig:282
+msgid "Resume command given to the supervisor"
+msgstr ""
+
+#: src/poltergeist/judge.zig:255
+msgid ""
+"Polter stopped this pane: memory {1}, over its kill line of {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/judge.zig:256
+msgid ""
+"Polter stopped this pane at once: memory {1}, over 1.5 times its kill line "
+"of {2}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:257
+msgid ""
+"Polter stopped this pane: {1} processes, over its kill line of {2} for {3} s"
+msgstr ""
+
+#: src/poltergeist/judge.zig:258
+msgid ""
+"Polter stopped this pane at once: {1} processes, over 1.5 times its kill "
+"line of {2}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:259
+msgid "Memory {1}, over warn line {2} of {3}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:260
+msgid "{1} processes, over warn line {2} of {3}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:261
+msgid ""
+"Memory {1}, over its kill line of {2}; it is held or shielded, so it was not "
+"stopped"
+msgstr ""
+
+#: src/poltergeist/judge.zig:262
+msgid ""
+"{1} processes, over its kill line of {2}; it is held or shielded, so it was "
+"not stopped"
+msgstr ""
+
+#: src/poltergeist/judge.zig:263
+msgid "{1}; most of it was {2} ({3} processes)"
+msgstr ""
+
+#: src/poltergeist/judge.zig:264
+msgid "Polter stopped a pane"
+msgstr ""
+
+#: src/poltergeist/judge.zig:265
+msgid "A pane is over a line"
+msgstr ""
+
+#: src/poltergeist/judge.zig:266
+msgid "The machine is short of memory"
+msgstr ""
+
+#: src/poltergeist/judge.zig:267
+msgid "Memory pressure is high. Holding the most: {1}"
+msgstr ""
+
+#: src/poltergeist/judge.zig:268
+msgid "Memory pressure is critical. Holding the most: {1}"
 msgstr ""
 
 #: windows/host/src/chat_native.rs:1042
@@ -5671,10 +6172,6 @@ msgstr ""
 
 #: windows/control-room/src/lend.rs:440
 msgid "The supervisor's terminal is no longer open."
-msgstr ""
-
-#: windows/control-room/src/lend.rs:442 windows/control-room/src/list.rs:161
-msgid "Supervisor"
 msgstr ""
 
 #: windows/control-room/src/list.rs:148
