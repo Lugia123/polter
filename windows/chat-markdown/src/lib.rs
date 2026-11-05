@@ -132,6 +132,45 @@ pub fn display_ranges(spans: &[Span], source: std::ops::Range<usize>) -> Vec<std
     out
 }
 
+/// The hit's byte ranges **inside `text[piece]`**, ordered and disjoint.
+///
+/// **One mapping for the ground and the word** (task 2997): the host paints
+/// the `search_hit` rectangle from these ranges and inks the same bytes with
+/// `search_hit_text`, so the two can never land on different characters.
+/// A range whose ends are not character boundaries of the piece, or that
+/// starts inside the range already returned, is dropped rather than guessed
+/// at -- the same rule `display_ranges` follows for a decoded unit.
+pub fn hit_ranges_in_piece(
+    spans: &[Span],
+    text: &str,
+    piece: std::ops::Range<usize>,
+    hits: &[std::ops::Range<usize>],
+) -> Vec<std::ops::Range<usize>> {
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    let Some(shown) = text.get(piece.clone()) else {
+        return out;
+    };
+    for hit in hits {
+        for range in display_ranges(spans, hit.clone()) {
+            let start = range.start.max(piece.start);
+            let end = range.end.min(piece.end);
+            if start >= end {
+                continue;
+            }
+            let a = start - piece.start;
+            let b = end - piece.start;
+            if !shown.is_char_boundary(a) || !shown.is_char_boundary(b) {
+                continue;
+            }
+            if out.last().is_some_and(|last| a < last.end) {
+                continue;
+            }
+            out.push(a..b);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub text: String,

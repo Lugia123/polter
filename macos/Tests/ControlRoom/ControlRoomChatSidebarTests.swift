@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import Ghostty
@@ -305,6 +306,42 @@ struct ControlRoomChatSidebarTests {
         state.backToSearch()
         #expect(state.mode == .closed)
     }
+    /// **The list's found word is the design's pair, not the body's ink.**
+    /// Until task 2997 this list set the word to `theme.text` while the
+    /// located message drew `search_hit_text`; the same found word then read
+    /// two ways on one screen. `search_hit_text` is the design's
+    /// `--search-hl-fg`, and the foreground must differ from the ground
+    /// (SwiftUI draws no ground otherwise -- see
+    /// `ControlRoomChatMarkdownView.marked`).
+    @Test func testTheListsFoundWordUsesTheDesignsHitTextColour() {
+        let theme = ControlRoomLook.theme(dark: true)
+        let hit = S.Hit(
+            message: message("a批量b"),
+            snippet: "a批量b",
+            snippetStart: 0,
+            ranges: [S.HitRange(start: 1, end: 7)]
+        )
+        let out = ControlRoomChatSidebarPanel.highlighted(hit, theme: theme)
+
+        var runs = 0
+        for run in out.runs where String(out[run.range].characters) == "批量" {
+            runs += 1
+            #expect(run.backgroundColor == theme.searchHit.color)
+            #expect(run.foregroundColor == theme.searchHitText.color)
+            #expect(run.foregroundColor != run.backgroundColor)
+        }
+        #expect(runs == 1)
+    }
+
+    private func message(_ text: String, anchor: String = "p:1") -> ControlRoomChatData.Message {
+        ControlRoomChatData.Message(
+            seq: 0, logSeq: 1, from: "0x1", fromSelf: false, author: "w",
+            atMs: 1, summary: false, channel: 0, text: text,
+            anchor: anchor, liveAnchor: nil, contentVersion: 0,
+            location: nil, mentions: nil, role: nil
+        )
+    }
+
 }
 
 /// Where the chat's one right-hand slot goes (task 2982, the supervisor's
@@ -352,4 +389,5 @@ struct ControlRoomChatSidebarLayoutTests {
             #expect(split.sidebarX >= 0)
         }
     }
+
 }

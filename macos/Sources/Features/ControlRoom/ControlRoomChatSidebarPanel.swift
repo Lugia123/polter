@@ -262,7 +262,7 @@ struct ControlRoomChatSidebarPanel: View {
                         .monospacedDigit()
                         .foregroundStyle(theme.textSecondary.color)
                 }
-                Text(highlighted(hit, theme: theme))
+                Text(Self.highlighted(hit, theme: theme))
                     .font(.system(size: Look.Font.min))
                     .lineLimit(3)
                     .foregroundStyle(theme.text.color)
@@ -287,15 +287,24 @@ struct ControlRoomChatSidebarPanel: View {
     /// The snippet with only the core's ranges marked. The ranges were
     /// validated as UTF-8 scalar boundaries at decode; the mapping drops a
     /// range it cannot express rather than moving it.
-    private func highlighted(_ hit: S.Hit, theme: Look.Theme) -> AttributedString {
+    /// **The found word carries the design's two colours**, the same pair the
+    /// located message's own text uses (`ControlRoomChatMarkdownView.marked`):
+    /// the `search_hit` ground under the `search_hit_text` word.
+    ///
+    /// This list drew the word in the body's own colour until task 2997, so
+    /// the same found word read two ways on one screen -- amber in the
+    /// message, ordinary ink in the card. `search_hit_text` is the design's
+    /// `--search-hl-fg` ("The found word itself, over `search_hit`"), and the
+    /// Windows host already draws the card's word in it.
+    ///
+    /// The ranges were validated as UTF-8 scalar boundaries at decode; the
+    /// mapping drops a range it cannot express rather than moving it.
+    static func highlighted(_ hit: S.Hit, theme: Look.Theme) -> AttributedString {
         var text = AttributedString(hit.snippet)
         for range in S.stringRanges(hit.snippet, ranges: hit.ranges) {
             guard let attributedRange = Range(range, in: text) else { continue }
-            // **The look's colour, not a view's own yellow** (task 2982):
-            // the same `search_hit` the message body uses, so the snippet
-            // and the located message cannot come to differ.
             text[attributedRange].backgroundColor = theme.searchHit.color
-            text[attributedRange].foregroundColor = theme.text.color
+            text[attributedRange].foregroundColor = theme.searchHitText.color
         }
         return text
     }

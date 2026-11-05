@@ -599,3 +599,64 @@ fn an_unparseable_transform_does_not_claim_a_range() {
         "unexpected mapping: {shown:?}"
     );
 }
+
+// -- hit_ranges_in_piece (task 2997) ----------------------------------------
+//
+// One mapping feeds both the `search_hit` ground and the `search_hit_text`
+// word; these pin its clipping, ordering and boundary rules.
+
+fn exact_span(text: &str) -> Vec<Span> {
+    vec![Span {
+        text: 0..text.len(),
+        source: 0..text.len(),
+        exact: true,
+    }]
+}
+
+#[test]
+fn hit_ranges_in_piece_are_relative_to_the_piece() {
+    let text = "abcneedlexyz";
+    let got = hit_ranges_in_piece(&exact_span(text), text, 3..9, &[0..text.len()]);
+    assert_eq!(got, vec![0..6]);
+}
+
+#[test]
+fn hit_ranges_in_piece_clip_to_the_piece() {
+    let text = "abcneedlexyz";
+    // The piece covers "needle" only; a wider hit arrives.
+    let got = hit_ranges_in_piece(&exact_span(text), text, 3..9, &[2..11]);
+    assert_eq!(got, vec![0..6]);
+}
+
+#[test]
+fn hit_ranges_in_piece_drop_a_hit_outside_the_piece() {
+    let text = "abcdef";
+    let got = hit_ranges_in_piece(&exact_span(text), text, 0..3, &[3..6]);
+    assert!(got.is_empty());
+}
+
+#[test]
+fn hit_ranges_in_piece_drop_a_range_that_starts_inside_the_previous_one() {
+    let text = "abcdef";
+    let got = hit_ranges_in_piece(&exact_span(text), text, 0..6, &[1..4, 3..5]);
+    assert_eq!(got, vec![1..4]);
+}
+
+#[test]
+fn hit_ranges_in_piece_keep_a_decoded_unit_whole() {
+    // "&" is displayed in one byte for a five-byte source unit.
+    let text = "a&b";
+    let spans = vec![
+        Span { text: 0..1, source: 0..1, exact: true },
+        Span { text: 1..2, source: 1..6, exact: false },
+        Span { text: 2..3, source: 6..7, exact: true },
+    ];
+    let got = hit_ranges_in_piece(&spans, text, 0..3, &[3..4]);
+    assert_eq!(got, vec![1..2]);
+}
+
+#[test]
+fn hit_ranges_in_piece_drop_a_range_that_cuts_a_character() {
+    let text = "批量";
+    assert!(hit_ranges_in_piece(&exact_span(text), text, 0..6, &[1..6]).is_empty());
+}

@@ -2651,7 +2651,7 @@ fn draw_plan(
                             for piece in &line.pieces {
                                 let base = table_top(&table.block, top);
                                 paint_piece_hits(dc, &fonts, piece, runs, text_hits, base, draw_left, theme);
-                                draw_piece(dc, &fonts, piece, runs, base, draw_left, theme);
+                                draw_piece(dc, &fonts, piece, runs, text_hits, base, draw_left, theme);
                             }
                         }
                     }
@@ -2666,7 +2666,7 @@ fn draw_plan(
                                 for piece in &line.pieces {
                                     let base = table_top(&table.block, top);
                                     paint_piece_hits(dc, &fonts, piece, runs, text_hits, base, draw_left, theme);
-                                    draw_piece(dc, &fonts, piece, runs, base, draw_left, theme);
+                                    draw_piece(dc, &fonts, piece, runs, text_hits, base, draw_left, theme);
                                 }
                             }
                         }
@@ -2727,53 +2727,61 @@ fn draw_plan(
                                 // **A code block's pieces index its own
                                 // text**, so the hit maps through the
                                 // block's spans before the line clip.
-                                if let Some(hits) = text_hits {
-                                    for hit in hits {
-                                        for range in
-                                            polter_chat_markdown::display_ranges(spans, hit.clone())
-                                        {
-                                            let start = range.start.max(piece.text.start);
-                                            let end = range.end.min(piece.text.end);
-                                            if start >= end {
-                                                continue;
-                                            }
-                                            let rel = start - piece.text.start
-                                                ..end - piece.text.start;
-                                            let (Some(prefix), Some(mid)) = (
-                                                code.get(piece.text.start..piece.text.start + rel.start),
-                                                code.get(piece.text.start + rel.start
-                                                    ..piece.text.start + rel.end),
-                                            ) else {
-                                                continue;
+                                let lit = match text_hits.filter(|h| !h.is_empty()) {
+                                    Some(hits) => polter_chat_markdown::hit_ranges_in_piece(
+                                        spans,
+                                        code,
+                                        piece.text.clone(),
+                                        hits,
+                                    ),
+                                    None => Vec::new(),
+                                };
+                                {
+                                    let font = plan_font(&fonts, piece.kind);
+                                    for range in &lit {
+                                        let (Some(prefix), Some(mid)) = (
+                                            code.get(piece.text.start
+                                                ..piece.text.start + range.start),
+                                            code.get(piece.text.start + range.start
+                                                ..piece.text.start + range.end),
+                                        ) else {
+                                            continue;
+                                        };
+                                        let x = piece.rect.x + measure_in(dc, font, prefix);
+                                        let w = measure_in(dc, font, mid).max(1);
+                                        unsafe {
+                                            // Fenced code is message text
+                                            // too: the same composited hit
+                                            // ground as a paragraph or a
+                                            // table cell.
+                                            let r = windows::Win32::Foundation::RECT {
+                                                left: draw_left + x,
+                                                top: top + piece.rect.y,
+                                                right: draw_left + x + w,
+                                                bottom: top + piece.rect.y + piece.rect.h.max(1),
                                             };
-                                            let font = plan_font(&fonts, piece.kind);
-                                            let x = piece.rect.x + measure_in(dc, font, prefix);
-                                            let w = measure_in(dc, font, mid).max(1);
-                                            unsafe {
-                                                // Fenced code is message text
-                                                // too: the same composited
-                                                // hit ground as a paragraph
-                                                // or a table cell.
-                                                let r = windows::Win32::Foundation::RECT {
-                                                    left: draw_left + x,
-                                                    top: top + piece.rect.y,
-                                                    right: draw_left + x + w,
-                                                    bottom: top + piece.rect.y + piece.rect.h.max(1),
-                                                };
-                                                crate::control_room::fill_rgba(
-                                                    dc,
-                                                    &r,
-                                                    theme.search_hit,
-                                                );
-                                            }
+                                            crate::control_room::fill_rgba(
+                                                dc,
+                                                &r,
+                                                theme.search_hit,
+                                            );
                                         }
                                     }
                                 }
                                 let slice = code.get(piece.text.clone()).unwrap_or("");
-                                draw_text_slice(dc, &fonts, piece, slice, top, draw_left, theme);
+                                draw_text_slice(
+                                    dc,
+                                    &fonts,
+                                    piece,
+                                    slice,
+                                    top,
+                                    draw_left,
+                                    theme,
+                                    &lit,
+                                );
                             } else {
                                 paint_piece_hits(dc, &fonts, piece, runs, text_hits, block_top, draw_left, theme);
-                                draw_piece(dc, &fonts, piece, runs, block_top, draw_left, theme);
+                                draw_piece(dc, &fonts, piece, runs, text_hits, block_top, draw_left, theme);
                             }
                         }
                     }
@@ -2840,40 +2848,33 @@ fn paint_piece_hits(
     let Some(run) = runs.get(piece.run) else {
         return;
     };
-    if run.spans.is_empty() {
-        return;
-    }
     let Some(shown) = run.text.get(piece.text.clone()) else {
         return;
     };
     let font = plan_font(fonts, piece.kind);
-    for hit in hits {
-        for range in polter_chat_markdown::display_ranges(&run.spans, hit.clone()) {
-            let start = range.start.max(piece.text.start);
-            let end = range.end.min(piece.text.end);
-            if start >= end {
-                continue;
-            }
-            let a = start - piece.text.start;
-            let b = end - piece.text.start;
-            let (Some(prefix), Some(mid)) = (shown.get(..a), shown.get(a..b)) else {
-                continue;
+    // **The ranges the word is inked from are these** (task 2997): one
+    // mapping, so the ground and the `search_hit_text` word cannot land on
+    // different bytes.
+    for lit in
+        polter_chat_markdown::hit_ranges_in_piece(&run.spans, &run.text, piece.text.clone(), hits)
+    {
+        let (Some(prefix), Some(mid)) = (shown.get(..lit.start), shown.get(lit.clone())) else {
+            continue;
+        };
+        let x = piece.rect.x + measure_in(dc, font, prefix);
+        let w = measure_in(dc, font, mid).max(1);
+        unsafe {
+            // The same ground as the snippet's found word, so a hit
+            // reads as one thing whether it is in the card or in the
+            // message's own text. It carries alpha, so it is composited
+            // over the row (or table cell, or code ground) beneath.
+            let r = windows::Win32::Foundation::RECT {
+                left: left + x,
+                top: base_top + piece.rect.y,
+                right: left + x + w,
+                bottom: base_top + piece.rect.y + piece.rect.h.max(1),
             };
-            let x = piece.rect.x + measure_in(dc, font, prefix);
-            let w = measure_in(dc, font, mid).max(1);
-            unsafe {
-                // The same ground as the snippet's found word, so a hit
-                // reads as one thing whether it is in the card or in the
-                // message's own text. It carries alpha, so it is composited
-                // over the row (or table cell, or code ground) beneath.
-                let r = windows::Win32::Foundation::RECT {
-                    left: left + x,
-                    top: base_top + piece.rect.y,
-                    right: left + x + w,
-                    bottom: base_top + piece.rect.y + piece.rect.h.max(1),
-                };
-                crate::control_room::fill_rgba(dc, &r, theme.search_hit);
-            }
+            crate::control_room::fill_rgba(dc, &r, theme.search_hit);
         }
     }
 }
@@ -2883,6 +2884,7 @@ fn draw_piece(
     fonts: &PlanFonts,
     piece: &md_layout::Piece,
     runs: &[polter_chat_markdown::Run],
+    hits: Option<&[std::ops::Range<usize>]>,
     base_top: i32,
     left: i32,
     theme: look::Theme,
@@ -2891,9 +2893,24 @@ fn draw_piece(
         return;
     };
     let slice = run.text.get(piece.text.clone()).unwrap_or("");
-    draw_text_slice(dc, fonts, piece, slice, base_top, left, theme);
+    let lit = match hits.filter(|h| !h.is_empty()) {
+        Some(hits) => polter_chat_markdown::hit_ranges_in_piece(
+            &run.spans,
+            &run.text,
+            piece.text.clone(),
+            hits,
+        ),
+        None => Vec::new(),
+    };
+    draw_text_slice(dc, fonts, piece, slice, base_top, left, theme, &lit);
 }
 
+/// One piece's text, drawn once -- except that the `search_hit_text` word is
+/// what makes a hit read as one thing on this host and the mac one: the bytes
+/// in `lit` (piece-relative, from `hit_ranges_in_piece`) are drawn in the
+/// design's found-word ink over the ground `paint_piece_hits` already laid.
+/// **Splitting the line to colour a word is the same trade the snippet
+/// makes**; a line with no hit is still one DrawText call.
 fn draw_text_slice(
     dc: HDC,
     fonts: &PlanFonts,
@@ -2902,22 +2919,89 @@ fn draw_text_slice(
     base_top: i32,
     left: i32,
     theme: look::Theme,
+    lit: &[std::ops::Range<usize>],
 ) {
     if text.is_empty() {
         return;
     }
-    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        let old_font = SelectObject(dc, plan_font(fonts, piece.kind).into());
+        if lit.is_empty() {
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            let mut r = windows::Win32::Foundation::RECT {
+                left: left + piece.rect.x,
+                top: base_top + piece.rect.y,
+                right: left + piece.rect.x + piece.rect.w.max(1) + 2,
+                bottom: base_top + piece.rect.y + piece.rect.h.max(1),
+            };
+            SetTextColor(dc, crate::control_room::rgb(theme.text));
+            let _ =
+                crate::gdi_text::draw_text_w(dc, &mut wide, &mut r, DrawTextFlags::single_line());
+        } else {
+            let font = plan_font(fonts, piece.kind);
+            let mut at = 0usize;
+            for range in lit {
+                let a = range.start.min(text.len());
+                let b = range.end.min(text.len());
+                if a > at {
+                    draw_piece_segment(dc, font, piece, text, at, a, base_top, left, theme.text);
+                }
+                if b > a {
+                    draw_piece_segment(
+                        dc,
+                        font,
+                        piece,
+                        text,
+                        a,
+                        b,
+                        base_top,
+                        left,
+                        theme.search_hit_text,
+                    );
+                }
+                at = at.max(b);
+            }
+            if at < text.len() {
+                draw_piece_segment(dc, font, piece, text, at, text.len(), base_top, left, theme.text);
+            }
+        }
+        SelectObject(dc, old_font);
+    }
+}
+
+/// One slice of a piece's line at the x its **prefix** measures to -- the
+/// same x the hit's ground was painted at, so a lit word sits on its own
+/// rectangle rather than near it.
+#[allow(clippy::too_many_arguments)]
+fn draw_piece_segment(
+    dc: HDC,
+    font: windows::Win32::Graphics::Gdi::HFONT,
+    piece: &md_layout::Piece,
+    text: &str,
+    from: usize,
+    to: usize,
+    base_top: i32,
+    left: i32,
+    colour: look::Rgba,
+) {
+    let (Some(prefix), Some(segment)) = (text.get(..from), text.get(from..to)) else {
+        return;
+    };
+    if segment.is_empty() {
+        return;
+    }
+    let x = piece.rect.x + measure_in(dc, font, prefix);
+    let w = measure_in(dc, font, segment).max(1);
+    let mut wide: Vec<u16> = segment.encode_utf16().collect();
     let mut r = windows::Win32::Foundation::RECT {
-        left: left + piece.rect.x,
+        left: left + x,
         top: base_top + piece.rect.y,
-        right: left + piece.rect.x + piece.rect.w.max(1) + 2,
+        right: left + x + w,
         bottom: base_top + piece.rect.y + piece.rect.h.max(1),
     };
     unsafe {
-        let old_font = SelectObject(dc, plan_font(fonts, piece.kind).into());
-        SetTextColor(dc, crate::control_room::rgb(theme.text));
+        SetTextColor(dc, crate::control_room::rgb(colour));
         let _ = crate::gdi_text::draw_text_w(dc, &mut wide, &mut r, DrawTextFlags::single_line());
-        SelectObject(dc, old_font);
     }
 }
 
