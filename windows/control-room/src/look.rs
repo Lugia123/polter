@@ -256,6 +256,13 @@ pub mod preview {
     pub const OVERLAY_LEFT_EXPOSE: f64 = 40.0;
 }
 
+/// The chat page's one right-hand slot (search or preview, task 2982): its width and the widths it is held between. **The threshold is `preview.cell_min_width_side_by_side`**, the same number the terminal's preview rule uses and not a second one; what is this group's own is only the slot's width.
+pub mod chat {
+    /// The chat's right-hand slot, side by side and over the message column alike (the v5 prototype's `.window-shell.narrow-view .chat-right-sidebar { width: 330px }`, the 1000px narrow screenshot 04). At a page at least `preview.cell_min_width_side_by_side` wide the message column keeps what is left (at least 470); below it the slot lies over the message column's right edge and the column keeps its full width.
+    /// Source: design 2793 v5 (task 2979's prototype, `polter-artifacts/2793/v5/index.html`): `--search-hl-bg` / `--search-hl-fg` for matched text, `--search-target-bg` / `--search-target-border` for the located row; read for task 2982.
+    pub const SIDEBAR_WIDTH: f64 = 330.0;
+}
+
 /// The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).
 pub mod supervisor_badge {
     /// Round at both ends: its radius is half of this.
@@ -1552,6 +1559,18 @@ pub struct Theme {
     /// #2083: under the words of a task's title the filter found (`title_parts[].hit`).
     /// Source: design 2083 v1 (task 2083), CHANGES.md and src/task.css, as the user ruled it on 2026-10-23: plan A (the keys' strip under the list) and S2 (the chip with a bar at its left); its hit ground is design 2081 v1's neutral n2.
     pub task_hit: Rgba,
+    /// The ground under a word the group search found: a result's snippet and the message's own text. The design's `--search-hl-bg` in both themes.
+    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    pub search_hit: Rgba,
+    /// The found word itself, over `search_hit`: the design's `--search-hl-fg`.
+    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    pub search_hit_text: Rgba,
+    /// The ground of the message a search result located: the design's `--search-target-bg`.
+    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    pub search_target: Rgba,
+    /// The located message's 3px left edge: the design's `--search-target-border`.
+    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    pub search_target_edge: Rgba,
     /// Measured: an unselected row as it comes out over the panel. For contrast, not for painting.
     /// Source: design v17, src/contrast.md (measured off the rendered pictures).
     pub surface_row: Rgba,
@@ -1803,6 +1822,10 @@ pub const LIGHT: Theme = Theme {
     worker_edge_inner: Rgba { r: 0, g: 0, b: 0, a: 0.0 },
     stack_tab_separator: Rgba { r: 0, g: 0, b: 0, a: 0.16 },
     task_hit: Rgba { r: 230, g: 232, b: 236, a: 1.0 },
+    search_hit: Rgba { r: 255, g: 211, b: 61, a: 0.45 },
+    search_hit_text: Rgba { r: 122, g: 75, b: 0, a: 1.0 },
+    search_target: Rgba { r: 9, g: 105, b: 218, a: 0.08 },
+    search_target_edge: Rgba { r: 9, g: 105, b: 218, a: 1.0 },
     surface_row: Rgba { r: 244, g: 246, b: 248, a: 1.0 },
     surface_row_selected: Rgba { r: 253, g: 253, b: 253, a: 1.0 },
     surface_window_tab: Rgba { r: 217, g: 219, b: 222, a: 1.0 },
@@ -1944,6 +1967,10 @@ pub const DARK: Theme = Theme {
     worker_edge_inner: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
     stack_tab_separator: Rgba { r: 255, g: 255, b: 255, a: 0.15 },
     task_hit: Rgba { r: 57, g: 62, b: 69, a: 1.0 },
+    search_hit: Rgba { r: 242, g: 204, b: 96, a: 0.28 },
+    search_hit_text: Rgba { r: 242, g: 204, b: 96, a: 1.0 },
+    search_target: Rgba { r: 56, g: 139, b: 253, a: 0.12 },
+    search_target_edge: Rgba { r: 88, g: 166, b: 255, a: 1.0 },
     surface_row: Rgba { r: 31, g: 34, b: 37, a: 1.0 },
     surface_row_selected: Rgba { r: 60, g: 64, b: 67, a: 1.0 },
     surface_window_tab: Rgba { r: 15, g: 17, b: 18, a: 1.0 },

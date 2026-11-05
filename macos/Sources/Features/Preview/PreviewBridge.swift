@@ -79,9 +79,19 @@ final class PreviewBridge: NSObject {
     /// gets a window.
     private var shell: WebViewShell.Shell<PreviewBridge>?
 
-    init(token: String, pluginPage: PreviewPluginPage.Location? = nil) {
+    /// `browser` is the matched `render: browser` mode: the ticket's own file
+    /// in a view with scripts and network allowed and **no `window.polter`**.
+    /// The shell that injects the bridge is never used for it.
+    let browser: Bool
+
+    init(
+        token: String,
+        pluginPage: PreviewPluginPage.Location? = nil,
+        browser: Bool = false
+    ) {
         self.token = token
         self.pluginPage = pluginPage
+        self.browser = browser
     }
 
     /// The web view for this file, making the shell the first time.
@@ -429,7 +439,7 @@ extension PreviewBridge: WKURLSchemeHandler {
         }
 
         reply(task, url, data: data, type: PreviewRoutes.contentType(of: path),
-              policy: PreviewRoutes.policy(token: token))
+              policy: browser ? "" : PreviewRoutes.policy(token: token))
     }
 
     /// One answer, in the shape both schemes send: the bytes, what they are,
@@ -438,24 +448,22 @@ extension PreviewBridge: WKURLSchemeHandler {
     private func reply(
         _ task: WKURLSchemeTask, _ url: URL, data: Data, type: String, policy: String
     ) {
+        var headers: [String: String] = [
+            "Content-Type": type,
+            "Content-Length": String(data.count),
+            // The page is one ticket's, served to one web view. Nothing
+            // should be reading it from anywhere else.
+            "Cache-Control": "no-store",
+        ]
+        if !policy.isEmpty { headers["Content-Security-Policy"] = policy }
+        headers["Access-Control-Allow-Origin"] = "null"
+        headers["X-Content-Type-Options"] = "nosniff"
         let response = HTTPURLResponse(
             url: url,
             statusCode: 200,
             httpVersion: "HTTP/1.1",
-            headerFields: [
-                "Content-Type": type,
-                "Content-Length": String(data.count),
-                "Content-Security-Policy": policy,
-
-                // The page is one ticket's, served to one web view. Nothing
-                // should be reading it from anywhere else.
-                "Access-Control-Allow-Origin": "null",
-
-                // A previewed file is somebody's document, and a copy of it
-                // left in a cache is a copy nobody asked for.
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            ])
+            headerFields: headers
+        )
 
         guard let response else {
             task.didFailWithError(CocoaError(.fileReadUnknown))

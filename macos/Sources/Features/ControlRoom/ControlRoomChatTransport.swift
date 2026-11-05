@@ -90,6 +90,15 @@ enum ControlRoomChatRequest {
         case jobID
         /// `resume_token` must be exactly 32 lowercase hex characters.
         case resumeToken
+        /// An anchor is 1...512 UTF-8 bytes.
+        case anchor
+        /// Around's window is 0...99 on each side and at most 200 records
+        /// with the target.
+        case window
+        /// A location hint, when present, is not empty.
+        case location
+        /// A raw reference is 1...4096 UTF-8 bytes.
+        case reference
     }
 
     /// The bound the core enforces on `request_id`.
@@ -104,6 +113,12 @@ enum ControlRoomChatRequest {
     /// `log_seq` and never a history token.
     static func live(group: String, since: UInt64) -> String {
         encode("group_read", LiveParams(group: group, since: since))
+    }
+
+    /// The group's brief and members (`chat_metadata`, frozen contract
+    /// §Metadata). Read-only: no cursor, no seen mark, no write.
+    static func metadata(group: String) -> String {
+        encode("chat_metadata", MetadataParams(group: group))
     }
 
     /// A new scan's first request. A repeated begin must pass the **same**
@@ -138,6 +153,118 @@ enum ControlRoomChatRequest {
         return encode("chat_history_cancel", JobParams(jobID: jobID))
     }
 
+    /// The target and its immediate neighbours around one anchor
+    /// (`chat_history_begin {mode:"around"}`). `location` is the core's own
+    /// hint from the message, passed back exactly; nil when there is none.
+    /// **No limit and no resume token**: the window is `before`/`after`.
+    static func aroundBegin(
+        group: String,
+        requestID: String,
+        anchor: String,
+        before: Int = 10,
+        after: Int = 10,
+        location: String? = nil
+    ) throws -> String {
+        let idBytes = requestID.utf8.count
+        guard idBytes >= 1, idBytes <= requestIDLimit else { throw Invalid.requestID }
+        guard (0...99).contains(before), (0...99).contains(after),
+              before + after + 1 <= 200
+        else { throw Invalid.window }
+        guard !anchor.isEmpty, anchor.utf8.count <= 512 else { throw Invalid.anchor }
+        if let location, location.isEmpty { throw Invalid.location }
+        return encode(
+            "chat_history_begin",
+            AroundParams(
+                group: group, requestID: requestID, anchor: anchor,
+                before: before, after: after, location: location
+            )
+        )
+    }
+
+    /// Resolve the file reference a message carries
+    /// (`chat_history_begin {mode:"reference"}`). `location` is the core's own
+    /// hint from the message, passed back exactly; nil when there is none.
+    /// **No limit, no resume token, no before/after**: the source and the raw
+    /// reference are the whole question.
+    static func referenceBegin(
+        group: String,
+        requestID: String,
+        anchor: String,
+        originalReference: String,
+        location: String? = nil
+    ) throws -> String {
+        let idBytes = requestID.utf8.count
+        guard idBytes >= 1, idBytes <= requestIDLimit else { throw Invalid.requestID }
+        guard !anchor.isEmpty, anchor.utf8.count <= 512 else { throw Invalid.anchor }
+        let referenceBytes = originalReference.utf8.count
+        guard referenceBytes >= 1, referenceBytes <= 4096 else { throw Invalid.reference }
+        if let location, location.isEmpty { throw Invalid.location }
+        return encode(
+            "chat_history_begin",
+            ReferenceParams(
+                group: group, requestID: requestID, anchor: anchor,
+                originalReference: originalReference, location: location
+            )
+        )
+    }
+
+    /// More of one direction from the cursor a previous context page returned
+    /// (`chat_history_begin {mode:"context"}`). **The token binds the
+    /// direction**; there is no direction or anchor field here.
+    static func contextBegin(
+        group: String,
+        requestID: String,
+        resumeToken: String,
+        limit: Int = defaultLimit
+    ) throws -> String {
+        let idBytes = requestID.utf8.count
+        guard idBytes >= 1, idBytes <= requestIDLimit else { throw Invalid.requestID }
+        guard limitRange.contains(limit) else { throw Invalid.limit }
+        guard isOpaqueID(resumeToken) else { throw Invalid.resumeToken }
+        return encode(
+            "chat_history_begin",
+            ContextParams(
+                group: group, requestID: requestID, resumeToken: resumeToken, limit: limit
+            )
+        )
+    }
+
+    /// A group search's first or resumed request (`chat_search_begin`).
+    /// **The query is canonical before it is encoded**: trimmed ASCII
+    /// whitespace, 1...256 UTF-8 bytes, never an empty "match everything".
+    static func searchBegin(
+        group: String,
+        requestID: String,
+        query: String,
+        limit: Int = defaultLimit,
+        resumeToken: String? = nil
+    ) throws -> String {
+        let idBytes = requestID.utf8.count
+        guard idBytes >= 1, idBytes <= requestIDLimit else { throw Invalid.requestID }
+        guard limitRange.contains(limit) else { throw Invalid.limit }
+        if let resumeToken, !isOpaqueID(resumeToken) { throw Invalid.resumeToken }
+        let canonical = try ControlRoomChatQuery.canonical(query)
+        return encode(
+            "chat_search_begin",
+            SearchBeginParams(
+                group: group, requestID: requestID, query: canonical,
+                limit: limit, resumeToken: resumeToken
+            )
+        )
+    }
+
+    /// One poll of a search job; the same lifecycle as history.
+    static func searchPoll(jobID: String) throws -> String {
+        guard isOpaqueID(jobID) else { throw Invalid.jobID }
+        return encode("chat_search_poll", JobParams(jobID: jobID))
+    }
+
+    /// One cancel of a search job (idempotent in the core).
+    static func searchCancel(jobID: String) throws -> String {
+        guard isOpaqueID(jobID) else { throw Invalid.jobID }
+        return encode("chat_search_cancel", JobParams(jobID: jobID))
+    }
+
     /// A fresh request id for a begin. `UUID().uuidString` is 36 ASCII
     /// characters, inside the core's 128-byte bound.
     static func newRequestID() -> String {
@@ -164,6 +291,68 @@ enum ControlRoomChatRequest {
     private struct LiveParams: Encodable {
         var group: String
         var since: UInt64
+    }
+
+    private struct MetadataParams: Encodable {
+        var group: String
+    }
+
+    private struct AroundParams: Encodable {
+        var mode = "around"
+        var group: String
+        var requestID: String
+        var anchor: String
+        var before: Int
+        var after: Int
+        var location: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case mode, group, anchor, before, after, location
+            case requestID = "request_id"
+        }
+    }
+
+    private struct ContextParams: Encodable {
+        var mode = "context"
+        var group: String
+        var requestID: String
+        var resumeToken: String
+        var limit: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case mode, group, limit
+            case requestID = "request_id"
+            case resumeToken = "resume_token"
+        }
+    }
+
+    private struct ReferenceParams: Encodable {
+        var mode = "reference"
+        var group: String
+        var requestID: String
+        var anchor: String
+        var originalReference: String
+        var location: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case mode, group, anchor, location
+            case requestID = "request_id"
+            case originalReference = "original_reference"
+        }
+    }
+
+    private struct SearchBeginParams: Encodable {
+        var group: String
+        var requestID: String
+        var query: String
+        var limit: Int
+        var resumeToken: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case group, query, limit
+            case requestID = "request_id"
+            case resumeToken = "resume_token"
+        }
     }
 
     private struct BeginParams: Encodable {

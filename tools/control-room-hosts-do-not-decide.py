@@ -165,6 +165,22 @@ EXCEPTIONS = {
      "reads the core's kind",
      'Text(item.kind == .ordered ? "\\(item.ordinal)." : "\u2022")'):
         (1, "local Markdown list marker style (.ordered), not a snapshot group kind"),
+    # Task 2793's mac feed and view (2982): the same bounded in-memory window
+    # as the eviction bound above, counted to find where the live tail starts
+    # and to look a row up by id. None of these is the number of rows the core
+    # said a group has.
+    ("macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift", "counts rows",
+     "let firstLive = rows.count - Self.keepLiveTail"):
+        (1, "where the live tail begins in the feed's own bounded window"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
+     "if let index = indexByID[id], index < feed.rows.count {"):
+        (1, "looking a row up by id in the feed's own bounded window"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
+     "guard index < feed.rows.count else { return false }"):
+        (1, "the same id lookup's bound, not a group total"),
+    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
+     "index.reserveCapacity(feed.rows.count)"):
+        (1, "sizing a local index table to the window being walked"),
 }
 
 

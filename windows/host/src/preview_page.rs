@@ -54,9 +54,10 @@ use polter_preview_route::{content_type, Call, Refused, SCHEME};
 use polter_settings_shell::plugins::PageState;
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+    CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler, WebMessageReceivedEventHandler,
+    WebResourceRequestedEventHandler,
 };
 use windows::core::{Interface, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -69,128 +70,533 @@ use crate::webview_host::{probe, take_keyboard_back, take_pwstr, user_data_dir, 
 /// and the two pages share one environment (`webview_host::user_data_dir`),
 /// so both are registered when either is made -- see `make_env`.
 pub const PREVIEW_SCHEME: &str = SCHEME;
+/// The plugin page's assets, for a `render:"page"` descriptor. **A scheme of
+/// its own**, so a plugin page and a previewed file never share an origin.
+pub const PAGE_SCHEME: &str = "polter-preview-plugin";
 
 /// Where the terminator is: the amount the page is told about one file. Sizes
 /// beyond it come back through `info` with `truncated: true` rather than
 /// being silently short.
 pub const READ_MAX: usize = 4 << 20;
 
-struct Preview {
-    /// Asked once per process, as the plugin page's is. `None` until the
-    /// first preview is shown.
-    probed: Option<(Option<Loader>, PageState)>,
-    env: Option<ICoreWebView2Environment>,
-    env_pending: bool,
-    controller: Option<ICoreWebView2Controller>,
-    /// The ticket being shown, or being made for. A second `show` for the
-    /// same one leaves the view alone: reopening a preview must not throw
-    /// away what the person was reading.
-    token: Option<String>,
-    parent: HWND,
-    rect: RECT,
-    /// Bumped whenever the page on screen should change: a completion that
-    /// arrives for an older one closes what it made.
-    generation: u64,
-    state: PageState,
+/// Which part of the product a preview belongs to. **A group's preview and
+/// the working directory's are different owners**, never one page reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotKind {
+    Chat,
+    Workdir,
 }
 
+/// One preview slot's owner. **The parent window is part of the key**: the
+/// same group watched in two native pages must not share one controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotKey {
+    pub kind: SlotKind,
+    /// The group's name for a chat slot; `None` for the working directory.
+    pub group: Option<String>,
+    pub parent: isize,
+}
+
+impl SlotKey {
+    pub fn chat(group: &str, parent: HWND) -> SlotKey {
+        SlotKey {
+            kind: SlotKind::Chat,
+            group: Some(group.to_owned()),
+            parent: parent.0 as isize,
+        }
+    }
+
+    pub fn workdir(parent: HWND) -> SlotKey {
+        SlotKey {
+            kind: SlotKind::Workdir,
+            group: None,
+            parent: parent.0 as isize,
+        }
+    }
+
+    fn parent(&self) -> HWND {
+        HWND(self.parent as *mut std::ffi::c_void)
+    }
+}
+
+/// Why a slot cannot be made now. **An explicit refusal is the only
+/// alternative to closing a page the person is looking at.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowError {
+    /// All resident slots are visible and the budget is full.
+    Budget,
+    /// Another slot already owns this ticket; this one refuses rather
+    /// than share or steal it.
+    AlreadyOwned,
+    /// The core chose a renderer this host cannot mount yet (a plugin page)
+    /// or no usable plugin at all. **No raw-file fallback.**
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PageAssets {
+    dir: String,
+    page: String,
+}
+
+/// One resident preview: its controller, the ticket it shows and the
+/// generation a late completion is checked against.
+struct Preview {
+    controller: Option<ICoreWebView2Controller>,
+    /// The ticket being shown, or being made for.
+    token: Option<String>,
+    rect: RECT,
+    generation: u64,
+    state: PageState,
+    /// `Some` when the core chose a plugin page rather than the file itself.
+    page: Option<PageAssets>,
+    visible: bool,
+    /// A controller creation is in flight for this slot/generation.
+    creating: bool,
+    /// Last time this slot was shown/used, for LRU eviction of hidden
+    /// slots only.
+    used: u64,
+}
+
+struct Manager {
+    /// Asked once per process, as the plugin page's is.
+    probed: Option<(Option<Loader>, PageState)>,
+    /// One environment for every slot: WebView2 registers the custom
+    /// schemes once per environment, and the plugin pages share it too.
+    env: Option<ICoreWebView2Environment>,
+    env_pending: bool,
+    /// Controller creations waiting for the shared environment. Keyed by
+    /// slot; a later show for the same slot replaces the older request.
+    waiting: Vec<(SlotKey, u64, String)>,
+    slots: Vec<(SlotKey, Preview)>,
+    /// A monotonic "last used" for eviction and nothing else.
+    tick: u64,
+}
+
+/// 1 working directory + 4 groups. **Only a hidden slot may be evicted.**
+pub const MAX_RESIDENT_SLOTS: usize = 5;
+
 thread_local! {
-    static PREVIEW: RefCell<Preview> = RefCell::new(Preview {
+    static SLOTS: RefCell<Manager> = RefCell::new(Manager {
         probed: None,
         env: None,
         env_pending: false,
-        controller: None,
-        token: None,
-        parent: HWND(std::ptr::null_mut()),
-        rect: RECT::default(),
-        generation: 0,
-        state: PageState::Loading,
+        waiting: Vec::new(),
+        slots: Vec::new(),
+        tick: 0,
     });
 }
 
-/// What the preview's slot can show now, or `None` when no preview has been
-/// asked for. The one state the slot paints a sentence for is a Runtime that
-/// is not on the machine -- `PLAN.md` §2.1: "WebView2 Runtime 不在时
-/// （Server 2022），预览区写明原因，给「用默认程序打开」，不显示成空白".
-pub fn state() -> Option<PageState> {
-    PREVIEW.with(|p| {
-        let s = p.borrow();
-        s.token.as_ref().map(|_| s.state.clone())
+fn slot_index(manager: &Manager, key: &SlotKey) -> Option<usize> {
+    manager.slots.iter().position(|(k, _)| k == key)
+}
+
+/// Who holds a ticket, as far as the ledger can be read right now.
+enum Owner {
+    /// No slot names it; the caller's unadopted ticket.
+    Unowned,
+    /// A slot holds it; the caller must not close it.
+    Held(SlotKey),
+    /// The ledger is borrowed elsewhere and cannot be read. **This is not
+    /// "unowned"**: a close is deferred until the question can be answered.
+    Unknown,
+}
+
+thread_local! {
+    /// Closes that arrived while the slot ledger was borrowed. A separate
+    /// cell so they can be retried without needing the ledger.
+    static DEFERRED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn defer_close(token: &str) {
+    DEFERRED.with(|d| {
+        if let Ok(mut d) = d.try_borrow_mut() {
+            if !d.iter().any(|t| t == token) {
+                d.push(token.to_owned());
+            }
+        }
+    });
+}
+
+/// Retry every close deferred while the ledger was busy. Called whenever
+/// the ledger is readable again and from the page's own tick.
+pub fn flush_deferred() {
+    let tokens: Vec<String> = DEFERRED.with(|d| std::mem::take(&mut *d.borrow_mut()));
+    let mut again: Vec<String> = Vec::new();
+    for token in tokens {
+        match token_owner(&token) {
+            Owner::Unowned => close_token(&token),
+            Owner::Held(_) => {
+                crate::plogf!("[preview] {}: not closing a ticket another slot owns", token);
+            }
+            Owner::Unknown => again.push(token),
+        }
+    }
+    if !again.is_empty() {
+        DEFERRED.with(|d| d.borrow_mut().extend(again));
+    }
+}
+
+#[cfg(test)]
+fn deferred_len() -> usize {
+    DEFERRED.with(|d| d.borrow().len())
+}
+
+fn token_owner(token: &str) -> Owner {
+    SLOTS.with(|m| match m.try_borrow() {
+        Ok(m) => match m
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.token.as_deref() == Some(token))
+        {
+            Some((key, _)) => Owner::Held(key.clone()),
+            None => Owner::Unowned,
+        },
+        Err(_) => Owner::Unknown,
     })
 }
 
-/// Whether a preview is on screen for this ticket.
-pub fn showing() -> Option<String> {
-    PREVIEW.with(|p| p.borrow().token.clone())
+fn slot_generation(key: &SlotKey) -> Option<u64> {
+    SLOTS.with(|m| {
+        m.try_borrow()
+            .ok()
+            .and_then(|m| slot_index(&m, key).map(|i| m.slots[i].1.generation))
+    })
 }
 
-/// Show the file behind `token` in `rect` of `parent`.
-///
-/// **The token is the whole of what the host knows about the file.** It came
-/// from the core (`files_open`, through `ghostty_app_files`) and nothing here
-/// can turn it into a path; the page's requests are resolved by the core, one
-/// at a time, against this ticket's scope.
-pub fn show(parent: HWND, rect: RECT, token: &str) {
-    let probed = PREVIEW.with(|c| c.borrow().probed.clone());
-    let (loader, st) = match probed {
-        Some(x) => x,
-        None => {
-            let x = probe();
-            PREVIEW.with(|c| c.borrow_mut().probed = Some(x.clone()));
-            x
-        }
-    };
-    let Some(loader) = loader.filter(|_| st == PageState::Loading) else {
-        PREVIEW.with(|c| {
-            let s = &mut *c.borrow_mut();
-            s.token = Some(token.to_string());
-            s.parent = parent;
-            s.rect = rect;
-            s.state = st;
-        });
-        return;
-    };
+/// What this slot can show now, or `None` when no preview has been asked
+/// for there.
+pub fn state(key: &SlotKey) -> Option<PageState> {
+    SLOTS.with(|m| {
+        m.try_borrow().ok().and_then(|m| {
+            slot_index(&m, key).and_then(|i| {
+                let slot = &m.slots[i].1;
+                slot.token.as_ref().map(|_| slot.state.clone())
+            })
+        })
+    })
+}
 
-    let (same, controller) = PREVIEW.with(|c| {
-        let s = &mut *c.borrow_mut();
-        s.parent = parent;
-        s.rect = rect;
-        (s.token.as_deref() == Some(token), s.controller.clone())
-    });
-    if same {
-        if let Some(ctl) = controller {
-            unsafe {
-                let _ = ctl.SetBounds(rect);
-                let _ = ctl.SetIsVisible(true);
+/// Whether this slot is showing a preview, and which ticket.
+pub fn showing(key: &SlotKey) -> Option<String> {
+    SLOTS.with(|m| {
+        m.try_borrow()
+            .ok()
+            .and_then(|m| slot_index(&m, key).and_then(|i| m.slots[i].1.token.clone()))
+    })
+}
+
+/// Close one ticket through the core door. **Ledger and view may not
+/// disagree**: a slot that stops showing a ticket closes it exactly once.
+fn close_token(token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    if let Err(why) = ask_core("files_close", serde_json::json!({ "token": token })) {
+        // process-wide: the ticket is the core's; a refusal is logged and
+        // the host holds nothing that could retry it.
+        crate::plogf!("[preview] {}: closing the ticket failed: {}", token, why);
+    }
+}
+
+/// Close a ticket `show` refused to adopt. **The caller keeps the ticket it
+/// minted** and hands it back here; a refused adopt must not leak it.
+pub fn close_unowned(token: &str) {
+    // An earlier close that found the ledger busy gets its retry first.
+    flush_deferred();
+    match token_owner(token) {
+        // **Never close another slot's ticket**: a refused adopt is only
+        // ours when nobody owns it.
+        Owner::Held(_) => {
+            crate::plogf!(
+                "[preview] {}: not closing a ticket another slot owns",
+                token
+            );
+        }
+        // **Busy is not "nobody owns it".** The effect waits for a ledger
+        // that can answer instead of leaking or closing the wrong ticket.
+        Owner::Unknown => {
+            crate::plogf!(
+                "[preview] {}: the ticket ledger is busy; close deferred",
+                token
+            );
+            defer_close(token);
+        }
+        Owner::Unowned => close_token(token),
+    }
+}
+
+/// Drop a slot's controller and ticket.
+fn close_preview(slot: &mut Preview) {
+    if let Some(ctl) = slot.controller.take() {
+        unsafe {
+            let _ = ctl.Close();
+        }
+    }
+    if let Some(token) = slot.token.take() {
+        close_token(&token);
+    }
+    slot.state = PageState::Loading;
+    slot.visible = false;
+    slot.creating = false;
+}
+
+/// Show the file behind `token` in `rect` for `key`. **The token and plugin
+/// description must come from the core's reference answer**; this function
+/// cannot turn a path into either.
+pub fn show(
+    key: SlotKey,
+    rect: RECT,
+    token: &str,
+    plugin: Option<&serde_json::Value>,
+) -> Result<(), ShowError> {
+    let parent = key.parent();
+    // **The core says what kind of view this is.** Only a matched
+    // `render:"browser"` is served the ticket's own file; a plugin page is
+    // not implemented here yet, and none/disabled/unsupported have no page.
+    let plugin = plugin.filter(|p| p.get("status").and_then(|s| s.as_str()) == Some("matched"));
+    let Some(plugin) = plugin else {
+        return Err(ShowError::Unsupported);
+    };
+    let render = plugin.get("render").and_then(|r| r.as_str());
+    let page_assets = match render {
+        Some("browser") => None,
+        Some("page") => {
+            let dir = plugin
+                .get("plugin_dir")
+                .and_then(|d| d.as_str())
+                .ok_or(ShowError::Unsupported)?;
+            let page = plugin
+                .get("page")
+                .and_then(|p| p.as_str())
+                .ok_or(ShowError::Unsupported)?;
+            Some(PageAssets {
+                dir: dir.to_owned(),
+                page: page.to_owned(),
+            })
+        }
+        _ => return Err(ShowError::Unsupported),
+    };
+    // **One ticket, one owner.** A second slot gets an explicit refusal
+    // and the owning slot is not touched; the caller may mint another
+    // ticket for a different slot.
+    match token_owner(token) {
+        Owner::Held(owner) if owner != key => return Err(ShowError::AlreadyOwned),
+        // **A ledger that cannot answer is not permission**: adopting into
+        // unknown ownership is refused rather than guessed.
+        Owner::Unknown => return Err(ShowError::AlreadyOwned),
+        _ => {}
+    }
+    let (loader, st) = SLOTS.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.probed.clone() {
+            Some(x) => x,
+            None => {
+                let x = probe();
+                m.probed = Some(x.clone());
+                x
             }
         }
-        return;
-    }
-
-    // Another file: the old page goes, the new one is made.
-    close_controller();
-    let generation = PREVIEW.with(|c| {
-        let s = &mut *c.borrow_mut();
-        s.token = Some(token.to_string());
-        s.generation += 1;
-        s.state = PageState::Loading;
-        s.generation
     });
-    let token = token.to_string();
-    let env = PREVIEW.with(|c| c.borrow().env.clone());
-    match env {
-        Some(env) => make_controller(env, generation, token),
-        None => make_env(loader, generation, token),
+    let Some(loader) = loader.filter(|_| st == PageState::Loading) else {
+        // **No Runtime: the old ticket/controller still go through the
+        // same replace rule**, then the slot says why it cannot show.
+        let old = SLOTS.with(
+            |m| -> Result<(Option<ICoreWebView2Controller>, Option<String>), ShowError> {
+                let mut m = m.borrow_mut();
+                m.tick += 1;
+                let tick = m.tick;
+                let i = match slot_index(&m, &key) {
+                    Some(i) => i,
+                    None => {
+                        if m.slots.len() >= MAX_RESIDENT_SLOTS {
+                            let hidden = m
+                                .slots
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, (_, s))| !s.visible)
+                                .min_by_key(|(_, (_, s))| s.used)
+                                .map(|(i, _)| i);
+                            let Some(i) = hidden else {
+                                return Err(ShowError::Budget);
+                            };
+                            let mut old = m.slots.remove(i);
+                            close_preview(&mut old.1);
+                        }
+                        m.slots.push((
+                            key.clone(),
+                            Preview {
+                                controller: None,
+                                token: None,
+                                rect,
+                                generation: tick,
+                                state: st.clone(),
+                                page: None,
+                                visible: true,
+                                creating: false,
+                                used: tick,
+                            },
+                        ));
+                        m.slots.len() - 1
+                    }
+                };
+                let slot = &mut m.slots[i].1;
+                slot.rect = rect;
+                slot.visible = true;
+                slot.used = tick;
+                if slot.token.as_deref() == Some(token) {
+                    slot.state = st.clone();
+                    return Ok((None, None));
+                }
+                slot.generation = tick;
+                slot.state = st.clone();
+                let old_ctl = slot.controller.take();
+                let old_token = slot.token.replace(token.to_owned());
+                Ok((old_ctl, old_token))
+            },
+        );
+        let (old_ctl, old_token) = old?;
+        if let Some(ctl) = old_ctl {
+            unsafe {
+                let _ = ctl.Close();
+            }
+        }
+        if let Some(old) = old_token {
+            close_token(&old);
+        }
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+        }
+        return Ok(());
+    };
+
+    enum Place {
+        Reuse(Option<ICoreWebView2Controller>, u64),
+        Create(u64, Option<ICoreWebView2Environment>),
+        Refused,
+    }
+    let place = SLOTS.with(|m| -> Place {
+        let mut m = m.borrow_mut();
+        m.tick += 1;
+        let tick = m.tick;
+        let i = match slot_index(&m, &key) {
+            Some(i) => i,
+            None => {
+                if m.slots.len() >= MAX_RESIDENT_SLOTS {
+                    let hidden = m
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, s))| !s.visible)
+                        .min_by_key(|(_, (_, s))| s.used)
+                        .map(|(i, _)| i);
+                    let Some(i) = hidden else {
+                        return Place::Refused;
+                    };
+                    let mut old = m.slots.remove(i);
+                    close_preview(&mut old.1);
+                }
+                m.slots.push((
+                    key.clone(),
+                    Preview {
+                        controller: None,
+                        token: None,
+                        rect,
+                        generation: tick,
+                        state: PageState::Loading,
+                        page: None,
+                        visible: true,
+                        creating: false,
+                        used: tick,
+                    },
+                ));
+                m.slots.len() - 1
+            }
+        };
+        // **Read what the queue says before borrowing the slot**; they
+        // are two fields of the same manager.
+        let pending = m.slots[i].1.generation;
+        let same_token = m.slots[i].1.token.as_deref() == Some(token);
+        let creating = m
+            .waiting
+            .iter()
+            .any(|(k, g, t)| k == &key && *g == pending && t == token);
+        let slot = &mut m.slots[i].1;
+        slot.rect = rect;
+        slot.page = page_assets.clone();
+        slot.visible = true;
+        slot.used = tick;
+        if same_token && (slot.controller.is_some() || creating || slot.creating) {
+            let ctl = slot.controller.clone();
+            return Place::Reuse(ctl, pending);
+        }
+        if !same_token {
+            // Replace inside this slot: close the old resources exactly
+            // once after this borrow.
+            let old_ctl = slot.controller.take();
+            let old_token = slot.token.replace(token.to_owned());
+            // Closing inside the borrow is only a COM Close; the token
+            // goes out through the ticket ledger in the same step.
+            if let Some(ctl) = old_ctl {
+                unsafe {
+                    let _ = ctl.Close();
+                }
+            }
+            if let Some(old) = old_token {
+                close_token(&old);
+            }
+        }
+        // A retry (Failed, or hidden with no controller) still gets a real
+        // generation and a fresh creation request.
+        slot.generation = tick;
+        slot.state = PageState::Loading;
+        slot.creating = true;
+        let env = m.env.clone();
+        Place::Create(tick, env)
+    });
+    match place {
+        Place::Refused => Err(ShowError::Budget),
+        Place::Reuse(controller, generation) => {
+            let _ = generation;
+            if let Some(ctl) = controller {
+                unsafe {
+                    let _ = ctl.SetBounds(rect);
+                    let _ = ctl.SetIsVisible(true);
+                    let _ =
+                        windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+                }
+            }
+            Ok(())
+        }
+        Place::Create(generation, env) => {
+            let token = token.to_owned();
+            match env {
+                Some(env) => make_controller(env, key, generation, token),
+                None => make_env(loader, key, generation, token),
+            }
+            Ok(())
+        }
     }
 }
-
-/// Take the preview off screen. The controller is dropped with the ticket:
-/// a preview that is closed is a ticket nobody holds, and the core's cap
-/// (`Tickets.max_tickets`) is what closes the oldest one.
-pub fn hide() {
-    let (ctl, parent) = PREVIEW.with(|c| {
-        let s = c.borrow();
-        (s.controller.clone(), s.parent)
+/// Take this slot off screen. Other slots -- another group, the working
+/// directory, another parent window -- are untouched.
+pub fn hide(key: &SlotKey) {
+    let (ctl, parent) = SLOTS.with(|m| {
+        let m = m.borrow();
+        match slot_index(&m, key) {
+            Some(i) => {
+                let slot = &m.slots[i].1;
+                (slot.controller.clone(), key.parent())
+            }
+            None => (None, key.parent()),
+        }
+    });
+    SLOTS.with(|m| {
+        if let Ok(mut m) = m.try_borrow_mut() {
+            if let Some(i) = slot_index(&m, key) {
+                m.slots[i].1.visible = false;
+            }
+        }
     });
     if let Some(ctl) = ctl {
         unsafe {
@@ -200,142 +606,393 @@ pub fn hide() {
     }
 }
 
-fn close_controller() {
-    let ctl = PREVIEW.with(|c| {
-        let s = &mut *c.borrow_mut();
-        s.token = None;
-        s.controller.take()
+/// Forget one slot entirely: its controller and its ticket.
+pub fn close(key: &SlotKey) {
+    let gone = SLOTS.with(|m| {
+        let mut m = m.borrow_mut();
+        m.waiting.retain(|(k, _, _)| k != key);
+        slot_index(&m, key).map(|i| m.slots.remove(i))
     });
-    if let Some(ctl) = ctl {
-        unsafe {
-            let _ = ctl.Close();
-        }
+    if let Some((_, mut slot)) = gone {
+        close_preview(&mut slot);
     }
 }
 
-fn make_env(loader: Loader, generation: u64, token: String) {
-    if PREVIEW.with(|c| std::mem::replace(&mut c.borrow_mut().env_pending, true)) {
+/// Every slot in one window: what a destroyed native page releases.
+pub fn close_all_for_parent(parent: HWND) {
+    let gone: Vec<(SlotKey, Preview)> = SLOTS.with(|m| {
+        let mut m = m.borrow_mut();
+        let want = parent.0 as isize;
+        let (keep, gone) = m.slots.drain(..).partition(|(key, _)| key.parent != want);
+        m.slots = keep;
+        m.waiting.retain(|(key, _, _)| key.parent != want);
+        gone
+    });
+    for (_, mut slot) in gone {
+        close_preview(&mut slot);
+    }
+}
+
+pub fn hide_all_for_parent(parent: HWND) {
+    let keys: Vec<SlotKey> = SLOTS.with(|m| {
+        m.borrow()
+            .slots
+            .iter()
+            .filter(|(key, slot)| key.parent == parent.0 as isize && slot.visible)
+            .map(|(key, _)| key.clone())
+            .collect()
+    });
+    for key in keys {
+        hide(&key);
+    }
+}
+
+fn make_env(loader: Loader, key: SlotKey, generation: u64, token: String) {
+    // **Every waiter is remembered**, not only the first: one shared
+    // environment serves all of them when it is ready.
+    let start = SLOTS.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some(env) = m.env.clone() {
+            return (Some(env), false);
+        }
+        m.waiting.retain(|(k, _, _)| k != &key);
+        // A show for a slot that has since been evicted/closed does not
+        // hold a queue entry.
+        let live: Vec<SlotKey> = m.slots.iter().map(|(k, _)| k.clone()).collect();
+        m.waiting.retain(|(k, _, _)| live.contains(k));
+        m.waiting.push((key.clone(), generation, token.clone()));
+        if std::mem::replace(&mut m.env_pending, true) {
+            (None, false)
+        } else {
+            (None, true)
+        }
+    });
+    if let Some(env) = start.0 {
+        make_controller(env, key, generation, token);
         return;
     }
-    // **Both schemes, in one environment.** WebView2 registers a custom
-    // scheme when the environment is made and not afterwards, and the
-    // plugin page and the preview can each be the first to ask for one --
-    // so the environment carries both whichever page made it. That is why
-    // this list and `plugin_page::make_env`'s name the same two.
+    if !start.1 {
+        return;
+    }
     let mut regs: Vec<Option<ICoreWebView2CustomSchemeRegistration>> = Vec::new();
-    for scheme in [PREVIEW_SCHEME, polter_settings_shell::plugins::SCHEME] {
+    for scheme in [
+        PREVIEW_SCHEME,
+        PAGE_SCHEME,
+        polter_settings_shell::plugins::SCHEME,
+    ] {
         let reg = CoreWebView2CustomSchemeRegistration::new(scheme.to_string());
         unsafe {
             reg.set_treat_as_secure(true);
             reg.set_has_authority_component(true);
         }
-        // No `SetAllowedOrigins` restriction: that list is what *other*
-        // origins may be served this scheme's resources, and a preview is
-        // served to its own ticket's page only -- a rule about other origins
-        // would be a rule nobody here could rely on. What keeps a page to its
-        // own ticket is `serve` and `on_message`, both of which compare the
-        // token in the request with the one this view was shown for.
         regs.push(Some(reg.into()));
     }
     let options = CoreWebView2EnvironmentOptions::default();
     unsafe { options.set_scheme_registrations(regs) };
     let options: ICoreWebView2EnvironmentOptions = options.into();
-    let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| {
-        PREVIEW.with(|c| c.borrow_mut().env_pending = false);
-        match (hr, env) {
-            (Ok(()), Some(env)) => {
-                PREVIEW.with(|c| c.borrow_mut().env = Some(env.clone()));
-                make_controller(env, generation, token);
+    let handler =
+        CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| {
+            let waiting = SLOTS.with(|m| {
+                let mut m = m.borrow_mut();
+                m.env_pending = false;
+                std::mem::take(&mut m.waiting)
+            });
+            match (hr, env) {
+                (Ok(()), Some(env)) => {
+                    SLOTS.with(|m| m.borrow_mut().env = Some(env.clone()));
+                    for (key, generation, token) in waiting {
+                        let live = SLOTS.with(|m| {
+                            m.borrow().slots.iter().any(|(k, slot)| {
+                                k == &key
+                                    && slot.generation == generation
+                                    && slot.token.as_deref() == Some(token.as_str())
+                            })
+                        });
+                        if live {
+                            make_controller(env.clone(), key, generation, token);
+                        }
+                    }
+                }
+                (r, _) => {
+                    let hr = r.err().map(|e| e.code().0).unwrap_or(-1);
+                    for (key, generation, _) in waiting {
+                        failed(&key, generation, "environment", hr);
+                    }
+                }
             }
-            (r, _) => failed("environment", r.err().map(|e| e.code().0).unwrap_or(-1)),
-        }
-        Ok(())
-    }));
+            Ok(())
+        }));
     let folder = user_data_dir().map(|d| wide(&d.display().to_string()));
-    let folder_ptr = folder.as_ref().map(|w| PCWSTR(w.as_ptr())).unwrap_or(PCWSTR::null());
-    let hr = unsafe { (loader.create)(PCWSTR::null(), folder_ptr, options.as_raw(), handler.as_raw()) };
+    let folder_ptr = folder
+        .as_ref()
+        .map(|w| PCWSTR(w.as_ptr()))
+        .unwrap_or(PCWSTR::null());
+    let hr = unsafe {
+        (loader.create)(
+            PCWSTR::null(),
+            folder_ptr,
+            options.as_raw(),
+            handler.as_raw(),
+        )
+    };
     if hr.is_err() {
-        PREVIEW.with(|c| c.borrow_mut().env_pending = false);
-        failed("environment", hr.0);
+        let waiting = SLOTS.with(|m| {
+            let mut m = m.borrow_mut();
+            m.env_pending = false;
+            std::mem::take(&mut m.waiting)
+        });
+        for (key, generation, _) in waiting {
+            failed(&key, generation, "environment", hr.0);
+        }
     }
 }
-
-fn failed(what: &str, hr: i32) {
-    // process-wide: the one preview the window can show
-    crate::plogf!("[preview] making the {} failed: 0x{:08X}", what, hr as u32);
-    let parent = PREVIEW.with(|c| {
-        let s = &mut *c.borrow_mut();
-        s.state = PageState::Failed(hr);
-        s.parent
+/// A failure is this slot's, not the process's: another page's preview is
+/// untouched.
+fn failed(key: &SlotKey, generation: u64, what: &str, hr: i32) {
+    // process-wide: the message names the slot
+    crate::plogf!(
+        "[preview] {:?}/{:?}: making the {} failed: 0x{:08X}",
+        key.kind,
+        key.group,
+        what,
+        hr as u32
+    );
+    let parent = key.parent();
+    let mine = SLOTS.with(|m| {
+        let mut m = m.borrow_mut();
+        match slot_index(&m, key) {
+            Some(i) if m.slots[i].1.generation == generation => {
+                m.slots[i].1.state = PageState::Failed(hr);
+                m.slots[i].1.creating = false;
+                true
+            }
+            _ => false,
+        }
     });
-    unsafe {
-        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+    if mine {
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+        }
     }
 }
 
-fn make_controller(env: ICoreWebView2Environment, generation: u64, token: String) {
-    let parent = PREVIEW.with(|c| c.borrow().parent);
+fn make_controller(env: ICoreWebView2Environment, key: SlotKey, generation: u64, token: String) {
+    let parent = key.parent();
+    let made_key = key.clone();
+    let made_token = token.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |hr, ctl| {
         let Some(ctl) = ctl.filter(|_| hr.is_ok()) else {
-            failed("view", hr.err().map(|e| e.code().0).unwrap_or(-1));
+            failed(
+                &made_key,
+                generation,
+                "view",
+                hr.err().map(|e| e.code().0).unwrap_or(-1),
+            );
             return Ok(());
         };
-        let current = PREVIEW.with(|c| c.borrow().generation);
-        if current != generation {
-            // Made for a ticket that is no longer on screen.
-            unsafe {
-                let _ = ctl.Close();
-            }
-            return Ok(());
-        }
-        if let Err(e) = configure(&ctl, &token) {
-            unsafe {
-                let _ = ctl.Close();
-            }
-            failed("view", e.code().0);
-            return Ok(());
-        }
-        let (rect, parent) = PREVIEW.with(|c| {
-            let s = &mut *c.borrow_mut();
-            s.controller = Some(ctl.clone());
-            s.state = PageState::Ready;
-            (s.rect, s.parent)
+        // **The slot, the generation and the ticket all have to still be
+        // the ones this controller was made for.** A late completion for a
+        // closed or replaced slot closes what it made and shows nothing.
+        let live = SLOTS.with(|m| {
+            m.borrow().slots.iter().any(|(k, slot)| {
+                k == &made_key
+                    && slot.generation == generation
+                    && slot.token.as_deref() == Some(made_token.as_str())
+            })
         });
-        unsafe {
-            let _ = ctl.SetBounds(rect);
-            let _ = ctl.SetIsVisible(true);
-            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+        if !live {
+            unsafe {
+                let _ = ctl.Close();
+            }
+            return Ok(());
+        }
+        if let Err(e) = configure(&ctl, &made_token, generation, &made_key) {
+            unsafe {
+                let _ = ctl.Close();
+            }
+            failed(&made_key, generation, "view", e.code().0);
+            return Ok(());
+        }
+        let placed = SLOTS.with(|m| {
+            let mut m = m.borrow_mut();
+            match slot_index(&m, &made_key) {
+                Some(i)
+                    if m.slots[i].1.generation == generation
+                        && m.slots[i].1.token.as_deref() == Some(made_token.as_str()) =>
+                {
+                    m.slots[i].1.controller = Some(ctl.clone());
+                    m.slots[i].1.state = PageState::Ready;
+                    m.slots[i].1.creating = false;
+                    // **Desired visibility is the slot's**, not "a
+                    // controller just arrived": a hide while it was being
+                    // made must not be undone.
+                    Some((m.slots[i].1.rect, m.slots[i].1.visible))
+                }
+                _ => None,
+            }
+        });
+        if let Some((rect, visible)) = placed {
+            unsafe {
+                let _ = ctl.SetBounds(rect);
+                let _ = ctl.SetIsVisible(visible);
+                if visible {
+                    let _ =
+                        windows::Win32::Graphics::Gdi::InvalidateRect(Some(parent), None, false);
+                }
+            }
+        } else {
+            unsafe {
+                let _ = ctl.Close();
+            }
         }
         Ok(())
     }));
     // InPrivate: nothing the preview stores outlives it or reaches the next
     // file's page (`websiteDataStore = .nonPersistent()` on the macOS side).
-    let with_options = env.cast::<ICoreWebView2Environment10>().ok().and_then(|e10| {
-        let o = unsafe { e10.CreateCoreWebView2ControllerOptions() }.ok()?;
-        unsafe { o.SetIsInPrivateModeEnabled(true) }.ok()?;
-        Some((e10, o))
-    });
+    let with_options = env
+        .cast::<ICoreWebView2Environment10>()
+        .ok()
+        .and_then(|e10| {
+            let o = unsafe { e10.CreateCoreWebView2ControllerOptions() }.ok()?;
+            unsafe { o.SetIsInPrivateModeEnabled(true) }.ok()?;
+            Some((e10, o))
+        });
     let r = match with_options {
-        Some((e10, o)) => unsafe { e10.CreateCoreWebView2ControllerWithOptions(parent, &o, &handler) },
+        Some((e10, o)) => unsafe {
+            e10.CreateCoreWebView2ControllerWithOptions(parent, &o, &handler)
+        },
         None => {
             // process-wide: as above
-            crate::plogf!("[preview] this runtime has no controller options; the preview is not InPrivate");
+            crate::plogf!(
+                "[preview] this runtime has no controller options; the preview is not InPrivate"
+            );
             unsafe { env.CreateCoreWebView2Controller(parent, &handler) }
         }
     };
     if let Err(e) = r {
-        failed("view", e.code().0);
+        failed(&key, generation, "view", e.code().0);
     }
 }
 
-/// What the preview may do, set on a new view before it loads anything.
-///
-/// **Two of the plugin page's settings are looser here and neither is
-/// reach.** A preview's page is a file somebody wrote, so its scripts run --
-/// that is the point of a preview -- and the thing that keeps a script from
-/// reaching anything is that there is no bridge in it beyond the eight calls
-/// and no network, not that scripts are off.
-fn configure(ctl: &ICoreWebView2Controller, token: &str) -> windows::core::Result<()> {
+fn slot_page(key: &SlotKey) -> Option<PageAssets> {
+    SLOTS.with(|m| {
+        m.try_borrow()
+            .ok()
+            .and_then(|m| slot_index(&m, key).and_then(|i| m.slots[i].1.page.clone()))
+    })
+}
+
+/// The token in either of this preview's two schemes' URIs.
+fn uri_token(uri: &str) -> Option<&str> {
+    let rest = uri
+        .strip_prefix(PREVIEW_SCHEME)
+        .or_else(|| uri.strip_prefix(PAGE_SCHEME))?
+        .strip_prefix("://")?;
+    Some(rest.split('/').next().unwrap_or(""))
+}
+
+fn encode_segment(segment: &str) -> String {
+    let mut out = String::new();
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn decode_segment(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = *bytes.get(i + 1)?;
+            let lo = *bytes.get(i + 2)?;
+            let value = u8::from_str_radix(std::str::from_utf8(&[hi, lo]).ok()?, 16).ok()?;
+            out.push(value);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The page path, percent-encoded **one segment at a time**, so a space or
+/// a Chinese name is a path and not a query.
+fn page_entry_url(token: &str, assets: &PageAssets) -> String {
+    let path = assets
+        .page
+        .split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{PAGE_SCHEME}://{token}/{path}")
+}
+
+/// The page scheme's path segments, decoded exactly once, for **this**
+/// token. A query/fragment is not part of a file name; `..`, `.`, an empty
+/// segment, a decoded separator, a drive-ish `:` and an invalid escape are
+/// refused rather than silently remapped. The host is the ticket, so a page
+/// can only name its own directory.
+fn page_segments(uri: &str, token: &str) -> Option<Vec<String>> {
+    let rest = uri.strip_prefix(PAGE_SCHEME)?.strip_prefix("://")?;
+    let mut parts = rest.splitn(2, '/');
+    let host = parts.next()?;
+    if host != token {
+        return None;
+    }
+    let path = parts.next().unwrap_or("");
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for seg in path.split('/') {
+        let decoded = decode_segment(seg)?;
+        if decoded.is_empty()
+            || decoded == "."
+            || decoded == ".."
+            || decoded.contains(['/', '\\', ':', '\0'])
+        {
+            return None;
+        }
+        out.push(decoded);
+    }
+    Some(out)
+}
+
+/// The answer for one request in the page scheme: the URL's own segments,
+/// read under the page's directory, and the **plugin** MIME table. Split
+/// out from `serve` so the entry URL, the file read and the response type
+/// are one tested chain.
+fn page_asset(uri: &str, token: &str, dir: &str) -> (u16, &'static str, Vec<u8>, &'static str) {
+    let Some(segs) = page_segments(uri, token) else {
+        return (403, "Forbidden", Vec::new(), "text/plain");
+    };
+    match crate::webview_host::read_inside(std::path::Path::new(dir), &segs) {
+        Some(bytes) => (
+            200,
+            "OK",
+            bytes,
+            polter_settings_shell::plugins::content_type(
+                segs.last().map(String::as_str).unwrap_or(""),
+            ),
+        ),
+        None => (404, "Not Found", Vec::new(), "text/plain"),
+    }
+}
+
+fn configure(
+    ctl: &ICoreWebView2Controller,
+    token: &str,
+    generation: u64,
+    key: &SlotKey,
+) -> windows::core::Result<()> {
     unsafe {
         let wv = ctl.CoreWebView2()?;
         let settings = wv.Settings()?;
@@ -355,13 +1012,20 @@ fn configure(ctl: &ICoreWebView2Controller, token: &str) -> windows::core::Resul
         // preview's; everything else -- http, file:, the plugin scheme --
         // is answered 403 (no network, twice over with the CSP header).
         let all = wide("*");
-        wv.AddWebResourceRequestedFilter(PCWSTR(all.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)?;
+        wv.AddWebResourceRequestedFilter(
+            PCWSTR(all.as_ptr()),
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        )?;
         let t = token.to_string();
+        let guard = key.clone();
         let mut tok = 0i64;
         wv.add_WebResourceRequested(
             &WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+                if slot_generation(&guard) != Some(generation) {
+                    return Ok(());
+                }
                 if let Some(args) = args {
-                    serve(&args, &t);
+                    serve(&args, &t, &guard.clone());
                 }
                 Ok(())
             })),
@@ -378,7 +1042,9 @@ fn configure(ctl: &ICoreWebView2Controller, token: &str) -> windows::core::Resul
                     let mut uri = PWSTR::null();
                     let _ = args.Uri(&mut uri);
                     let uri = take_pwstr(uri);
-                    if polter_preview_route::resolve(&uri).is_err() {
+                    let allowed = uri_token(&uri) == Some(t.as_str())
+                        && (uri.starts_with(PREVIEW_SCHEME) || uri.starts_with(PAGE_SCHEME));
+                    if !allowed {
                         let _ = args.SetCancel(true);
                         // process-wide: as above
                         crate::plogf!("[preview] {}: navigation to {:?} refused", t, uri);
@@ -401,8 +1067,14 @@ fn configure(ctl: &ICoreWebView2Controller, token: &str) -> windows::core::Resul
         )?;
 
         let t = token.to_string();
+        let guard = key.clone();
         wv.add_WebMessageReceived(
             &WebMessageReceivedEventHandler::create(Box::new(move |wv, args| {
+                // **A message from a replaced or closed slot never reaches
+                // the core**, even if the old page was still queued.
+                if slot_generation(&guard) != Some(generation) {
+                    return Ok(());
+                }
                 if let (Some(wv), Some(args)) = (wv, args) {
                     on_message(&wv, &args, &t);
                 }
@@ -413,11 +1085,19 @@ fn configure(ctl: &ICoreWebView2Controller, token: &str) -> windows::core::Resul
 
         let script = wide(BRIDGE);
         wv.AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), None)?;
-        let url = wide(&entry_url(token));
+        let url_text = match slot_page(key) {
+            Some(assets) => page_entry_url(token, &assets),
+            None => entry_url(token),
+        };
+        let url = wide(&url_text);
         wv.Navigate(PCWSTR(url.as_ptr()))?;
     }
     // process-wide: as above
-    crate::plogf!("[preview] {}: view made, loading {}", token, entry_url(token));
+    crate::plogf!(
+        "[preview] {}: view made, loading {}",
+        token,
+        entry_url(token)
+    );
     Ok(())
 }
 
@@ -479,7 +1159,9 @@ const BRIDGE: &str = r#"(function () {
 /// showing. The request goes out as the text the socket would carry, so the
 /// host and an agent's door cannot disagree about what a ticket does.
 fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
-    let Some(api) = crate::api_opt() else { return Err("the core is not running".into()) };
+    let Some(api) = crate::api_opt() else {
+        return Err("the core is not running".into());
+    };
     let Some(ask) = api.app_files else {
         return Err("this build's core has no file preview calls".into());
     };
@@ -488,23 +1170,46 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
         return Err("the core is not running".into());
     }
     let request = serde_json::json!({ "method": method, "params": params }).to_string();
-    let need = unsafe { ask(app, request.as_ptr(), request.len(), std::ptr::null_mut(), 0) };
+    let need = unsafe {
+        ask(
+            app,
+            request.as_ptr(),
+            request.len(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     if need == 0 {
         // Zero is this door's "that is not one of the five": named rather
         // than read as an empty answer.
-        return Err(format!("{method} is not a request the core answers for a host"));
+        return Err(format!(
+            "{method} is not a request the core answers for a host"
+        ));
     }
     let mut buf = vec![0u8; need + 1];
-    let wrote = unsafe { ask(app, request.as_ptr(), request.len(), buf.as_mut_ptr(), buf.len()) };
+    let wrote = unsafe {
+        ask(
+            app,
+            request.as_ptr(),
+            request.len(),
+            buf.as_mut_ptr(),
+            buf.len(),
+        )
+    };
     if wrote == 0 || wrote > need {
         return Err("it changed size between asking and reading".into());
     }
-    let text = String::from_utf8(buf[..wrote].to_vec()).map_err(|_| "it is not UTF-8".to_string())?;
+    let text =
+        String::from_utf8(buf[..wrote].to_vec()).map_err(|_| "it is not UTF-8".to_string())?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("the core's answer is not JSON: {e}"))?;
     // `{"refused":...}` is the core's no, in the one shape it refuses in.
     if value.get("refused").is_some() {
-        return Err(value.get("why").and_then(|w| w.as_str()).unwrap_or("refused").to_string());
+        return Err(value
+            .get("why")
+            .and_then(|w| w.as_str())
+            .unwrap_or("refused")
+            .to_string());
     }
     Ok(value)
 }
@@ -515,11 +1220,8 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
 /// where.** Nothing in this function builds a path, and there is no branch
 /// in which it could: it hands `(token, rel)` to `files_resolve` and writes
 /// what came back.
-fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
-    let (env, generation) = PREVIEW.with(|c| {
-        let s = c.borrow();
-        (s.env.clone(), s.generation)
-    });
+fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str, key: &SlotKey) {
+    let env = SLOTS.with(|m| m.borrow().env.clone());
     let Some(env) = env else { return };
     let uri = unsafe { args.Request() }
         .ok()
@@ -530,6 +1232,40 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
         })
         .unwrap_or_default();
 
+    // **A plugin page is served from its own directory**, never from the
+    // ticket's file; a ticket URL is served from the core's resolution.
+    // The URL goes through the same `page_segments` the entry URL is built
+    // from: one decode, the ticket as host, no query in the file name.
+    if uri.starts_with(PAGE_SCHEME) {
+        let (status, reason, body, ctype) = match slot_page(key) {
+            Some(assets) => page_asset(&uri, token, &assets.dir),
+            None => (403, "Forbidden", Vec::new(), "text/plain"),
+        };
+        // **Every answer, not only refusals**, for the same reason as the
+        // ticket path: a page's own script/style arriving as 200 here is
+        // what shows this route works.
+        // process-wide: as above
+        crate::plogf!("[preview] {}: {} -> {}", token, uri, status);
+        let headers = format!(
+            "Content-Type: {ctype}\r\nContent-Security-Policy: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff",
+            page_csp(token)
+        );
+        let stream = unsafe { SHCreateMemStream(Some(&body)) };
+        let reason = wide(reason);
+        let headers = wide(&headers);
+        if let Ok(resp) = unsafe {
+            env.CreateWebResourceResponse(
+                stream.as_ref(),
+                // API takes i32; `page_asset` answers a u16 status.
+                status.into(),
+                PCWSTR(reason.as_ptr()),
+                PCWSTR(headers.as_ptr()),
+            )
+        } {
+            let _ = unsafe { args.SetResponse(&resp) };
+        }
+        return;
+    }
     let (status, reason, body, ctype) = match polter_preview_route::resolve(&uri) {
         Ok(route) => {
             // A page may only ask about the ticket it was served from: a
@@ -537,7 +1273,10 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
             // this view was never given it.
             if route.token != token {
                 // process-wide: as above
-                crate::plogf!("[preview] {}: request for another ticket's file refused", token);
+                crate::plogf!(
+                    "[preview] {}: request for another ticket's file refused",
+                    token
+                );
                 (403, "Forbidden", Vec::new(), "text/plain")
             } else {
                 match ask_core(
@@ -567,7 +1306,12 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
         }
         Err(why) => {
             // process-wide: as above
-            crate::plogf!("[preview] {}: request for {:?} refused ({:?})", token, uri, why);
+            crate::plogf!(
+                "[preview] {}: request for {:?} refused ({:?})",
+                token,
+                uri,
+                why
+            );
             let (status, reason) = match why {
                 Refused::OtherScheme | Refused::BadToken => (403, "Forbidden"),
                 Refused::Outside | Refused::BadEscape => (403, "Forbidden"),
@@ -575,11 +1319,8 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
             (status, reason, Vec::new(), "text/plain")
         }
     };
-    // Generation check: a request that arrived for a view that has since
-    // been replaced is dropped rather than answered into the new one.
-    if PREVIEW.with(|c| c.borrow().generation) != generation {
-        return;
-    }
+    // The slot's generation was checked by the handler that called this;
+    // a request for a replaced view never reaches here.
     // **Every answer, not only refusals**: a 200 is what shows this path
     // works, and a `fetch` that never appears is then the policy stopping it
     // in the page, not a request lost.
@@ -593,7 +1334,12 @@ fn serve(args: &ICoreWebView2WebResourceRequestedEventArgs, token: &str) {
     let reason = wide(reason);
     let headers = wide(&headers);
     if let Ok(resp) = unsafe {
-        env.CreateWebResourceResponse(stream.as_ref(), status, PCWSTR(reason.as_ptr()), PCWSTR(headers.as_ptr()))
+        env.CreateWebResourceResponse(
+            stream.as_ref(),
+            status,
+            PCWSTR(reason.as_ptr()),
+            PCWSTR(headers.as_ptr()),
+        )
     } {
         let _ = unsafe { args.SetResponse(&resp) };
     }
@@ -618,6 +1364,16 @@ base-uri 'none'; frame-ancestors 'none'"
     )
 }
 
+/// The plugin page's own CSP: only its page assets, inline script/style as
+/// plugin pages use, and **no network**.
+fn page_csp(token: &str) -> String {
+    format!(
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; \
+form-action 'none'; base-uri 'none'; frame-ancestors 'none'; media-src 'self' {PAGE_SCHEME}://{token}"
+    )
+}
+
 /// Enough types for a file being previewed: `polter_preview_route::content_type`,
 /// imported above. **This host keeps no second copy of that table** -- it had
 /// one, and its `.css`/`.json` answers had drifted from the macOS host's
@@ -629,10 +1385,7 @@ fn on_message(wv: &ICoreWebView2, args: &ICoreWebView2WebMessageReceivedEventArg
     let source = take_pwstr(src);
     // The message has to come from this ticket's own origin: a frame from
     // anywhere else is not the file that was served.
-    let from_here = match polter_preview_route::resolve(&source) {
-        Ok(r) => r.token == token,
-        Err(_) => false,
-    };
+    let from_here = uri_token(&source) == Some(token);
     if !from_here {
         // process-wide: as above
         crate::plogf!("[preview] {}: message from {:?} ignored", token, source);
@@ -641,10 +1394,15 @@ fn on_message(wv: &ICoreWebView2, args: &ICoreWebView2WebMessageReceivedEventArg
     let mut j = PWSTR::null();
     let _ = unsafe { args.WebMessageAsJson(&mut j) };
     let text = take_pwstr(j);
-    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
     let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    let argument = msg.get("argument").cloned().unwrap_or(serde_json::Value::Null);
+    let argument = msg
+        .get("argument")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     // **`Call::parse` is the whole surface.** A method that is not one of
     // the eight is `no such call: <name>`, so an author who guessed finds out
@@ -664,20 +1422,37 @@ fn on_message(wv: &ICoreWebView2, args: &ICoreWebView2WebMessageReceivedEventArg
 }
 
 /// One of the eight calls.
-fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn answer(
+    call: Call,
+    token: &str,
+    argument: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     match call {
         // What the file is. The core's `files_open` answer carries this for
         // the ticket's own file, and it is reread on every ask rather than
         // kept, so a file that changed under the preview is not described
         // by what it was.
-        Call::Info => ask_core("files_resolve", serde_json::json!({ "token": token, "rel": "" })),
+        Call::Info => ask_core(
+            "files_resolve",
+            serde_json::json!({ "token": token, "rel": "" }),
+        ),
         Call::Read => {
             let rel = argument.get("rel").and_then(|r| r.as_str()).unwrap_or("");
-            let resolved = ask_core("files_resolve", serde_json::json!({ "token": token, "rel": rel }))?;
-            let path = resolved.get("path").and_then(|p| p.as_str()).ok_or("refused")?;
+            let resolved = ask_core(
+                "files_resolve",
+                serde_json::json!({ "token": token, "rel": rel }),
+            )?;
+            let path = resolved
+                .get("path")
+                .and_then(|p| p.as_str())
+                .ok_or("refused")?;
             let offset = argument.get("offset").and_then(|o| o.as_u64()).unwrap_or(0) as usize;
             let length = argument.get("length").and_then(|l| l.as_u64()).unwrap_or(0) as usize;
-            let length = if length == 0 { READ_MAX } else { length.min(READ_MAX) };
+            let length = if length == 0 {
+                READ_MAX
+            } else {
+                length.min(READ_MAX)
+            };
             let bytes = read_span(path, offset, length)?;
             Ok(serde_json::json!({
                 "base64": base64(&bytes),
@@ -686,7 +1461,10 @@ fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde
             }))
         }
         Call::ReadRel => {
-            let rel = argument.get("rel").and_then(|r| r.as_str()).ok_or("readRel needs a path")?;
+            let rel = argument
+                .get("rel")
+                .and_then(|r| r.as_str())
+                .ok_or("readRel needs a path")?;
             let mut with_rel = argument.clone();
             with_rel["rel"] = serde_json::Value::String(rel.to_string());
             answer(Call::Read, token, &with_rel)
@@ -695,8 +1473,14 @@ fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde
         // The `rel` goes to the core like any other, so a file outside this
         // ticket's scope is refused here as it would be in an `<img>`.
         Call::OpenPath => {
-            let rel = argument.get("rel").and_then(|r| r.as_str()).ok_or("openPath needs a path")?;
-            let resolved = ask_core("files_resolve", serde_json::json!({ "token": token, "rel": rel }))?;
+            let rel = argument
+                .get("rel")
+                .and_then(|r| r.as_str())
+                .ok_or("openPath needs a path")?;
+            let resolved = ask_core(
+                "files_resolve",
+                serde_json::json!({ "token": token, "rel": rel }),
+            )?;
             // The ticket stays the same and the anchor does not move: the
             // page is what changes, not what this view may reach. Said as
             // such rather than pretending the file changed underneath.
@@ -712,8 +1496,14 @@ fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde
         // and hands back what would be written; `files_commit` is a separate
         // call, made only after the person has chosen.
         Call::Propose => {
-            let full_text = argument.get("fullText").and_then(|t| t.as_str()).ok_or("propose needs text")?;
-            let base_version = argument.get("baseVersion").and_then(|v| v.as_str()).unwrap_or("");
+            let full_text = argument
+                .get("fullText")
+                .and_then(|t| t.as_str())
+                .ok_or("propose needs text")?;
+            let base_version = argument
+                .get("baseVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             ask_core(
                 "files_propose",
                 serde_json::json!({ "token": token, "full_text": full_text, "base_version": base_version }),
@@ -722,7 +1512,10 @@ fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde
         // Whether there are unsaved changes. The host keeps this for its
         // own "you have unsaved changes" question; nothing is written.
         Call::Dirty => {
-            let dirty = argument.get("dirty").and_then(|d| d.as_bool()).unwrap_or(false);
+            let dirty = argument
+                .get("dirty")
+                .and_then(|d| d.as_bool())
+                .unwrap_or(false);
             Ok(serde_json::json!({ "dirty": dirty }))
         }
     }
@@ -732,7 +1525,8 @@ fn answer(call: Call, token: &str, argument: &serde_json::Value) -> Result<serde
 fn read_span(path: &str, offset: usize, length: usize) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    f.seek(SeekFrom::Start(offset as u64)).map_err(|e| e.to_string())?;
+    f.seek(SeekFrom::Start(offset as u64))
+        .map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; length];
     let n = f.read(&mut buf).map_err(|e| e.to_string())?;
     buf.truncate(n);
@@ -770,7 +1564,13 @@ fn look_tokens() -> serde_json::Value {
         if c.a >= 1.0 {
             format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
         } else {
-            format!("#{:02X}{:02X}{:02X}{:02X}", c.r, c.g, c.b, (c.a.clamp(0.0, 1.0) * 255.0).round() as u8)
+            format!(
+                "#{:02X}{:02X}{:02X}{:02X}",
+                c.r,
+                c.g,
+                c.b,
+                (c.a.clamp(0.0, 1.0) * 255.0).round() as u8
+            )
         }
     };
     let mut colours = serde_json::Map::new();
@@ -816,12 +1616,24 @@ fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -847,6 +1659,109 @@ mod tests {
         // An empty `rel` is the ticket's own file, which is what a preview of
         // a file means.
         assert_eq!(route.rel, "");
+    }
+
+    /// **The page URL is built and served by one parser.** `page_entry_url`
+    /// encodes each segment; `page_segments` -- the function `serve` calls
+    /// -- decodes each segment exactly once. A space or a Chinese name must
+    /// survive that round trip, and the query is not part of a file name.
+    #[test]
+    fn a_page_url_round_trips_through_its_own_router() {
+        let assets = PageAssets {
+            dir: "C:\\plugins\\p".into(),
+            page: "ui/我的 页面.html".into(),
+        };
+        let url = page_entry_url(TOKEN, &assets);
+        assert!(url.starts_with("polter-preview-plugin://"), "{url}");
+        assert!(url.contains("%20"), "{url}");
+        assert_eq!(
+            page_segments(&url, TOKEN).expect("the URL this view loads must route"),
+            vec!["ui".to_string(), "我的 页面.html".to_string()]
+        );
+        // `?v=1` is the resource asking for a file, not a file named that.
+        let versioned = format!("{PAGE_SCHEME}://{TOKEN}/ui/style.css?v=1");
+        assert_eq!(
+            page_segments(&versioned, TOKEN),
+            Some(vec!["ui".to_string(), "style.css".to_string()])
+        );
+    }
+
+    /// **The entry HTML, its script and its stylesheet, through one
+    /// chain**: `page_entry_url` -> `page_asset` (the function `serve`
+    /// calls). The HTML is a page and the two assets carry the types the
+    /// engine needs; a `?v=1` resource and a Chinese/space name load.
+    #[test]
+    fn the_entry_url_serves_the_page_files_it_names() {
+        let dir = std::env::temp_dir().join(format!("polter-preview-page-{}", std::process::id()));
+        let ui = dir.join("ui");
+        std::fs::create_dir_all(&ui).expect("a page directory");
+        std::fs::write(ui.join("我的 页面.html"), b"<html></html>").expect("the entry");
+        std::fs::write(ui.join("app.js"), b"window.x = 1;").expect("a script");
+        std::fs::write(ui.join("style.css"), b"body {}").expect("a stylesheet");
+        let page = PageAssets {
+            dir: dir.to_string_lossy().into_owned(),
+            page: "ui/我的 页面.html".into(),
+        };
+        let entry = page_entry_url(TOKEN, &page);
+        let (status, _, body, ctype) = page_asset(&entry, TOKEN, &page.dir);
+        assert_eq!((status, ctype), (200, "text/html; charset=utf-8"), "{entry}");
+        assert_eq!(body, b"<html></html>");
+        for (name, want) in [
+            ("app.js", "text/javascript; charset=utf-8"),
+            ("style.css", "text/css; charset=utf-8"),
+        ] {
+            let url = format!("{PAGE_SCHEME}://{TOKEN}/ui/{name}?v=1");
+            let (status, _, _, ctype) = page_asset(&url, TOKEN, &page.dir);
+            assert_eq!((status, ctype), (200, want), "{url}");
+        }
+        // A traversal is refused with the URL's own answer, not remapped
+        // onto another file in the directory.
+        let escape = format!("{PAGE_SCHEME}://{TOKEN}/ui/../secret");
+        assert_eq!(page_asset(&escape, TOKEN, &page.dir).0, 403);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One decode, then refuse what leaves the page's own directory. A
+    /// silent remap would serve a different file than the URL named.
+    #[test]
+    fn the_page_router_refuses_escapes_instead_of_remapping_them() {
+        for bad in [
+            "a/../b",
+            "%2e%2e/x",
+            "%2E%2E/x",
+            "a%2Fb",
+            "a%5Cb",
+            "%ZZ",
+            "x/%2E",
+            "a//b",
+        ] {
+            let url = format!("{PAGE_SCHEME}://{TOKEN}/{bad}");
+            assert_eq!(page_segments(&url, TOKEN), None, "{bad}");
+        }
+        // Another ticket is another origin, and an empty path names no file.
+        assert_eq!(
+            page_segments(&format!("{PAGE_SCHEME}://other/index.html"), TOKEN),
+            None
+        );
+        assert_eq!(page_segments(&format!("{PAGE_SCHEME}://{TOKEN}/"), TOKEN), None);
+    }
+
+    /// **A page is a program, so its own assets take the plugin table.**
+    /// The ticket table would answer `text/plain` for `.js`/`.css`, and the
+    /// `nosniff` header then makes the engine refuse to run or apply them.
+    #[test]
+    fn a_plugin_page_asset_is_not_a_previewed_source_file() {
+        assert_eq!(
+            polter_settings_shell::plugins::content_type("ui/app.js"),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            polter_settings_shell::plugins::content_type("ui/app.css"),
+            "text/css; charset=utf-8"
+        );
+        // The preview ticket's table is unchanged: a person reads that file.
+        assert_eq!(content_type("ui/app.js"), "text/plain; charset=utf-8");
+        assert_eq!(content_type("ui/app.css"), "text/plain; charset=utf-8");
     }
 
     #[test]
@@ -910,12 +1825,33 @@ mod tests {
     #[test]
     fn the_policy_lets_in_only_this_tickets_own_origin() {
         let csp = csp(TOKEN);
-        assert!(csp.contains(&format!("{PREVIEW_SCHEME}://{TOKEN}")), "{csp}");
+        assert!(
+            csp.contains(&format!("{PREVIEW_SCHEME}://{TOKEN}")),
+            "{csp}"
+        );
         assert!(csp.contains("connect-src 'none'"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
         // Another ticket's origin is not named, by construction: the only
         // token in the policy is this one.
-        assert_eq!(csp.matches(PREVIEW_SCHEME).count(), 2, "img-src and media-src: {csp}");
+        assert_eq!(
+            csp.matches(PREVIEW_SCHEME).count(),
+            2,
+            "img-src and media-src: {csp}"
+        );
+    }
+
+    /// **A ledger that is borrowed cannot answer "who owns this".** The
+    /// close waits for it instead of being treated as an unowned ticket;
+    /// once the borrow is gone, the deferred effect runs.
+    #[test]
+    fn a_busy_owner_ledger_defers_a_close_instead_of_calling_it_unowned() {
+        SLOTS.with(|m| {
+            let _held = m.borrow_mut();
+            close_unowned(TOKEN);
+        });
+        assert_eq!(deferred_len(), 1, "busy is not unowned");
+        flush_deferred();
+        assert_eq!(deferred_len(), 0);
     }
 
     #[test]

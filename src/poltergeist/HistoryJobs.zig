@@ -84,6 +84,14 @@ pub const id_len: usize = 32;
 /// The states a job can be in, exactly the set contract §3 names.
 pub const State = enum(u8) { pending, ready, cancelled, expired, failed };
 
+/// Which read a job is doing. The manager does not act on it; it exists so
+/// that a retried `request_id` is bound to the same question, and so a
+/// resumed token knows which way to walk.
+pub const JobMode = enum(u8) { history, around, context, search, reference };
+
+/// Which way a continuation walks.
+pub const Direction = enum(u8) { older, newer };
+
 /// Why a scan failed. The bytes the runner published carry the code the
 /// host reads; this is only what the manager must know about the state.
 pub const Failure = enum { too_large, scan_failed };
@@ -146,16 +154,48 @@ pub const Elapsed = struct {
 /// functions also honour. `release` runs on whichever thread drops the job,
 /// after the worker has been joined.
 pub const Work = struct {
+    /// Main-thread disposal of resources minted after publication (preview tickets).
+    discard: ?*const fn (alloc: Allocator, ctx: ?*anyopaque) void = null,
     ctx: ?*anyopaque = null,
     run: *const fn (ctx: ?*anyopaque, job: *Job) void,
     release: *const fn (alloc: Allocator, ctx: ?*anyopaque) void,
 };
 
 /// What `begin` was asked for, after the caller has validated it.
+/// Shared immutable snapshot. Refcounts are touched only by the manager thread.
+pub const SharedData = struct {
+    ctx: *anyopaque,
+    release: *const fn (Allocator, *anyopaque) void,
+};
+
+const Frozen = struct {
+    shared: ?SharedData = null,
+    bytes: []u8,
+    refs: usize = 1,
+};
+
 pub const Begin = struct {
+    binding: []const u8 = "",
+    snapshot: []const u8 = "",
+    authority: []const u8 = "",
+
     request_id: []const u8,
     group: []const u8,
     limit: usize,
+
+    /// Which read this is. History is the default a caller that does not
+    /// say gets, because that is what the first three calls were.
+    mode: JobMode = .history,
+
+    /// Which way a resumed `context` job walks. Meaningful only there; a
+    /// history page walks towards older records and says so.
+    direction: Direction = .older,
+
+    /// A fingerprint of every parameter that makes this request itself
+    /// (mode, query, anchor, direction, counts). **No default**: a retried
+    /// `request_id` must not be answered as a different question, and the
+    /// comparison is structural.
+    question: u64,
 
     /// A token from an earlier page, or null for the first page.
     resume_token: ?[id_len]u8 = null,
@@ -219,6 +259,21 @@ pub const PollError = error{NoSuchJob};
 pub const CancelError = error{NoSuchJob};
 
 pub const Job = struct {
+    invalidated: bool = false,
+    binding: []u8,
+    authority: []u8,
+    frozen: *Frozen,
+    live_offset: usize = 0,
+    next_live_offset: usize = 0,
+    opposite: ?Cursor = null,
+    opposite_at_end: bool = false,
+    inherited_gap: bool = false,
+    inherited_restarted: bool = false,
+    result_gap: bool = false,
+    result_restarted: bool = false,
+    older_at_end: bool = false,
+    newer_at_end: bool = false,
+
     alloc: Allocator,
     clock: Clock,
 
@@ -232,6 +287,18 @@ pub const Job = struct {
     /// The runner writes it into the page; `poll` registers the cursor it
     /// stood for, once, the first time the page is handed over.
     token: [id_len]u8,
+
+    /// The second token an `around` page carries: one per direction. It is
+    /// generated for every job and used only by a page that names both.
+    token_newer: [id_len]u8,
+
+    mode: JobMode,
+    direction: Direction,
+    question: u64,
+
+    /// A newer-direction continuation, beside `next` (which is always the
+    /// job's own direction). Only `around` fills it.
+    next_newer: ?Cursor = null,
 
     /// Where the scan starts and the question it answers.
     cursor: ?Cursor,
@@ -268,11 +335,38 @@ pub const Job = struct {
     /// The runner's own allocations, freed when the job is dropped.
     arena: std.heap.ArenaAllocator,
 
+    pub fn snapshot(self: *const Job) []const u8 {
+        return self.frozen.bytes;
+    }
+    /// Set once by the first worker before publication. Tokens can only expose
+    /// the snapshot after that release-store; every continuation borrows it.
+    pub fn setShared(self: *Job, shared_data: SharedData) void {
+        std.debug.assert(self.frozen.shared == null);
+        self.frozen.shared = shared_data;
+    }
+    pub fn shared(self: *const Job) ?SharedData {
+        return self.frozen.shared;
+    }
+
     /// Publish a page. **The cancel check is inside this function on
     /// purpose**: a publisher that only looked at the flag would still race
     /// a cancel that landed between the look and the store.
     pub fn completeReady(self: *Job, bytes: []const u8, next: ?Cursor, token_used: bool) void {
+        self.next_newer = null;
         self.complete(.ready, bytes, next, token_used, null);
+    }
+
+    /// An `around` page names **both** directions, so both cursors travel
+    /// with it and both tokens are registered on the first poll.
+    pub fn completeAround(
+        self: *Job,
+        bytes: []const u8,
+        older: ?Cursor,
+        newer: ?Cursor,
+        tokens_used: bool,
+    ) void {
+        self.next_newer = newer;
+        self.complete(.ready, bytes, older, tokens_used, null);
     }
 
     /// A failed scan still has a body -- the contract wants an explicit
@@ -280,6 +374,13 @@ pub const Job = struct {
     /// record which did not fit.
     pub fn completeFailed(self: *Job, why: Failure, bytes: []const u8, next: ?Cursor, token_used: bool) void {
         self.complete(.failed, bytes, next, token_used, why);
+    }
+
+    pub fn completeDirectionalFailure(self: *Job, bytes: []const u8, cursor: ?Cursor) void {
+        // Context failures name the original request token, which remains
+        // unconsumed. They do not mint a replacement boundary after a failed page.
+        self.next_newer = if (self.direction == .newer) cursor else null;
+        self.complete(.failed, bytes, if (self.direction == .older) cursor else null, false, .too_large);
     }
 
     /// The runner stopped because somebody cancelled. Nothing a host will
@@ -350,9 +451,20 @@ mode: Mode = .thread,
 pub const Mode = enum { thread, immediate };
 
 const Token = struct {
+    mode: JobMode,
+    binding: []u8,
+    authority: []u8,
+    frozen: *Frozen,
+    live_offset: usize,
+    gap: bool,
+    restarted: bool,
+    opposite: ?Cursor,
+    opposite_at_end: bool,
+
     id: [id_len]u8,
     group: []u8,
     cursor: Cursor,
+    direction: Direction,
     history_upper: u64,
     expires_ms: u64,
 };
@@ -368,7 +480,7 @@ pub fn deinit(self: *HistoryJobs) void {
     for (self.jobs.items) |job| job.cancelled.store(true, .release);
     for (self.jobs.items) |job| self.drop(job);
     self.jobs.deinit(self.alloc);
-    for (self.tokens.items) |t| self.alloc.free(t.group);
+    for (self.tokens.items) |t| self.freeToken(t);
     self.tokens.deinit(self.alloc);
     self.* = undefined;
 }
@@ -383,14 +495,41 @@ pub fn reuseRequest(
     group: []const u8,
     limit: usize,
     resume_token: ?[id_len]u8,
+    mode: JobMode,
+    question: u64,
 ) Reuse {
     self.sweep();
     const job = self.findByRequest(request_id) orelse return .none;
-    if (!sameParams(job, group, limit, resume_token)) return .conflict;
+    if (job.invalidated) return .expired;
+    if (!sameParams(job, group, limit, resume_token, mode, question)) return .conflict;
     return switch (job.loadState()) {
         .expired => .expired,
         else => .{ .reused = job },
     };
+}
+
+pub fn reuseBoundRequest(self: *HistoryJobs, req: Begin) Reuse {
+    const result = self.reuseRequest(req.request_id, req.group, req.limit, req.resume_token, req.mode, req.question);
+    if (result == .reused and (!std.mem.eql(u8, result.reused.binding, req.binding) or !std.mem.eql(u8, result.reused.authority, req.authority))) return .conflict;
+    return result;
+}
+
+fn retainFrozen(f: *Frozen) void {
+    f.refs += 1;
+}
+fn releaseFrozen(self: *HistoryJobs, f: *Frozen) void {
+    f.refs -= 1;
+    if (f.refs == 0) {
+        if (f.shared) |shared| shared.release(self.alloc, shared.ctx);
+        self.alloc.free(f.bytes);
+        self.alloc.destroy(f);
+    }
+}
+fn freeToken(self: *HistoryJobs, t: Token) void {
+    self.alloc.free(t.group);
+    self.alloc.free(t.binding);
+    self.alloc.free(t.authority);
+    self.releaseFrozen(t.frozen);
 }
 
 /// Register a job and start it. `begin` does no I/O of its own: the
@@ -413,6 +552,7 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
     // a second scan; a different request under the same id is a caller
     // bug and is refused rather than silently answered as the other.
     if (self.findByRequest(req.request_id)) |found| {
+        if (found.invalidated) return error.Expired;
         // **Structural, not a hash.** The table is a linear scan, so
         // there is no hash to collide: every field the request id is
         // bound to is compared as itself.
@@ -427,11 +567,23 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
     // it here so the worker never reads the token table.
     var cursor: ?Cursor = null;
     var history_upper = req.history_upper;
+    var direction = req.direction;
+    var held: ?Token = null;
     if (req.resume_token) |id| {
         const token = self.lookupToken(id) orelse return error.CursorExpired;
         if (!std.mem.eql(u8, token.group, req.group)) return error.CursorMismatch;
+        const compatible = if (req.mode == .context)
+            token.mode == .around or token.mode == .context
+        else
+            token.mode == req.mode and std.mem.eql(u8, token.binding, req.binding);
+        if (!compatible or !std.mem.eql(u8, token.authority, req.authority)) return error.CursorMismatch;
+        held = token;
         cursor = token.cursor;
         history_upper = token.history_upper;
+        // **The token owns the direction.** A context call names a token
+        // and nothing else about where it goes; letting the request's
+        // default win would walk the opposite way.
+        direction = token.direction;
     }
 
     if (self.running >= max_running) return error.Busy;
@@ -445,15 +597,41 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
         errdefer self.alloc.free(group);
         const id = try newOpaqueId(self.io);
         const token = try newOpaqueId(self.io);
+        const token_newer = try newOpaqueId(self.io);
         break :blk .{
             .request_id = request_id,
             .group = group,
             .id = id,
             .token = token,
+            .token_newer = token_newer,
         };
     };
 
-    const job = try self.alloc.create(Job);
+    var parts_owned = true;
+    errdefer if (parts_owned) {
+        self.alloc.free(parts.request_id);
+        self.alloc.free(parts.group);
+    };
+    const authority = try self.alloc.dupe(u8, req.authority);
+    var authority_owned = true;
+    errdefer if (authority_owned) self.alloc.free(authority);
+    const binding = try self.alloc.dupe(u8, req.binding);
+    var binding_owned = true;
+    errdefer if (binding_owned) self.alloc.free(binding);
+    const frozen = if (held) |t| blk: {
+        retainFrozen(t.frozen);
+        break :blk t.frozen;
+    } else blk: {
+        const f = try self.alloc.create(Frozen);
+        errdefer self.alloc.destroy(f);
+        f.* = .{ .bytes = try self.alloc.dupe(u8, req.snapshot) };
+        break :blk f;
+    };
+    // Ownership transfers to the initialized job below.
+    const job = self.alloc.create(Job) catch |err| {
+        self.releaseFrozen(frozen);
+        return err;
+    };
     // Anything that fails below returns through this, so the work's
     // context is released exactly once and nothing half-made leaks.
     // Cleared only once the job is in the table and started.
@@ -461,6 +639,14 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
     defer if (!owned) self.drop(job);
 
     job.* = .{
+        .binding = binding,
+        .authority = authority,
+        .frozen = frozen,
+        .opposite = if (held) |t| t.opposite else null,
+        .opposite_at_end = if (held) |t| t.opposite_at_end else false,
+        .live_offset = if (held) |t| t.live_offset else 0,
+        .inherited_gap = if (held) |t| t.gap else false,
+        .inherited_restarted = if (held) |t| t.restarted else false,
         .alloc = self.alloc,
         .clock = self.clock,
         .id = parts.id,
@@ -468,6 +654,10 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
         .group = parts.group,
         .limit = req.limit,
         .token = parts.token,
+        .token_newer = parts.token_newer,
+        .mode = req.mode,
+        .direction = direction,
+        .question = req.question,
         .cursor = cursor,
         .resume_id = req.resume_token,
         .history_upper = history_upper,
@@ -476,7 +666,10 @@ pub fn begin(self: *HistoryJobs, req: Begin) BeginError!BeginOutcome {
         .work = req.work,
         .arena = .init(self.alloc),
     };
+    parts_owned = false;
     work_owned = false;
+    binding_owned = false;
+    authority_owned = false;
 
     job.begin_bytes = req.build.build(req.build.ctx, job) catch |err| return err;
 
@@ -515,6 +708,7 @@ pub fn poll(self: *HistoryJobs, id: [id_len]u8) PollError!PollOutcome {
 
     const job = self.findById(id) orelse return error.NoSuchJob;
     self.observe(job);
+    if (job.invalidated) return .expired;
 
     // **Cancel wins over whatever the thread published.** A page that
     // arrived at the same moment as the cancel must not be handed over:
@@ -542,6 +736,31 @@ pub fn poll(self: *HistoryJobs, id: [id_len]u8) PollError!PollOutcome {
         .cancelled => .{ .cancelled = job },
         .expired => .expired,
     };
+}
+
+/// Every production group-deletion path calls this before a name can be reused.
+/// Pending workers are only flagged; never free their work while they run.
+pub fn invalidateGroup(self: *HistoryJobs, group: []const u8) void {
+    for (self.jobs.items) |job| {
+        if (!std.mem.eql(u8, job.group, group)) continue;
+        job.invalidated = true;
+        job.cancelled.store(true, .release);
+        self.observe(job);
+        if (job.loadState() != .pending) {
+            self.observe(job);
+            self.expire(job);
+        }
+    }
+    var i: usize = 0;
+    while (i < self.tokens.items.len) {
+        const token = self.tokens.items[i];
+        if (!std.mem.eql(u8, token.group, group)) {
+            i += 1;
+            continue;
+        }
+        self.freeToken(token);
+        _ = self.tokens.swapRemove(i);
+    }
 }
 
 /// Idempotent: cancelling a job twice, or after it finished, succeeds
@@ -584,6 +803,11 @@ fn findByRequest(self: *HistoryJobs, request_id: []const u8) ?*Job {
     return null;
 }
 
+pub fn peek(self: *HistoryJobs, id: [id_len]u8) ?*Job {
+    self.sweep();
+    return self.findById(id);
+}
+
 fn findById(self: *HistoryJobs, id: [id_len]u8) ?*Job {
     for (self.jobs.items) |job| {
         if (std.mem.eql(u8, &job.id, &id)) return job;
@@ -599,7 +823,7 @@ fn lookupToken(self: *HistoryJobs, id: [id_len]u8) ?Token {
     while (i < self.tokens.items.len) {
         const t = self.tokens.items[i];
         if (self.clock.read() >= t.expires_ms) {
-            self.alloc.free(t.group);
+            self.freeToken(t);
             _ = self.tokens.swapRemove(i);
             continue;
         }
@@ -610,11 +834,30 @@ fn lookupToken(self: *HistoryJobs, id: [id_len]u8) ?Token {
 }
 
 fn registerToken(self: *HistoryJobs, job: *Job) void {
-    const next = job.next orelse return;
     if (!job.token_used or job.token_registered) return;
     job.token_registered = true;
 
+    // **The slot decides the direction**, not the job: `job.token` is
+    // always the older edge and `job.token_newer` the newer one, so a
+    // page read in either direction hands back two cursors that each mean
+    // what their name says.
+    if (job.next) |next| self.putToken(job, job.token, next, .older);
+    if (job.next_newer) |next| self.putToken(job, job.token_newer, next, .newer);
+}
+
+/// One entry in the token table, evicting the oldest deadline when full.
+fn putToken(self: *HistoryJobs, job: *Job, id: [id_len]u8, cursor: Cursor, direction: Direction) void {
     const group = self.alloc.dupe(u8, job.group) catch return;
+    const binding = self.alloc.dupe(u8, job.binding) catch {
+        self.alloc.free(group);
+        return;
+    };
+    const authority = self.alloc.dupe(u8, job.authority) catch {
+        self.alloc.free(group);
+        self.alloc.free(binding);
+        return;
+    };
+    retainFrozen(job.frozen);
     if (self.tokens.items.len >= max_tokens) {
         // The oldest deadline goes: every token has the same lifetime,
         // so that is the one issued first. Forgetting it answers
@@ -623,17 +866,30 @@ fn registerToken(self: *HistoryJobs, job: *Job) void {
         for (self.tokens.items, 0..) |t, i| {
             if (t.expires_ms < self.tokens.items[oldest].expires_ms) oldest = i;
         }
-        self.alloc.free(self.tokens.items[oldest].group);
+        self.freeToken(self.tokens.items[oldest]);
         _ = self.tokens.orderedRemove(oldest);
     }
     self.tokens.append(self.alloc, .{
-        .id = job.token,
+        .id = id,
+        .mode = job.mode,
+        .binding = binding,
+        .authority = authority,
+        .frozen = job.frozen,
+        .opposite = if (direction == .older) job.next_newer else job.next,
+        .opposite_at_end = if (direction == .older) job.newer_at_end else job.older_at_end,
+        .live_offset = job.next_live_offset,
+        .gap = job.inherited_gap or job.result_gap,
+        .restarted = job.inherited_restarted or job.result_restarted,
         .group = group,
-        .cursor = next,
+        .cursor = cursor,
+        .direction = direction,
         .history_upper = job.history_upper,
         .expires_ms = self.clock.read() + token_ttl_ms,
     }) catch {
         self.alloc.free(group);
+        self.alloc.free(binding);
+        self.alloc.free(authority);
+        self.releaseFrozen(job.frozen);
     };
 }
 
@@ -701,7 +957,7 @@ fn sweep(self: *HistoryJobs) void {
     while (k < self.tokens.items.len) {
         const t = self.tokens.items[k];
         if (now >= t.expires_ms) {
-            self.alloc.free(t.group);
+            self.freeToken(t);
             _ = self.tokens.swapRemove(k);
             continue;
         }
@@ -779,6 +1035,7 @@ fn expire(self: *HistoryJobs, job: *Job) void {
 /// Free the page bytes. Called only after `observe`, so the thread that
 /// published them has returned.
 fn freeResult(self: *HistoryJobs, job: *Job) void {
+    if (job.work.discard) |discard| discard(self.alloc, job.work.ctx);
     if (job.bytes) |b| {
         if (b.len > 0) self.alloc.free(b);
         job.bytes = null;
@@ -803,6 +1060,9 @@ fn drop(self: *HistoryJobs, job: *Job) void {
         t.join();
         job.thread = null;
     }
+    self.alloc.free(job.binding);
+    self.alloc.free(job.authority);
+    self.releaseFrozen(job.frozen);
     self.alloc.free(job.request_id);
     self.alloc.free(job.group);
     if (job.begin_bytes.len > 0) self.alloc.free(job.begin_bytes);
@@ -814,12 +1074,21 @@ fn drop(self: *HistoryJobs, job: *Job) void {
 
 /// The client's parameters, compared as themselves.
 fn sameRequest(job: *const Job, req: Begin) bool {
-    return sameParams(job, req.group, req.limit, req.resume_token);
+    return sameParams(job, req.group, req.limit, req.resume_token, req.mode, req.question) and std.mem.eql(u8, job.binding, req.binding) and std.mem.eql(u8, job.authority, req.authority);
 }
 
-fn sameParams(job: *const Job, group: []const u8, limit: usize, resume_token: ?[id_len]u8) bool {
+fn sameParams(
+    job: *const Job,
+    group: []const u8,
+    limit: usize,
+    resume_token: ?[id_len]u8,
+    mode: JobMode,
+    question: u64,
+) bool {
     if (!std.mem.eql(u8, job.group, group)) return false;
     if (job.limit != limit) return false;
+    if (job.mode != mode) return false;
+    if (job.question != question) return false;
     const held = job.resume_id;
     if (held == null and resume_token == null) return true;
     if (held == null or resume_token == null) return false;
@@ -928,6 +1197,7 @@ test "2835: the same request is one job; other parameters under the same id are 
         .group = "build",
         .limit = 50,
         .history_upper = 10,
+        .question = 0,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
     });
@@ -940,6 +1210,7 @@ test "2835: the same request is one job; other parameters under the same id are 
         .group = "build",
         .limit = 50,
         .history_upper = 10,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     });
@@ -953,6 +1224,7 @@ test "2835: the same request is one job; other parameters under the same id are 
         .group = "build",
         .limit = 20,
         .history_upper = 10,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     }));
@@ -964,6 +1236,7 @@ test "2835: the same request is one job; other parameters under the same id are 
         .group = "build",
         .limit = 50,
         .history_upper = 10,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     }));
@@ -982,6 +1255,7 @@ test "2835: pending is not an empty page, and a ready page is handed over unchan
         .group = "build",
         .limit = 50,
         .history_upper = 10,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     });
@@ -995,6 +1269,7 @@ test "2835: pending is not an empty page, and a ready page is handed over unchan
         .group = "build",
         .limit = 50,
         .history_upper = 10,
+        .question = 0,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
     });
@@ -1025,6 +1300,7 @@ test "2835: two running jobs are the ceiling, and finishing frees a slot" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1033,6 +1309,7 @@ test "2835: two running jobs are the ceiling, and finishing frees a slot" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1041,6 +1318,7 @@ test "2835: two running jobs are the ceiling, and finishing frees a slot" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     }));
@@ -1062,6 +1340,7 @@ test "2835: two running jobs are the ceiling, and finishing frees a slot" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1088,6 +1367,7 @@ test "2835: a delivered page is evicted before an undelivered one" {
             .group = "build",
             .limit = 10,
             .history_upper = 1,
+            .question = 0,
             .work = fakeWork(alloc),
             .build = .{ .build = fakeBuild },
         });
@@ -1110,6 +1390,7 @@ test "2835: a delivered page is evicted before an undelivered one" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
     });
@@ -1141,6 +1422,7 @@ test "2835: a result expires at its deadline and is forgotten later" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
     });
@@ -1174,6 +1456,7 @@ test "2835: cancelling is idempotent and the page is never handed over" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
     });
@@ -1196,6 +1479,7 @@ test "2835: cancelling is idempotent and the page is never handed over" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     });
@@ -1228,6 +1512,7 @@ test "2835: a token resumes at its cursor and expires after five minutes" {
         .group = "build",
         .limit = 10,
         .history_upper = 77,
+        .question = 0,
         .work = blk: {
             const f = alloc.create(Fake) catch unreachable;
             f.* = .{ .next = where, .token_used = true };
@@ -1248,6 +1533,7 @@ test "2835: a token resumes at its cursor and expires after five minutes" {
         .group = "build",
         .limit = 10,
         .history_upper = 0,
+        .question = 0,
         .resume_token = token,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
@@ -1262,6 +1548,7 @@ test "2835: a token resumes at its cursor and expires after five minutes" {
         .group = "other",
         .limit = 10,
         .history_upper = 77,
+        .question = 0,
         .resume_token = token,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
@@ -1273,6 +1560,7 @@ test "2835: a token resumes at its cursor and expires after five minutes" {
         .group = "build",
         .limit = 10,
         .history_upper = 77,
+        .question = 0,
         .resume_token = "ffffffffffffffffffffffffffffffff".*,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
@@ -1284,6 +1572,7 @@ test "2835: a token resumes at its cursor and expires after five minutes" {
         .group = "build",
         .limit = 10,
         .history_upper = 77,
+        .question = 0,
         .resume_token = token,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
@@ -1302,6 +1591,7 @@ test "2835: a running job cancelled by the app stops as cancelled" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1318,6 +1608,84 @@ test "2835: a running job cancelled by the app stops as cancelled" {
         }
     }
     try testing.expect(waited < 2000);
+}
+
+const test_around_older: Cursor = .{ .day = 20261105, .part = 1, .offset = 100, .end = 4096, .inode = 9, .question = 0x11 };
+const test_around_newer: Cursor = .{ .day = 20261105, .part = 1, .offset = 300, .end = 4096, .inode = 9, .question = 0x11 };
+
+test "2793: an around page names both cursors, and each token keeps its direction" {
+    const alloc = testing.allocator;
+    var clock: TestClock = .{};
+    var m = immediateManager(alloc, testing.io, clock.clock());
+    defer m.deinit();
+
+    const older = test_around_older;
+    const newer = test_around_newer;
+
+    const T = struct {
+        fn run(_: ?*anyopaque, job: *Job) void {
+            const bytes = job.alloc.dupe(u8, "AROUND") catch return;
+            job.completeAround(bytes, test_around_older, test_around_newer, true);
+        }
+        fn release(_: Allocator, _: ?*anyopaque) void {}
+    };
+
+    const out = try m.begin(.{
+        .request_id = "around-1",
+        .group = "build",
+        .limit = 10,
+        .history_upper = 77,
+        .mode = .around,
+        .question = 0x11,
+        .work = .{ .run = T.run, .release = T.release },
+        .build = .{ .build = fakeBuild },
+    });
+    switch (try m.poll(out.job.id)) {
+        .ready => {},
+        else => return error.ExpectedReady,
+    }
+
+    // The newer token walks newer, and the older one older: the slot says
+    // which, not the job's own default.
+    const n = try m.begin(.{
+        .request_id = "around-2",
+        .group = "build",
+        .limit = 10,
+        .mode = .context,
+        .question = 1,
+        .resume_token = out.job.token_newer,
+        .history_upper = 0,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    });
+    try testing.expectEqual(@as(Direction, .newer), n.job.direction);
+    try testing.expectEqual(newer, n.job.cursor.?);
+
+    const o = try m.begin(.{
+        .request_id = "around-3",
+        .group = "build",
+        .limit = 10,
+        .mode = .context,
+        .question = 1,
+        .resume_token = out.job.token,
+        .history_upper = 0,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    });
+    try testing.expectEqual(@as(Direction, .older), o.job.direction);
+    try testing.expectEqual(older, o.job.cursor.?);
+
+    // The same request id with another question is a different request.
+    try testing.expectError(error.RequestIdConflict, m.begin(.{
+        .request_id = "around-1",
+        .group = "build",
+        .limit = 10,
+        .mode = .around,
+        .question = 0x12,
+        .history_upper = 77,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    }));
 }
 
 test "2835: every refused begin releases the work exactly once" {
@@ -1350,6 +1718,7 @@ test "2835: every refused begin releases the work exactly once" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = .{ .ctx = &counter, .run = countedRun.run, .release = countedRun.release },
         .build = .{ .build = failingBuild.build },
     }));
@@ -1363,6 +1732,7 @@ test "2835: every refused begin releases the work exactly once" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1371,6 +1741,7 @@ test "2835: every refused begin releases the work exactly once" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = gatedWork(alloc, &gate),
         .build = .{ .build = fakeBuild },
     });
@@ -1380,6 +1751,7 @@ test "2835: every refused begin releases the work exactly once" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = .{ .ctx = &counter, .run = countedRun.run, .release = countedRun.release },
         .build = .{ .build = fakeBuild },
     }));
@@ -1417,6 +1789,7 @@ test "2835: a TooLarge page registers its token for the next begin" {
         .group = "build",
         .limit = 10,
         .history_upper = 77,
+        .question = 0,
         .work = blk: {
             const f = alloc.create(Fake) catch unreachable;
             f.* = .{ .fail = true, .next = where, .token_used = true };
@@ -1437,6 +1810,7 @@ test "2835: a TooLarge page registers its token for the next begin" {
         .group = "build",
         .limit = 10,
         .history_upper = 0,
+        .question = 0,
         .resume_token = out.job.token,
         .work = fakeWork(alloc),
         .build = .{ .build = fakeBuild },
@@ -1460,6 +1834,7 @@ test "2835: a result that arrives after cancel is freed exactly once" {
         .group = "build",
         .limit = 10,
         .history_upper = 1,
+        .question = 0,
         .work = .{ .run = fakeRun, .release = fakeRelease },
         .build = .{ .build = fakeBuild },
     });
@@ -1477,4 +1852,89 @@ test "2835: a result that arrives after cancel is freed exactly once" {
     out.job.completeFailed(.too_large, failed_bytes, null, true);
     try testing.expect(out.job.bytes == null);
     try testing.expectEqual(State.cancelled, out.job.loadState());
+}
+
+test "2976 structural binding rejects same hash and tokens freeze snapshot mode scope and dirty state" {
+    const alloc = testing.allocator;
+    var clock: TestClock = .{};
+    var manager = immediateManager(alloc, testing.io, clock.clock());
+    defer manager.deinit();
+    const where = test_around_older;
+    const first = try manager.begin(.{
+        .request_id = "exact",
+        .group = "build",
+        .limit = 2,
+        .history_upper = 10,
+        .mode = .search,
+        .question = 7,
+        .binding = "[\"ab\",\"c\"]",
+        .authority = "user-scope",
+        .snapshot = "immutable live capture",
+        .work = blk: {
+            const fake = try alloc.create(Fake);
+            fake.* = .{ .next = where, .token_used = true };
+            break :blk .{ .ctx = fake, .run = fakeRun, .release = fakeRelease };
+        },
+        .build = .{ .build = fakeBuild },
+    });
+    first.job.result_gap = true;
+    first.job.result_restarted = true;
+    first.job.next_live_offset = 3;
+    _ = try manager.poll(first.job.id);
+    try testing.expectError(error.RequestIdConflict, manager.begin(.{
+        .request_id = "exact",
+        .group = "build",
+        .limit = 2,
+        .history_upper = 10,
+        .mode = .search,
+        .question = 7,
+        .binding = "[\"a\",\"bc\"]",
+        .authority = "user-scope",
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    }));
+    const resumed = try manager.begin(.{
+        .request_id = "resume",
+        .group = "build",
+        .limit = 9,
+        .history_upper = 999,
+        .mode = .search,
+        .question = 7,
+        .binding = "[\"ab\",\"c\"]",
+        .authority = "user-scope",
+        .snapshot = "must not replace capture",
+        .resume_token = first.job.token,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    });
+    try testing.expectEqualStrings("immutable live capture", resumed.job.snapshot());
+    try testing.expectEqual(@as(usize, 3), resumed.job.live_offset);
+    try testing.expect(resumed.job.inherited_gap and resumed.job.inherited_restarted);
+    try testing.expectEqual(@as(u64, 10), resumed.job.history_upper);
+    try testing.expectError(error.CursorMismatch, manager.begin(.{
+        .request_id = "cross-mode",
+        .group = "build",
+        .limit = 2,
+        .history_upper = 10,
+        .mode = .history,
+        .question = 7,
+        .binding = "[\"ab\",\"c\"]",
+        .authority = "user-scope",
+        .resume_token = first.job.token,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    }));
+    try testing.expectError(error.CursorMismatch, manager.begin(.{
+        .request_id = "cross-scope",
+        .group = "build",
+        .limit = 2,
+        .history_upper = 10,
+        .mode = .search,
+        .question = 7,
+        .binding = "[\"ab\",\"c\"]",
+        .authority = "different-scope",
+        .resume_token = first.job.token,
+        .work = fakeWork(alloc),
+        .build = .{ .build = fakeBuild },
+    }));
 }

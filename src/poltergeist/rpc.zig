@@ -6097,6 +6097,15 @@ pub const HistoryRecord = struct {
     text: []const u8,
     mentions: ?[]const Chat.Mention,
     role: ?[]const u8,
+
+    /// Where the record sits in the record files, when the core knows.
+    ///
+    /// **A hint, not an identity** (root freeze, 2793): the identity stays
+    /// `p:<seq>`; this is the place that lets `around` find the record
+    /// without paging a log until it happens to turn up. It is carried as
+    /// an opaque string (`location`) that the host only ever hands back;
+    /// null for a live message that has no place on disk yet.
+    pos: ?ChatLog.Pos,
 };
 
 pub fn historyRecordOf(e: ChatLog.Entry) HistoryRecord {
@@ -6111,6 +6120,7 @@ pub fn historyRecordOf(e: ChatLog.Entry) HistoryRecord {
         .text = e.text,
         .mentions = e.mentions,
         .role = e.role,
+        .pos = e.pos,
     };
 }
 
@@ -6126,7 +6136,38 @@ pub fn liveRecordOf(m: Chat.Message, author: []const u8) HistoryRecord {
         .text = m.text,
         .mentions = m.mentions,
         .role = m.role,
+        // A message held in memory is not read out of a day file, so the
+        // core has no place to name for it yet.
+        .pos = null,
     };
+}
+
+/// A `Pos` as the opaque text both `location` and a legacy anchor carry:
+/// `g:<day>:<part>:<inode>:<start>:<end>:<check>`, decimal, colon
+/// separated. The `g:` says the identity is a place; it is never `p:`.
+pub fn positionText(buf: []u8, p: ChatLog.Pos) []const u8 {
+    return std.fmt.bufPrint(buf, "g:{d}:{d}:{d}:{d}:{d}:{d}", .{
+        p.day, p.part, p.inode, p.start, p.end, p.check,
+    }) catch unreachable;
+}
+
+/// The other half of `positionText`, for the hint a host hands back.
+///
+/// **Not authorization**: the caller still checks the group, the scope and
+/// the record's own identity before anything is read. A malformed or
+/// foreign string is null, which the caller answers as an unavailable
+/// anchor -- never by guessing a place.
+pub fn parsePosition(text: []const u8) ?ChatLog.Pos {
+    var it = std.mem.splitScalar(u8, text, ':');
+    if (!std.mem.eql(u8, it.next() orelse return null, "g")) return null;
+    const day = std.fmt.parseUnsigned(u32, it.next() orelse return null, 10) catch return null;
+    const part = std.fmt.parseUnsigned(u32, it.next() orelse return null, 10) catch return null;
+    const inode = std.fmt.parseUnsigned(u64, it.next() orelse return null, 10) catch return null;
+    const start = std.fmt.parseUnsigned(u64, it.next() orelse return null, 10) catch return null;
+    const end = std.fmt.parseUnsigned(u64, it.next() orelse return null, 10) catch return null;
+    const check = std.fmt.parseUnsigned(u64, it.next() orelse return null, 10) catch return null;
+    if (it.next() != null) return null;
+    return .{ .day = day, .part = part, .inode = inode, .start = start, .end = end, .check = check };
 }
 
 /// **The one writer for a chat message**, used by `group_read`, by a live
@@ -6176,12 +6217,29 @@ pub fn writeHistoryRecord(
         try w.print("{f}", .{std.json.fmt(role, .{})});
     } else try w.writeAll("null");
 
-    var abuf: [64]u8 = undefined;
-    const persisted = origin == .persisted or r.log_seq != 0;
+    // **`location` is a hint, never an identity** (root freeze, 2793).
+    // `anchor` stays `p:<seq>` for a numbered record; this is the place in
+    // the files that lets `around` go straight to it. The host may only
+    // hand it back.
+    var pbuf: [192]u8 = undefined;
+    const place: ?[]const u8 = if (r.pos) |p| positionText(&pbuf, p) else null;
+    try w.writeAll(",\"location\":");
+    if (place) |p| {
+        try w.print("{f}", .{std.json.fmt(p, .{})});
+    } else try w.writeAll("null");
+
+    var abuf: [192]u8 = undefined;
     try w.writeAll(",\"anchor\":");
-    if (persisted) {
+    if (r.log_seq != 0) {
         const a = std.fmt.bufPrint(&abuf, "p:{d}", .{r.log_seq}) catch unreachable;
         try w.print("{f}", .{std.json.fmt(a, .{})});
+    } else if (origin == .persisted) {
+        // A line written before the log numbered its lines. Its place is
+        // the only identity it has, and a fabricated `p:0` would name a
+        // message that never existed.
+        if (place) |p| {
+            try w.print("{f}", .{std.json.fmt(p, .{})});
+        } else try w.writeAll("null");
     } else {
         const a = std.fmt.bufPrint(&abuf, "l:{s}:{d}", .{ session, r.seq }) catch unreachable;
         try w.print("{f}", .{std.json.fmt(a, .{})});
@@ -6218,6 +6276,269 @@ pub const HistoryMeasure = struct {
     reader: Bus.Id,
     session: []const u8,
 };
+
+/// The hit and its budget use this single serializer, including escaped snippet/ranges.
+pub const SearchMeasure = struct {
+    reader: Bus.Id,
+    session: []const u8,
+    query: []const u8,
+};
+
+pub fn writeSearchHit(w: *std.Io.Writer, alloc: std.mem.Allocator, r: HistoryRecord, origin: MessageOrigin, c: SearchMeasure) (std.mem.Allocator.Error || std.Io.Writer.Error)!void {
+    const snippet = (try snippetOf(alloc, r.text, c.query)) orelse return;
+    defer snippet.deinit(alloc);
+    try w.writeAll("{\"message\":");
+    try writeHistoryRecord(w, r, origin, c.reader, c.session);
+    try w.print(",\"snippet\":{f},\"snippet_start\":{d},\"ranges\":[", .{ std.json.fmt(snippet.text, .{}), snippet.start });
+    for (snippet.ranges, 0..) |rge, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{{\"start\":{d},\"end\":{d}}}", .{ rge.start, rge.end });
+    }
+    try w.writeAll("]}");
+}
+
+pub fn measureSearchRecord(r: HistoryRecord, origin: MessageOrigin, c: SearchMeasure) usize {
+    var storage: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&storage);
+    var buf: [256]u8 = undefined;
+    var count: std.Io.Writer.Discarding = .init(&buf);
+    writeSearchHit(&count.writer, fba.allocator(), r, origin, c) catch return std.math.maxInt(usize);
+    return std.math.cast(usize, count.fullCount()) orelse std.math.maxInt(usize);
+}
+
+pub fn measureSearch(ctx: ?*const anyopaque, e: *const ChatLog.Entry) usize {
+    const c: *const SearchMeasure = @ptrCast(@alignCast(ctx orelse return std.math.maxInt(usize)));
+    return measureSearchRecord(historyRecordOf(e.*), .persisted, c.*);
+}
+
+/// One highlight range in a search snippet: UTF-8 **byte** offsets,
+/// half-open, relative to the snippet (`contract, "Search"`).
+pub const SnippetRange = struct {
+    start: u32,
+    end: u32,
+};
+
+/// A result's snippet and the ranges that light up inside it.
+///
+/// **The snippet is display data, never the source.** It is a contiguous
+/// window of the message's raw `text`; `start` says where it begins, so a
+/// reader can draw the omission without the snippet pretending to be the
+/// message. Offsets are UTF-8 bytes on Unicode scalar boundaries, because
+/// the hosts map them onto their own string indexes.
+pub const Snippet = struct {
+    text: []u8,
+    start: u32,
+    ranges: []SnippetRange,
+
+    pub fn deinit(self: Snippet, alloc: std.mem.Allocator) void {
+        alloc.free(self.text);
+        alloc.free(self.ranges);
+    }
+};
+
+/// The most a snippet may hold, and how many ranges may light up inside it.
+pub const snippet_max_bytes: usize = 512;
+pub const snippet_max_ranges: usize = 32;
+
+/// How much raw text before the first match a snippet keeps.
+///
+/// A hit shown with no words before it reads as if the message began
+/// there. This is a display choice, not a contract number; the ceiling
+/// above is the contract's.
+pub const snippet_lead_bytes: usize = 96;
+
+/// The most a query may be, and the most the core will accept before it
+/// stops looking for more ranges.
+pub const search_query_max_bytes: usize = 256;
+
+/// The first occurrence of the literal `needle` in `hay` at or after
+/// `from`, with **ASCII case folded and every other byte compared as
+/// written** -- the one case rule that can be stated without knowing the
+/// language (`contract, "Search"`).
+pub fn nextMatch(hay: []const u8, needle: []const u8, from: usize) ?usize {
+    if (needle.len == 0 or hay.len < needle.len) return null;
+    var i = from;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        var k: usize = 0;
+        while (k < needle.len) : (k += 1) {
+            const a = hay[i + k];
+            const b = needle[k];
+            // `toLower` folds A-Z and leaves every other byte alone, so
+            // this is exactly "ASCII case ignored, everything else exact".
+            if (std.ascii.toLower(a) != std.ascii.toLower(b)) break;
+        }
+        if (k == needle.len) return i;
+    }
+    return null;
+}
+
+/// Whether `at` is a Unicode scalar boundary in `text`: the start of a
+/// character rather than the middle of one.
+fn scalarBoundary(text: []const u8, at: usize) bool {
+    return at >= text.len or (text[at] & 0xC0) != 0x80;
+}
+
+/// The snippet for one search hit, or null when the query is not in the
+/// message.
+///
+/// **One window, starting around the first match.** Enough text before it
+/// to read, bounded at `snippet_max_bytes`, and never ending inside a
+/// character. The first match is always inside the window; later matches
+/// are added as ranges until `snippet_max_ranges`, never overlapping. The
+/// caller owns what comes back (`Snippet.deinit`).
+pub fn snippetOf(
+    alloc: std.mem.Allocator,
+    text: []const u8,
+    query: []const u8,
+) std.mem.Allocator.Error!?Snippet {
+    const first = nextMatch(text, query, 0) orelse return null;
+
+    // Start far enough back to have words before the hit, then step to a
+    // character boundary. `first + query.len` is a boundary already (the
+    // query is valid UTF-8 and byte equality cannot begin inside a scalar),
+    // so the window can never be moved past the match.
+    var start = first -| snippet_lead_bytes;
+    while (start > 0 and !scalarBoundary(text, start)) start -= 1;
+
+    var end = @min(text.len, @max(first + query.len, start +| snippet_max_bytes));
+    // A full window that would end inside a character ends before it
+    // instead: half a character is not text.
+    while (end > first + query.len and !scalarBoundary(text, end)) end -= 1;
+    if (end < first + query.len) end = @min(text.len, first + query.len);
+
+    var ranges: std.ArrayListUnmanaged(SnippetRange) = .empty;
+    errdefer ranges.deinit(alloc);
+
+    var at = start;
+    while (ranges.items.len < snippet_max_ranges) {
+        const m = nextMatch(text, query, at) orelse break;
+        // A match that would be cut by the window's end is not shown as a
+        // range: the reader would be told words are lit up that are only
+        // half there.
+        if (m + query.len > end) break;
+        ranges.append(alloc, .{
+            .start = @intCast(m - start),
+            .end = @intCast(m + query.len - start),
+        }) catch |err| {
+            ranges.deinit(alloc);
+            return err;
+        };
+        at = m + query.len;
+    }
+
+    const body = try alloc.dupe(u8, text[start..end]);
+    errdefer alloc.free(body);
+    return .{
+        .text = body,
+        .start = @intCast(start),
+        .ranges = try ranges.toOwnedSlice(alloc),
+    };
+}
+
+/// One member in a `chat_metadata` answer.
+///
+/// `role` is null only for a member that has no terminal of its own (the
+/// person, and Polter); a terminal wearing no role says `""`, which is a
+/// real answer and not the same fact.
+pub const MetadataMember = struct {
+    id: Bus.Id,
+    title: []const u8,
+    role: ?[]const u8,
+};
+
+/// Most members one `chat_metadata` answer lists. Past this the list is cut
+/// and `members_truncated` says so; `member_count` stays the true count.
+pub const metadata_max_members: usize = 200;
+
+/// The longest group name any new request may carry, in UTF-8 bytes
+/// (contract: the 2793 core contract, "Door and invariants").
+pub const metadata_max_group: usize = 256;
+
+/// One `chat_metadata` reply, written the way the door sends it (contract
+/// §"Metadata (parallel B)").
+///
+/// **The whole document is measured here, after escaping** -- the brief and
+/// the titles are the caller's strings and can hold quotes, newlines and
+/// Chinese. The list is cut before the ceiling rather than after it, and
+/// cut only with the truth beside it: `member_count` is always what the
+/// group holds, and `members_truncated` is true exactly when the list is
+/// shorter than that count. A brief that cannot fit at all is `TooLarge`
+/// rather than a document truncated in the middle.
+///
+/// `alloc` owns the result, and only the result: the members are borrowed
+/// for the duration of the call.
+pub fn metadataJson(
+    alloc: std.mem.Allocator,
+    group: []const u8,
+    brief: []const u8,
+    /// The group's true member count. `members` holds at most
+    /// `metadata_max_members` of them; the two are separate so that a
+    /// group larger than the cap is counted without being copied.
+    member_count: usize,
+    members: []const MetadataMember,
+) (std.mem.Allocator.Error || error{TooLarge})![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+
+    // The tail every reply carries. Reserved before the first member, so a
+    // member that would push the document past the ceiling is left out
+    // instead of written and then cut.
+    const tail_reserve: usize = 128;
+
+    w.print("{{\"ok\":true,\"group\":{f},\"brief\":{f},\"members\":[", .{
+        std.json.fmt(group, .{}),
+        std.json.fmt(brief, .{}),
+    }) catch return error.OutOfMemory;
+
+    if (out.written().len + tail_reserve > read_budget_bytes) {
+        // `errdefer` above lets it go; a second deinit here is a double free.
+        return error.TooLarge;
+    }
+
+    if (members.len > metadata_max_members) {
+        // The caller may only hand over what the cap allows; more rows
+        // than that would be a list the contract does not define.
+        return error.TooLarge;
+    }
+    var listed: usize = 0;
+    var cut = members.len < member_count;
+    const upto = members.len;
+    for (members[0..upto]) |m| {
+        // One member's own bytes, measured with the same writer that will
+        // write it -- the separator included, as in the history budget.
+        var one: std.Io.Writer.Allocating = .init(alloc);
+        defer one.deinit();
+        writeMetadataMember(&one.writer, m, listed > 0) catch return error.OutOfMemory;
+
+        if (out.written().len + one.written().len + tail_reserve > read_budget_bytes) {
+            cut = true;
+            break;
+        }
+        w.writeAll(one.written()) catch return error.OutOfMemory;
+        listed += 1;
+    }
+
+    w.print("],\"member_count\":{d},\"members_truncated\":{}}}", .{
+        member_count,
+        cut,
+    }) catch return error.OutOfMemory;
+
+    if (out.written().len > read_budget_bytes) return error.TooLarge;
+    return out.toOwnedSlice();
+}
+
+fn writeMetadataMember(w: *std.Io.Writer, m: MetadataMember, comma: bool) std.Io.Writer.Error!void {
+    if (comma) try w.writeAll(",");
+    try w.print("{{\"id\":\"0x{x:0>16}\",\"title\":{f},\"role\":", .{
+        m.id,
+        std.json.fmt(m.title, .{}),
+    });
+    if (m.role) |role| {
+        try w.print("{f}", .{std.json.fmt(role, .{})});
+    } else try w.writeAll("null");
+    try w.writeAll("}");
+}
 
 /// The ceiling on one history reply, envelope included, and the part of it
 /// reserved for the envelope.
@@ -9598,6 +9919,27 @@ fn previewAnswer(
     return .{ .json = out.written() };
 }
 
+/// Shared files_open operation after the caller has selected a registered workdir.
+/// Chat reference poll and the normal files door mint exactly the same ticket/descriptor.
+pub fn openPreview(alloc: std.mem.Allocator, tickets: *files.Tickets, wd: files.Tickets.Workdir, path: []const u8, scope: files.Access.Scope, preferred: ?[]const u8, candidates: []const Plugin.Candidate) std.mem.Allocator.Error![]const u8 {
+    const choice = Plugin.previewFor(candidates, .{ .path = path, .preferred = preferred });
+    const previous: ?[32]u8 = if (tickets.entries.items.len > 0) tickets.entries.items[tickets.entries.items.len - 1].token else null;
+    const opened = try tickets.open(alloc, wd, path, scope);
+    const minted: ?[32]u8 = if (tickets.entries.items.len > 0) blk: {
+        const last = tickets.entries.items[tickets.entries.items.len - 1].token;
+        break :blk if (previous == null or !std.mem.eql(u8, &previous.?, &last)) last else null;
+    } else null;
+    errdefer if (minted) |token| {
+        _ = tickets.close(alloc, &token) catch {};
+    };
+    const result = try previewAnswer(alloc, opened, choice, candidates);
+    return switch (result) {
+        .json => |j| j,
+        .failed => |f| try std.fmt.allocPrint(alloc, "{{\"refused\":{f},\"why\":{f}}}", .{ std.json.fmt(f.code, .{}), std.json.fmt(f.message, .{}) }),
+        else => unreachable,
+    };
+}
+
 /// One of the six `files_*` requests, answered -- and `null` for anything
 /// else, so a caller that is not one of them is told so rather than
 /// answered with somebody else's shape.
@@ -9632,13 +9974,7 @@ fn filesArm(
                 log.warn("poltergeist: files_open could not read the plugins err={}", .{err});
                 break :blk hostFailure("HostRefused", "the plugins could not be read");
             };
-            const choice = Plugin.previewFor(candidates, .{
-                .path = p.path,
-                .preferred = p.preferred,
-            });
-
-            const opened = try host.filesTickets().open(alloc, wd, p.path, p.scope);
-            break :blk try previewAnswer(alloc, opened, choice, candidates);
+            break :blk .{ .json = try openPreview(alloc, host.filesTickets(), wd, p.path, p.scope, p.preferred, candidates) };
         },
         .files_resolve => |p| .{ .json = try host.filesTickets().resolve(alloc, p.token, p.rel) },
         .files_list => |p| .{ .json = try host.filesTickets().list(alloc, p.token, p.rel) },
@@ -24529,7 +24865,7 @@ test "squad: task_list 每行带 seats——谁坐着、谁空着、谁是 lead�
 test "channel: chatLineOf / historyLineOf 把频道带进回复行" {
     const m: Chat.Message = .{ .seq = 4, .log_seq = 40, .from = 0x2222, .at_ms = 1000, .summary = false, .text = "x", .channel = 7, .mentions = &.{}, .role = "" };
     try testing.expectEqual(@as(u64, 7), chatLineOf(m, "w", "x").channel);
-    const e: ChatLog.Entry = .{ .seq = 41, .at_ms = 1000, .group = "g", .from = 0x2222, .author = "w", .summary = false, .text = "x", .channel = 9, .covers_from_log = 0 };
+    const e: ChatLog.Entry = .{ .seq = 41, .at_ms = 1000, .group = "g", .from = 0x2222, .author = "w", .summary = false, .text = "x", .channel = 9, .covers_from_log = 0, .pos = null };
     try testing.expectEqual(@as(u64, 9), historyLineOf(e).channel);
     try testing.expectEqual(@as(u64, 41), historyLineOf(e).log_seq);
 }
@@ -25222,6 +25558,7 @@ test "2835: the counting writer is the reply's own bytes" {
         .text = "a\"b\\c\nd",
         .mentions = &mentions,
         .role = "reviewer",
+        .pos = .{ .day = 20261105, .part = 2, .inode = 4294967295, .start = 128, .end = 256, .check = 77 },
     };
 
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -25238,6 +25575,8 @@ test "2835: the counting writer is the reply's own bytes" {
     try testing.expect(std.mem.indexOf(u8, json, "\"anchor\":\"p:41\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"live_anchor\":\"l:00112233445566778899aabbccddeeff:9\"") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"content_version\":0") != null);
+    // The identity is still the number; the place travels beside it.
+    try testing.expect(std.mem.indexOf(u8, json, "\"location\":\"g:20261105:2:4294967295:128:256:77\"") != null);
 
     const entry: ChatLog.Entry = .{
         .seq = 41,
@@ -25249,6 +25588,7 @@ test "2835: the counting writer is the reply's own bytes" {
         .text = "x",
         .channel = 0,
         .covers_from_log = 0,
+        .pos = null,
     };
     const c: HistoryMeasure = .{ .reader = Chat.user_id, .session = "00" ** 16 };
     var measured: std.Io.Writer.Allocating = .init(alloc);
@@ -25256,6 +25596,169 @@ test "2835: the counting writer is the reply's own bytes" {
     try writeHistoryRecord(&measured.writer, historyRecordOf(entry), .persisted, c.reader, c.session);
     try testing.expectEqual(measured.written().len, measureHistory(&c, &entry));
     try testing.expect(std.mem.indexOf(u8, measured.written(), "\"live_anchor\":null") != null);
+
+    // A record from before the log numbered its lines: its place is its
+    // anchor, and it is never `p:0`.
+    var old_line = entry;
+    old_line.seq = 0;
+    old_line.pos = .{ .day = 20261105, .part = 2, .inode = 9, .start = 40, .end = 90, .check = 5 };
+    var legacy: std.Io.Writer.Allocating = .init(alloc);
+    defer legacy.deinit();
+    try writeHistoryRecord(&legacy.writer, historyRecordOf(old_line), .persisted, c.reader, c.session);
+    try testing.expect(std.mem.indexOf(u8, legacy.written(), "\"anchor\":\"g:20261105:2:9:40:90:5\"") != null);
+    try testing.expect(std.mem.indexOf(u8, legacy.written(), "\"p:0\"") == null);
+    try testing.expect(std.mem.indexOf(u8, legacy.written(), "\"location\":\"g:20261105:2:9:40:90:5\"") != null);
+
+    // And the two directions of the opaque text agree.
+    const parsed = parsePosition("g:20261105:2:9:40:90:5").?;
+    try testing.expectEqual(@as(u32, 20261105), parsed.day);
+    try testing.expectEqual(@as(u64, 5), parsed.check);
+    try testing.expect(parsePosition("p:42") == null);
+    try testing.expect(parsePosition("g:20261105:2:9:40:90") == null);
+}
+
+test "2793: chat_metadata names members, keeps the count true when the list is cut, and refuses an oversized brief" {
+    const alloc = testing.allocator;
+
+    const members = [_]MetadataMember{
+        .{ .id = 0x2222, .title = "worker \"q\" 汉字", .role = "reviewer" },
+        .{ .id = Chat.user_id, .title = "you", .role = null },
+        .{ .id = 0x3333, .title = "w", .role = "" },
+    };
+    const json = try metadataJson(alloc, "build", "夜班那摊活", members.len, &members);
+    defer alloc.free(json);
+
+    try testing.expect(std.mem.indexOf(u8, json, "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"group\":\"build\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"member_count\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"members_truncated\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"id\":\"0x0000000000002222\"") != null);
+    // A terminal in no role says so; a member with no terminal says null.
+    try testing.expect(std.mem.indexOf(u8, json, "\"role\":\"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"role\":null") != null);
+    // Escaped by the same writer that measures it.
+    try testing.expect(std.mem.indexOf(u8, json, "\\\"q\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "夜班那摊活") != null);
+
+    // Past the cap the list stops and the count does not. The caller
+    // builds only the cap's worth; the true count travels beside it.
+    const many = try alloc.alloc(MetadataMember, metadata_max_members);
+    defer alloc.free(many);
+    for (many) |*m| m.* = .{ .id = 0xbeef, .title = "w", .role = "" };
+    const cut = try metadataJson(alloc, "build", "", metadata_max_members + 7, many);
+    defer alloc.free(cut);
+    try testing.expectEqual(
+        @as(usize, metadata_max_members),
+        std.mem.count(u8, cut, "\"id\":\"0x000000000000beef\""),
+    );
+    try testing.expect(std.mem.indexOf(u8, cut, "\"members_truncated\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, cut, "\"member_count\":207") != null);
+    try testing.expect(cut.len <= read_budget_bytes);
+
+    // **The byte ceiling cuts the list too, not just the member cap.**
+    // Titles are what the caller's strings make them; 200 of them can be
+    // more than the reply holds.
+    {
+        const long = try alloc.alloc(MetadataMember, metadata_max_members);
+        defer alloc.free(long);
+        const title = try alloc.alloc(u8, 1024);
+        defer alloc.free(title);
+        @memset(title, 't');
+        for (long) |*m| m.* = .{ .id = 0xbeef, .title = title, .role = "" };
+        const squeezed = try metadataJson(alloc, "build", "", metadata_max_members, long);
+        defer alloc.free(squeezed);
+        try testing.expect(squeezed.len <= read_budget_bytes);
+        try testing.expect(std.mem.indexOf(u8, squeezed, "\"members_truncated\":true") != null);
+        try testing.expect(std.mem.indexOf(u8, squeezed, "\"member_count\":200") != null);
+        const listed = std.mem.count(u8, squeezed, "\"id\":\"0x000000000000beef\"");
+        try testing.expect(listed < metadata_max_members);
+        try testing.expect(listed > 0);
+    }
+
+    // A brief that cannot fit is refused, not cut in the middle.
+    const huge = try alloc.alloc(u8, read_budget_bytes);
+    defer alloc.free(huge);
+    @memset(huge, '"');
+    try testing.expectError(error.TooLarge, metadataJson(alloc, "build", huge, 0, &.{}));
+}
+
+test "2793: a search snippet is a raw window with UTF-8 byte ranges" {
+    const alloc = testing.allocator;
+
+    // ASCII case is folded; the range is the match as it appears.
+    {
+        const s = (try snippetOf(alloc, "Build failed on macOS", "build")).?;
+        defer s.deinit(alloc);
+        try testing.expectEqualStrings("Build failed on macOS", s.text);
+        try testing.expectEqual(@as(u32, 0), s.start);
+        try testing.expectEqual(@as(usize, 1), s.ranges.len);
+        try testing.expectEqual(@as(u32, 0), s.ranges[0].start);
+        try testing.expectEqual(@as(u32, 5), s.ranges[0].end);
+    }
+
+    // Chinese: offsets are UTF-8 bytes, and each is a scalar boundary.
+    {
+        const text = "群聊原生化重设计：搜索和定位";
+        const s = (try snippetOf(alloc, text, "搜索")).?;
+        defer s.deinit(alloc);
+        const at = std.mem.indexOf(u8, text, "搜索").?;
+        // The message is shorter than the lead window, so the snippet is
+        // the whole of it and the range is where the bytes are.
+        try testing.expectEqual(@as(u32, 0), s.start);
+        try testing.expectEqualStrings(text, s.text);
+        try testing.expectEqual(@as(usize, 1), s.ranges.len);
+        try testing.expectEqual(@as(u32, @intCast(at)), s.ranges[0].start);
+        try testing.expectEqual(@as(u32, @intCast(at + 6)), s.ranges[0].end);
+    }
+
+    // Emoji (four bytes each): the window and the ranges are byte offsets,
+    // never character indexes.
+    {
+        const text = "a😀b😀c";
+        const s = (try snippetOf(alloc, text, "😀")).?;
+        defer s.deinit(alloc);
+        try testing.expectEqual(@as(usize, 2), s.ranges.len);
+        try testing.expectEqual(@as(u32, 1), s.ranges[0].start);
+        try testing.expectEqual(@as(u32, 5), s.ranges[0].end);
+        try testing.expectEqual(@as(u32, 6), s.ranges[1].start);
+        try testing.expectEqual(@as(u32, 10), s.ranges[1].end);
+        try testing.expect(scalarBoundary(s.text, s.text.len));
+    }
+
+    // No occurrence is null, not an empty snippet that looks like a match.
+    try testing.expect((try snippetOf(alloc, "nothing here", "absent")) == null);
+
+    // A long message is one bounded window, and both ends sit on scalar
+    // boundaries.
+    {
+        const text = try alloc.alloc(u8, 2000);
+        defer alloc.free(text);
+        @memset(text, 'x');
+        @memcpy(text[1500..1503], "hit");
+        const s = (try snippetOf(alloc, text, "hit")).?;
+        defer s.deinit(alloc);
+        try testing.expectEqual(snippet_max_bytes, s.text.len);
+        try testing.expectEqual(@as(u32, @intCast(1500 - snippet_lead_bytes)), s.start);
+        try testing.expect(s.start > 0);
+        try testing.expectEqual(@as(u32, snippet_lead_bytes), s.ranges[0].start);
+        try testing.expect(scalarBoundary(s.text, 0));
+        try testing.expect(scalarBoundary(s.text, s.text.len));
+        // The window is raw text, not a fabricated ellipsis.
+        const from: usize = @intCast(s.start);
+        try testing.expectEqualStrings(text[from .. from + s.text.len], s.text);
+    }
+
+    // Ranges stop at the ceiling and never overlap.
+    {
+        const text = "ab" ** 200;
+        const s = (try snippetOf(alloc, text, "ab")).?;
+        defer s.deinit(alloc);
+        try testing.expectEqual(snippet_max_ranges, s.ranges.len);
+        var i: usize = 1;
+        while (i < s.ranges.len) : (i += 1) {
+            try testing.expect(s.ranges[i].start >= s.ranges[i - 1].end);
+        }
+    }
 }
 
 test "2835: the fixed reply shell fits its reserve with the widest fields" {

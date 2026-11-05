@@ -2271,9 +2271,11 @@ pub const CAPI = struct {
     /// named one would make the window's own chat depend on one that may not
     /// exist. Same shape as `ghostty_app_files` above, for the same reason.
     ///
-    /// **Only named methods**: `group_read` and, since task 2835, the
-    /// three bounded history calls `chat_history_begin`,
-    /// `chat_history_poll` and `chat_history_cancel`. Anything else is
+    /// **Only named methods**: `group_read`, the three bounded history
+    /// calls `chat_history_begin`, `chat_history_poll` and
+    /// `chat_history_cancel` (including around/context/reference), the three
+    /// `chat_search_*` calls, and `chat_metadata` (task 2793).
+    /// Anything else is
     /// refused rather than served: this is a chat tab's door, not a second
     /// way for a host to call every tool an agent has. That is
     /// `App.chatReadAnswer`'s rule, where each accepted method is named.
@@ -2292,7 +2294,7 @@ pub const CAPI = struct {
         const core = app.core_app;
         var arena: std.heap.ArenaAllocator = .init(core.alloc);
         defer arena.deinit();
-        const answer = core.chatReadAnswer(arena.allocator(), req[0..len]) catch
+        const answer = core.chatReadAnswerForBuffer(arena.allocator(), req[0..len], if (buf != null) cap else 0) catch
             return copyJsonOut(chat_fallback, buf, cap);
         return copyJsonOut(answer, buf, cap);
     }

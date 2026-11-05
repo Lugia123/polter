@@ -58,6 +58,11 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     private var cardsInSight: [String] = []
     private var presence = ControlRoomAlert.PresenceReporter()
     private var appActivity: [NSObjectProtocol] = []
+    /// Esc on the chat page closes the right-hand slot (search or preview).
+    /// A local monitor rather than a key equivalent: Esc is not a chord, and
+    /// it has to be caught before the search field's own editor or the
+    /// preview page takes it. Nil outside the window's life.
+    private var escapeMonitor: Any?
     private var closing = false
 
     init(_ ghostty: Ghostty.App, selection: String? = nil) {
@@ -640,7 +645,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
             .environmentObject(ghostty))
         content.onKeyEquivalent = { [weak self] in
             guard let self else { return false }
-            return self.goToTab(for: $0) || self.taskPageTakesReturn($0) || self.sidebarTakesKey($0)
+            return self.goToTab(for: $0) || self.taskPageTakesReturn($0)
+                || self.sidebarTakesKey($0)
+        }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.takesEscape(event) else { return event }
+            return nil
         }
         watchingResponder = window.observe(\.firstResponder) { [weak self] _, _ in
             DispatchQueue.main.async { self?.syncLentFocus() }
@@ -723,6 +733,10 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // Closed is not in front: nothing on it is in sight any more.
         closing = true
         reportPresence()
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
         appActivity.forEach(NotificationCenter.default.removeObserver)
         appActivity = []
         model.chatContainer?.closeAll()
@@ -754,6 +768,32 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
     /// running window, and the file is outside the package the logic tests
     /// build. What is left here is the three facts the decision needs and
     /// the two things it cannot do.
+    /// Esc on the chat page closes its right-hand slot -- the search or the
+    /// preview -- and **only while the slot is open**. Everything else keeps
+    /// its Esc: a closed slot leaves the key to the terminal, the search
+    /// field's editor or the preview page.
+    ///
+    /// **A local monitor, not a key equivalent.** Esc never goes through
+    /// `performKeyEquivalent`; it is delivered to the first responder, and
+    /// the search field's editor would take it before any view of this
+    /// window's. The store's `open` flag is the slot's one owner: the page
+    /// is watching it and releases the ticket and stops the search when it
+    /// goes false, so this asks for the close and nothing else.
+    private func takesEscape(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.keyCode == 53,
+              event.modifierFlags
+                .isDisjoint(with: [.command, .control, .option, .shift]),
+              let window, event.window === window, window.isKeyWindow,
+              window.attachedSheet == nil,
+              model.pageInFront == .chat,
+              let group = model.selection
+        else { return false }
+        let cell = ControlRoomSidebar.key(group: group)
+        guard ghostty.previewStore.state(cell).open else { return false }
+        ghostty.previewStore.set(cell, open: false)
+        return true
+    }
+
     private func sidebarTakesKey(_ event: NSEvent) -> Bool {
         let wanted = ControlRoomSidebar.wanted(
             // **`characters` and not `charactersIgnoringModifiers`** (task

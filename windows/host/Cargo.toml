@@ -104,6 +104,10 @@ features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
+    # `FileTimeToSystemTime` and `SystemTimeToTzSpecificLocalTime`, for the
+    # chat's local date and time. A message's `at_ms` is UTC; the divider
+    # and the clock beside an author are the person's own calendar.
+    "Win32_System_Time",
     "Win32_System_Threading",
     "Win32_System_Variant",
     # `HIGHCONTRASTW`, so the dark drawing can stand aside when a person has

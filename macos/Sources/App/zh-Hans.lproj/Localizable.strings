@@ -1534,3 +1534,72 @@
 
 /* 原生群聊消息行（task 2800 C2b-1 v2）：解析预算暂时无法准入，显示原文 */
 "Showing the original text" = "当前显示原文";
+
+/* 原生群聊的阅读状态与消息元数据（task 2969 B）：窗口释放的一段记录、频道与交接摘要、日期、取消加载，以及列表给释放段的重载入口 */
+"Earlier records were released." = "更早的记录已被释放。";
+"Group chat" = "群聊";
+"Handover summary" = "交接摘要";
+"Loading was cancelled." = "加载已取消。";
+"Reload from newest" = "从最新记录重载";
+"Some chat records could not be read." = "部分聊天记录无法读取。";
+"Some records were released here." = "此处有一段记录已被释放。";
+"Task #%@" = "任务 #%@";
+"Today" = "今天";
+"Yesterday" = "昨天";
+
+/* 原生群聊后续 B 增量（task 2969）：头部群信息、更早记录边界、回到最新胶囊 */
+"Collapse" = "收起";
+"Continue" = "继续加载";
+"Could not load earlier messages (%@)." = "更早记录读取失败（%@）。";
+"Expand" = "展开";
+"Group info is unavailable." = "群信息暂不可用。";
+"Jump to latest" = "回到最新";
+"Load earlier messages" = "加载更早记录";
+"Loading chat history…" = "正在加载聊天记录…";
+"Loading earlier messages was cancelled." = "更早记录的加载已取消。";
+"Loading earlier messages…" = "正在加载更早记录…";
+"New messages · jump to latest" = "有新消息 · 回到最新";
+"Read-only: viewing members sends nothing." = "只读：查看成员不会发送任何内容。";
+"Reading group info…" = "正在读取群信息…";
+"Showing the first %d members." = "仅显示前 %d 位成员。";
+"Some earlier records could not be read." = "部分更早记录无法读取。";
+"You" = "你";
+"You have reached the earliest message." = "已到最早记录。";
+
+/* 群聊搜索面板（task 2969 C1/C2）：侧栏、输入框、扫描各状态与结果上限 */
+"Find in this group" = "在当前群查找";
+"Search this group…" = "搜索当前群…";
+"Search messages" = "搜索消息";
+"Search this group" = "搜索当前群";
+"Searching…" = "正在搜索…";
+"Found %@ · still searching" = "已找到 %@ 条 · 仍在搜索";
+"%@ results" = "%@ 条结果";
+"No matches" = "没有匹配";
+"Found %@ · some records could not be read" = "已找到 %@ 条 · 部分记录无法读取";
+"Search failed (%@)." = "搜索失败（%@）。";
+"Search cancelled" = "搜索已取消";
+"Type something to search" = "输入内容开始搜索";
+"Showing the matches around this point; search again for the newest." = "仅显示当前位置附近的匹配；要回到最新请重新搜索。";
+"Load more" = "加载更多";
+"Close search" = "关闭搜索";
+
+"Paused" = "已暂停";
+"Found %@ · not complete" = "已找到 %@ 条 · 尚未完成";
+
+"This direction's edge was released." = "此方向的窗口边缘已被释放。";
+"Re-anchor here" = "在此重新锚定";
+"Earlier context" = "更早的上下文";
+"Later context" = "更晚的上下文";
+"Return to latest" = "返回最新";
+
+"Back to search" = "返回搜索";
+
+/* 总控台：群聊页，搜索定位的两态与预览外壳（task 2982） */
+"Locating…" = "正在定位…";
+"Could not locate that message." = "无法定位到那条消息。";
+"Loading preview…" = "正在加载预览…";
+"Could not open this file." = "无法打开这个文件。";
+"No file is open." = "没有打开的文件。";
+"Close preview" = "关闭预览";
+"File" = "文件";
+"From %@ · %@" = "来自 %@ · %@";

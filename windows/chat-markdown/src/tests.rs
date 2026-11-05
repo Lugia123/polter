@@ -34,7 +34,7 @@ fn headings_paragraphs_and_inline_styles_combine() {
 #[test]
 fn a_fence_keeps_its_own_lines_and_is_not_parsed_as_markdown() {
     let d = doc("```rust\nlet **x** = 1;\n```");
-    let Block::Code { language, text } = &d.blocks[0] else {
+    let Block::Code { language, text, .. } = &d.blocks[0] else {
         panic!("expected a code block");
     };
     assert_eq!(language.as_deref(), Some("rust"));
@@ -262,6 +262,7 @@ fn the_cost_counts_containers_and_link_bytes_not_only_text() {
     let mut runs = Vec::new();
     for i in 0..300 {
         runs.push(Run {
+            spans: Vec::new(),
             text: if i % 2 == 0 {
                 "a".to_owned()
             } else {
@@ -422,4 +423,179 @@ fn the_byte_budget_evicts_and_refuses_an_entry_that_cannot_fit() {
         "parsed, just not cached"
     );
     assert!(small.is_empty());
+}
+
+#[test]
+fn a_link_keeps_the_destination_exactly_as_the_message_wrote_it() {
+    // **A backslash before a space is not a CommonMark escape.** The space
+    // ends an un-delimited destination, so `b.md "title"` is not a title
+    // and the source is literal text: there is no link, and no raw
+    // destination to reconstruct. This fixture used to assert one.
+    let plain = doc("[a](docs/a\\ b.md \"title\")");
+    let runs = match &plain.blocks[0] {
+        Block::Paragraph(runs) => runs,
+        other => panic!("expected a paragraph, got {other:?}"),
+    };
+    assert!(
+        runs.iter().all(|r| r.style.link_raw.is_none()),
+        "a non-link must not carry a raw destination"
+    );
+
+    // The escapes CommonMark does honour stay as the source wrote them.
+    let d = doc("[a](docs/a\\)b.md \"title\")");
+    let runs = match &d.blocks[0] {
+        Block::Paragraph(runs) => runs,
+        other => panic!("expected a paragraph, got {other:?}"),
+    };
+    assert_eq!(
+        runs[0].style.link_raw.as_deref(),
+        Some("docs/a\\)b.md"),
+        "the backslash is the source's, not a reconstruction"
+    );
+    let angle = doc("[b](<docs/c d.md>)");
+    let runs = match &angle.blocks[0] {
+        Block::Paragraph(runs) => runs,
+        other => panic!("expected a paragraph, got {other:?}"),
+    };
+    assert_eq!(runs[0].style.link_raw.as_deref(), Some("docs/c d.md"));
+}
+
+#[test]
+fn a_raw_reference_stops_at_this_links_own_closing_paren() {
+    let link_raw = |source: &str, index: usize| {
+        let d = doc(source);
+        let runs = match &d.blocks[0] {
+            Block::Paragraph(runs) => runs,
+            Block::ListItem(item) => &item.runs,
+            other => panic!("expected runs, got {other:?}"),
+        };
+        runs[index].style.link_raw.clone()
+    };
+    assert_eq!(link_raw("[a](a.md) 后文", 0).as_deref(), Some("a.md"));
+    assert_eq!(link_raw("[a](a.md)[b](b.md)", 0).as_deref(), Some("a.md"));
+    assert_eq!(link_raw("[a](a.md)[b](b.md)", 1).as_deref(), Some("b.md"));
+    assert_eq!(
+        link_raw("[a](docs/a\\)b.md)", 0).as_deref(),
+        Some("docs/a\\)b.md")
+    );
+    assert_eq!(link_raw("[a][ref] [b](b.md)", 0), None);
+    assert_eq!(link_raw("[a][ref] [b](b.md)", 1).as_deref(), Some("b.md"));
+}
+
+#[test]
+fn a_raw_reference_in_a_table_cell_keeps_its_own_text() {
+    let d = doc("| x |\n| --- |\n| [a](a.md) |");
+    let table = match &d.blocks[0] {
+        Block::Table(t) => t,
+        other => panic!("expected a table, got {other:?}"),
+    };
+    let runs = &table.rows[0][0];
+    assert_eq!(runs[0].style.link_raw.as_deref(), Some("a.md"));
+}
+
+// ------------------------------------------------- rendered source ranges
+
+/// The rendered text of `source` that a raw byte range covers. Every test
+/// below goes through the same helper the host paints from.
+fn shown_for(source: &str, range: std::ops::Range<usize>) -> Vec<String> {
+    let d = doc(source);
+    let runs = match &d.blocks[0] {
+        Block::Paragraph(runs) => runs,
+        other => panic!("expected a paragraph, got {other:?}"),
+    };
+    let mut out = Vec::new();
+    for r in display_ranges(&runs[0].spans, range) {
+        if let Some(s) = runs[0].text.get(r) {
+            out.push(s.to_owned());
+        }
+    }
+    out
+}
+
+fn range_of(hay: &str, needle: &str) -> std::ops::Range<usize> {
+    let at = hay.find(needle).expect("the needle is in the source");
+    at..at + needle.len()
+}
+
+#[test]
+fn a_hit_in_chinese_and_emoji_maps_to_the_same_rendered_bytes() {
+    let source = "前缀 中文 🎉 后缀";
+    assert_eq!(shown_for(source, range_of(source, "中文")), vec!["中文"]);
+    // A range covering the whole emoji, not one byte of it: the mapping
+    // never treats UTF-8 bytes as characters.
+    assert_eq!(shown_for(source, range_of(source, "🎉")), vec!["🎉"]);
+    // The answer is a display byte range, so slicing the run is safe.
+    let d = doc(source);
+    let Block::Paragraph(runs) = &d.blocks[0] else {
+        panic!("a paragraph");
+    };
+    let r = display_ranges(&runs[0].spans, range_of(source, "🎉"));
+    assert_eq!(r.len(), 1);
+    assert!(runs[0].text.is_char_boundary(r[0].start));
+    assert!(runs[0].text.is_char_boundary(r[0].end));
+}
+
+#[test]
+fn escapes_and_entities_map_their_whole_source_unit_to_one_character() {
+    // `\*` is a real CommonMark escape: source two bytes, display one.
+    let escaped = "a \\* b";
+    assert_eq!(shown_for(escaped, range_of(escaped, "\\*")), vec!["*"]);
+    // `&amp;` is decoded: source five bytes, display one.
+    let entity = "a &amp; b";
+    assert_eq!(shown_for(entity, range_of(entity, "&amp;")), vec!["&"]);
+    // A numeric entity keeping a Chinese character is one unit too.
+    let numeric = "x &#20013; y";
+    assert_eq!(shown_for(numeric, range_of(numeric, "&#20013;")), vec!["中"]);
+}
+
+#[test]
+fn a_hit_in_a_fenced_code_block_maps_to_its_line() {
+    let source = "```\nlet 中文 = \"🎉\";\n```";
+    let d = doc(source);
+    let Block::Code { text, spans, .. } = &d.blocks[0] else {
+        panic!("a code block");
+    };
+    let hit = range_of(source, "🎉");
+    let shown: Vec<&str> = display_ranges(spans, hit)
+        .into_iter()
+        .filter_map(|r| text.get(r))
+        .collect();
+    assert_eq!(shown, vec!["🎉"]);
+}
+
+#[test]
+fn a_hit_in_a_table_cell_maps_to_that_cell_only() {
+    let source = "| 名称 | 值 |\n| --- | --- |\n| 中文 | 🎉 ok |";
+    let d = doc(source);
+    let Block::Table(t) = &d.blocks[0] else {
+        panic!("a table");
+    };
+    let cell = &t.rows[0][1];
+    let hit = range_of(source, "🎉");
+    let shown: Vec<&str> = display_ranges(&cell[0].spans, hit)
+        .into_iter()
+        .filter_map(|r| cell[0].text.get(r))
+        .collect();
+    assert_eq!(shown, vec!["🎉"]);
+}
+
+#[test]
+fn an_unparseable_transform_does_not_claim_a_range() {
+    // An entity outside this parser's decoding table stops the mapping;
+    // the caller gets no range rather than a wrong one.
+    let source = "a &bogusentity; b";
+    let d = doc(source);
+    let Block::Paragraph(runs) = &d.blocks[0] else {
+        panic!("a paragraph");
+    };
+    // If pulldown left it verbatim, the exact path covers it; either way
+    // the answer is never a range over unrelated text.
+    let shown: Vec<&str> = display_ranges(&runs[0].spans, range_of(source, "bogusentity"))
+        .into_iter()
+        .filter_map(|r| runs[0].text.get(r))
+        .collect();
+    assert!(
+        shown.is_empty() || shown == ["bogusentity"],
+        "unexpected mapping: {shown:?}"
+    );
 }

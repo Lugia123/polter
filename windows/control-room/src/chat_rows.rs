@@ -40,6 +40,8 @@ pub struct Metrics {
     pub line: i32,
     /// The author line above a message.
     pub author: i32,
+    /// The date divider above the first message of a local day.
+    pub date: i32,
 }
 
 impl Metrics {
@@ -52,6 +54,7 @@ impl Metrics {
             gap: (ROW_GAP_PT * scale).round() as i32,
             line: line.max(1),
             author: line.max(1),
+            date: line.max(1),
         }
     }
 }
@@ -63,6 +66,8 @@ pub struct RowInput<'a> {
     pub version: u64,
     pub author: &'a str,
     pub text: &'a str,
+    /// This row starts a local day: one divider line above it.
+    pub date: bool,
 }
 
 /// The font a measurement was made in, **by the parameters that made it**
@@ -104,6 +109,9 @@ pub struct RowBox {
     /// paint draws the two without measuring again.
     pub author_height: i32,
     pub text_height: i32,
+    /// The date divider above this row, when it starts a local day.
+    pub date: bool,
+    pub date_height: i32,
     /// The last measurement of this row failed. Its heights are a
     /// placeholder, and the next update measures it again.
     pub failed: bool,
@@ -158,6 +166,8 @@ pub struct Identity {
 pub struct RowIdentity<'a> {
     pub id: &'a str,
     pub version: u64,
+    /// This row starts a local day: one divider line above it.
+    pub date: bool,
 }
 
 /// One row's newly measured height, for one semantic.
@@ -432,10 +442,7 @@ impl DragState {
 /// Clear a focus that no longer has a target. A focus alone never owns the
 /// capture, so this asks only for a repaint.
 #[must_use]
-pub fn drop_focus_if_dead(
-    focus: &mut Option<DragTarget>,
-    held: &[HeldPlan<'_>],
-) -> InputAction {
+pub fn drop_focus_if_dead(focus: &mut Option<DragTarget>, held: &[HeldPlan<'_>]) -> InputAction {
     if focus.as_ref().is_some_and(|t| !t.alive(held)) {
         *focus = None;
         InputAction::invalidate()
@@ -448,7 +455,9 @@ pub fn drop_focus_if_dead(
 /// paths asked for.
 #[must_use]
 pub fn action_or(actions: impl IntoIterator<Item = InputAction>) -> InputAction {
-    actions.into_iter().fold(InputAction::NONE, InputAction::merge)
+    actions
+        .into_iter()
+        .fold(InputAction::NONE, InputAction::merge)
 }
 
 /// The one helper the host calls after plans are retained: a dead drag or
@@ -465,10 +474,7 @@ pub fn drop_dead_input(
 /// Hide/leave/close/`WM_CANCELMODE`: cancel the drag and clear the focus,
 /// always asking for this window's capture to be released.
 #[must_use]
-pub fn cancel_input(
-    drag: &mut DragState,
-    focus: &mut Option<DragTarget>,
-) -> InputAction {
+pub fn cancel_input(drag: &mut DragState, focus: &mut Option<DragTarget>) -> InputAction {
     let cleared_focus = focus.take().is_some();
     action_or([
         drag.cancel(),
@@ -501,9 +507,7 @@ impl<'a> Decision<'a> {
 
     pub fn version(&self) -> u64 {
         match self {
-            Decision::KeepFresh { version, .. } | Decision::KeepStale { version, .. } => {
-                *version
-            }
+            Decision::KeepFresh { version, .. } | Decision::KeepStale { version, .. } => *version,
             Decision::Replace(p) => p.version,
         }
     }
@@ -591,7 +595,8 @@ impl Layout {
             } else {
                 self.measure_row(row, width, metrics, measure)
             };
-            let body = author_height + text_height + metrics.gap;
+            let date_height = if row.date { metrics.date } else { 0 };
+            let body = date_height + author_height + text_height + metrics.gap;
             out.push(RowBox {
                 id: row.id.to_owned(),
                 version: row.version,
@@ -599,6 +604,8 @@ impl Layout {
                 height: body,
                 author_height,
                 text_height,
+                date: row.date,
+                date_height,
                 failed: false,
                 source: None,
                 identity: None,
@@ -680,7 +687,9 @@ impl Layout {
             });
             let author_height = m.author_height.max(0);
             let text_height = m.text_height.max(0);
-            let height = author_height
+            let date_height = if row.date { metrics.date } else { 0 };
+            let height = date_height
+                .saturating_add(author_height)
                 .saturating_add(text_height)
                 .saturating_add(metrics.gap);
             out.push(RowBox {
@@ -690,6 +699,8 @@ impl Layout {
                 height,
                 author_height,
                 text_height,
+                date: row.date,
+                date_height,
                 failed,
                 source: None,
                 identity: None,
@@ -753,6 +764,7 @@ impl Layout {
                 .iter()
                 .find(|r| r.id == row.id && r.version == row.version);
             let same_id = old_rows.iter().find(|r| r.id == row.id);
+            let date_height = if row.date { metrics.date } else { 0 };
             let (author_height, text_height, source, identity, stale, placeholder, failed) =
                 match (decision, exact, same_id) {
                     (Some(Decision::Replace(u)), _, _) => (
@@ -829,7 +841,8 @@ impl Layout {
                         false,
                     ),
                 };
-            let height = author_height
+            let height = date_height
+                .saturating_add(author_height)
                 .saturating_add(text_height)
                 .saturating_add(metrics.gap);
             out.push(RowBox {
@@ -839,6 +852,8 @@ impl Layout {
                 height,
                 author_height,
                 text_height,
+                date: row.date,
+                date_height,
                 failed,
                 source,
                 identity,
@@ -1051,11 +1066,19 @@ pub enum Load {
     Loading,
     Empty,
     Ready,
+    /// The core cancelled the scan before it answered about the history.
+    /// **Not Empty**: the group may well have records.
+    Cancelled,
+    /// Records in the captured range could not be read, so an empty page
+    /// is not an empty group.
+    Gap,
 }
 
 pub mod msg {
     use crate::n_;
     pub const LOADING: &str = n_("Loading");
+    pub const CANCELLED: &str = n_("Loading was cancelled.");
+    pub const GAP: &str = n_("Some records could not be read.");
     pub const EMPTY: &str = n_("No messages yet.");
     pub const READ_FAILED: &str = n_("The chat could not be read.");
     pub const UNAVAILABLE: &str = n_("This chat is not available now.");
@@ -1070,6 +1093,8 @@ pub mod msg {
 pub fn load_word(load: Load) -> Option<&'static str> {
     match load {
         Load::Loading => Some(msg::LOADING),
+        Load::Cancelled => Some(msg::CANCELLED),
+        Load::Gap => Some(msg::GAP),
         Load::Empty => Some(msg::EMPTY),
         Load::Ready => None,
     }
@@ -1116,6 +1141,7 @@ mod tests {
             version,
             author: "author",
             text,
+            date: false,
         }
     }
 
@@ -1516,9 +1542,21 @@ mod tests {
         let raw = identity("g", "a", 1, 0, 300);
         let plan = identity("g", "b", 1, 0x1000, 300);
         let rows = [
-            RowIdentity { id: "a", version: 1 },
-            RowIdentity { id: "b", version: 1 },
-            RowIdentity { id: "c", version: 1 },
+            RowIdentity {
+                id: "a",
+                version: 1,
+                date: false,
+            },
+            RowIdentity {
+                id: "b",
+                version: 1,
+                date: false,
+            },
+            RowIdentity {
+                id: "c",
+                version: 1,
+                date: false,
+            },
         ];
         // Raw first: a measured, b measured, c never.
         layout.publish(
@@ -1552,7 +1590,10 @@ mod tests {
         assert_eq!(layout.rows()[1].top, 21 + 100 + m.gap);
         // **No decision is not invalid**: a keeps its fresh published
         // height, it is not marked stale just because b was republished.
-        assert!(!layout.rows()[0].stale, "absence of an update is not invalidity");
+        assert!(
+            !layout.rows()[0].stale,
+            "absence of an update is not invalidity"
+        );
         assert_eq!(layout.rows()[0].text_height, 100, "kept its height");
         // The anchor still names the same row and offset, from the old id.
         let scroll = layout.scroll_for(&anchor.0, anchor.1).expect("still kept");
@@ -1570,12 +1611,13 @@ mod tests {
         let ids: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
         let rows: Vec<RowIdentity<'_>> = ids
             .iter()
-            .map(|id| RowIdentity { id, version: 1 })
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
             .collect();
-        let identities: Vec<Identity> = ids
-            .iter()
-            .map(|id| identity("g", id, 1, 0, 300))
-            .collect();
+        let identities: Vec<Identity> = ids.iter().map(|id| identity("g", id, 1, 0, 300)).collect();
         let candidates: Vec<Candidate> = ids
             .iter()
             .zip(&identities)
@@ -1585,8 +1627,10 @@ mod tests {
         let mut rounds = 0;
         loop {
             let plan = schedule(layout.rows(), &candidates, 4);
-            let measuring: Vec<&PlanEntry<'_>> =
-                plan.iter().filter(|e| e.action == Action::Measure).collect();
+            let measuring: Vec<&PlanEntry<'_>> = plan
+                .iter()
+                .filter(|e| e.action == Action::Measure)
+                .collect();
             let decisions: Vec<Decision<'_>> = plan
                 .iter()
                 .map(|entry| match entry.action {
@@ -1641,7 +1685,11 @@ mod tests {
         let ids: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
         let rows: Vec<RowIdentity<'_>> = ids
             .iter()
-            .map(|id| RowIdentity { id, version: 1 })
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
             .collect();
         let old: Vec<Identity> = ids.iter().map(|id| identity("g", id, 1, 0, 300)).collect();
         let old_decisions: Vec<Decision<'_>> = rows
@@ -1681,7 +1729,11 @@ mod tests {
         layout.publish(&rows, &decisions, &m, 200);
         assert!(layout.rows()[5].stale);
         assert!(!layout.rows()[5].placeholder);
-        assert_eq!(layout.rows()[5].text_height, 100, "not collapsed to a placeholder");
+        assert_eq!(
+            layout.rows()[5].text_height,
+            100,
+            "not collapsed to a placeholder"
+        );
         assert!(layout.total() > before / 2);
         // The anchor row is still findable by its stable id.
         assert!(layout.scroll_for(&ids[5], 0).is_some());
@@ -1694,7 +1746,11 @@ mod tests {
         // The feed saw this message live (`l:`) and history later names the
         // same message by its canonical `p:` anchor. The display id must
         // stay `l:`; only the semantic identity carries `p:`.
-        let rows = [RowIdentity { id: "l:row", version: 1 }];
+        let rows = [RowIdentity {
+            id: "l:row",
+            version: 1,
+            date: false,
+        }];
         let live = identity("g|with|pipes", "p|canonical|anchor", 1, 0, 300);
         // The document is cached but no plan exists yet.
         let candidates = [view_candidate("l:row", 1, live.clone(), true, false)];
@@ -1738,7 +1794,11 @@ mod tests {
         let mut layout = Layout::new();
         let old = identity("g", "a", 1, 0x2000, 300);
         layout.publish(
-            &[RowIdentity { id: "a", version: 1 }],
+            &[RowIdentity {
+                id: "a",
+                version: 1,
+                date: false,
+            }],
             &[replace("a", 1, Source::Markdown, &old, 90)],
             &m,
             300,
@@ -1755,7 +1815,11 @@ mod tests {
         // A raw height never draws a plan even with a matching identity.
         let mut raw_layout = Layout::new();
         raw_layout.publish(
-            &[RowIdentity { id: "a", version: 1 }],
+            &[RowIdentity {
+                id: "a",
+                version: 1,
+                date: false,
+            }],
             &[replace("a", 1, Source::Raw, &old, 90)],
             &m,
             300,
@@ -1768,7 +1832,11 @@ mod tests {
         let m = Metrics::for_dpi(96);
         let mut layout = Layout::new();
         let md = identity("g", "a", 1, 0x4000, 300);
-        let rows = [RowIdentity { id: "a", version: 1 }];
+        let rows = [RowIdentity {
+            id: "a",
+            version: 1,
+            date: false,
+        }];
         layout.publish(
             &rows,
             &[replace("a", 1, Source::Markdown, &md, 300)],
@@ -1777,7 +1845,10 @@ mod tests {
         );
         // In sight with the plan in hand: nothing to do.
         let present = [view_candidate("a", 1, md.clone(), true, true)];
-        assert_eq!(schedule(layout.rows(), &present, 4)[0].action, Action::Fresh);
+        assert_eq!(
+            schedule(layout.rows(), &present, 4)[0].action,
+            Action::Fresh
+        );
 
         // The row left the window: the view released the plan, but the
         // document is still cached. It is **not** Fresh -- a Fresh row
@@ -1807,7 +1878,11 @@ mod tests {
         let v1: Vec<Identity> = ids.iter().map(|id| identity("g", id, 1, 0, 300)).collect();
         let rows1: Vec<RowIdentity<'_>> = ids
             .iter()
-            .map(|id| RowIdentity { id, version: 1 })
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
             .collect();
         let first: Vec<Decision<'_>> = rows1
             .iter()
@@ -1825,13 +1900,14 @@ mod tests {
 
         // Every row's content version changes at once. Only four may be
         // measured this tick; the other two keep their old height.
-        let v2: Vec<Identity> = ids
-            .iter()
-            .map(|id| identity("g", id, 2, 0, 300))
-            .collect();
+        let v2: Vec<Identity> = ids.iter().map(|id| identity("g", id, 2, 0, 300)).collect();
         let rows2: Vec<RowIdentity<'_>> = ids
             .iter()
-            .map(|id| RowIdentity { id, version: 2 })
+            .map(|id| RowIdentity {
+                id,
+                version: 2,
+                date: false,
+            })
             .collect();
         let candidates: Vec<Candidate> = ids
             .iter()
@@ -1926,7 +2002,10 @@ mod tests {
             font: 5,
             blocks: &held_blocks,
         }];
-        assert!(!target.alive(&resized), "a rebuilt plan is not the drag's plan");
+        assert!(
+            !target.alive(&resized),
+            "a rebuilt plan is not the drag's plan"
+        );
 
         // Document changed.
         let new_doc = [HeldPlan {
@@ -1938,7 +2017,10 @@ mod tests {
             font: 5,
             blocks: &held_blocks,
         }];
-        assert!(!target.alive(&new_doc), "a new document is not the drag's document");
+        assert!(
+            !target.alive(&new_doc),
+            "a new document is not the drag's document"
+        );
 
         // The block index is not enough: it must exist in this plan.
         let other_blocks = [3usize];
@@ -1951,7 +2033,10 @@ mod tests {
             font: 5,
             blocks: &other_blocks,
         }];
-        assert!(!target.alive(&other), "a reused block index is not the target");
+        assert!(
+            !target.alive(&other),
+            "a reused block index is not the target"
+        );
 
         // Cancel paths clear the state; releasing the OS capture is the
         // caller's separate action.
@@ -1991,7 +2076,10 @@ mod tests {
         drag.start(target.clone());
         let mut focus = Some(target.clone());
         let dead = drop_dead_input(&mut drag, &mut focus, &empty);
-        assert!(dead.release_own_capture, "a removed target still owns capture");
+        assert!(
+            dead.release_own_capture,
+            "a removed target still owns capture"
+        );
         assert!(dead.invalidate, "a removed target changes what is drawn");
         assert!(drag.target().is_none());
         assert!(focus.is_none());
@@ -1999,7 +2087,10 @@ mod tests {
         // **Even with no drag left**, a cancel call site must still ask to
         // release this window's capture: no relying on the next event.
         let again = cancel_input(&mut drag, &mut focus);
-        assert!(again.release_own_capture, "an empty drag must not suppress release");
+        assert!(
+            again.release_own_capture,
+            "an empty drag must not suppress release"
+        );
 
         // Field-wise OR: a later `false` never overwrites an earlier
         // `true`, and multi-stage accumulation keeps both.
@@ -2044,7 +2135,10 @@ mod tests {
         let mut focus = Some(target.clone());
         drag.start(target.clone());
         let end = drag.end();
-        assert!(end.release_own_capture, "our own capture is released on end");
+        assert!(
+            end.release_own_capture,
+            "our own capture is released on end"
+        );
         assert!(end.invalidate);
         assert_eq!(focus.as_ref(), Some(&target), "end keeps the focus");
 
@@ -2052,7 +2146,10 @@ mod tests {
         // already empty, so it is idempotent and asks for no release --
         // and the focus must still be B with B's plan alive.
         let lost = capture_lost_input(&mut drag);
-        assert!(!lost.release_own_capture, "a lost capture is not ours to release");
+        assert!(
+            !lost.release_own_capture,
+            "a lost capture is not ours to release"
+        );
         assert!(!lost.invalidate, "an empty drag has nothing to repaint");
         assert!(drag.target().is_none());
         assert_eq!(focus.as_ref(), Some(&target), "focus survives the release");
@@ -2084,7 +2181,16 @@ mod tests {
     fn a_row_that_was_never_measured_is_an_explicit_placeholder() {
         let m = Metrics::for_dpi(96);
         let mut layout = Layout::new();
-        layout.publish(&[RowIdentity { id: "a", version: 1 }], &[], &m, 300);
+        layout.publish(
+            &[RowIdentity {
+                id: "a",
+                version: 1,
+                date: false,
+            }],
+            &[],
+            &m,
+            300,
+        );
         assert!(layout.rows()[0].placeholder);
         assert!(!layout.rows()[0].stale);
         assert_eq!(layout.rows()[0].height, m.author + m.line + m.gap);
@@ -2092,8 +2198,60 @@ mod tests {
     }
 
     #[test]
+    fn a_date_divider_is_one_line_of_its_own_and_belongs_to_its_row() {
+        let m = Metrics::for_dpi(96);
+        let mut layout = Layout::new();
+        let rows = [
+            RowInput {
+                id: "a",
+                version: 1,
+                author: "a",
+                text: "hi",
+                date: false,
+            },
+            RowInput {
+                id: "b",
+                version: 1,
+                author: "b",
+                text: "hi",
+                date: true,
+            },
+        ];
+        assert!(layout.update(&rows, 300, &m, &measure(1)));
+        assert_eq!(layout.rows()[0].date_height, 0);
+        assert_eq!(layout.rows()[1].date_height, m.date);
+        assert_eq!(layout.rows()[1].top, layout.rows()[0].height);
+        assert_eq!(layout.rows()[1].height, m.date + m.author + m.line + m.gap);
+
+        // The same rows with the boundary moved: the divider's line is the
+        // only thing that changes.
+        let moved = [
+            RowInput {
+                id: "a",
+                version: 1,
+                author: "a",
+                text: "hi",
+                date: true,
+            },
+            RowInput {
+                id: "b",
+                version: 1,
+                author: "b",
+                text: "hi",
+                date: false,
+            },
+        ];
+        assert!(layout.update(&moved, 300, &m, &measure(1)));
+        assert_eq!(layout.rows()[0].date_height, m.date);
+        assert_eq!(layout.rows()[1].date_height, 0);
+        assert_eq!(layout.total(), 2 * (m.author + m.line + m.gap) + m.date);
+    }
+
+    #[test]
     fn the_page_says_a_state_and_not_a_raw_code() {
         assert_eq!(load_word(Load::Loading), Some(msg::LOADING));
+        assert_eq!(load_word(Load::Cancelled), Some(msg::CANCELLED));
+        assert_eq!(load_word(Load::Gap), Some(msg::GAP));
         assert_eq!(load_word(Load::Empty), Some(msg::EMPTY));
         assert_eq!(load_word(Load::Ready), None);
         assert_eq!(trouble_word("Unsupported"), msg::UNSUPPORTED);

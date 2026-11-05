@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-13 05:58+0800\n"
+"POT-Creation-Date: 2026-11-06 00:31+0800\n"
 "PO-Revision-Date: 2026-08-14 23:43+0900\n"
 "Last-Translator: dobbylee <leekw1245@gmail.com>\n"
 "Language-Team: Korean <translation-team-ko@googlegroups.com>\n"
@@ -27,19 +27,19 @@ msgstr "Ghostty에서 열기"
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2563 windows/host/src/main.rs:2569
+#: windows/host/src/main.rs:2748 windows/host/src/main.rs:2754
 msgid "Authorize Clipboard Access"
 msgstr "클립보드 액세스 권한 부여"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:203
+#: src/config/form.zig:167 src/config/form.zig:168 src/config/form.zig:221
 msgid "Deny"
 msgstr "거부"
 
 #: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-#: src/config/form.zig:161 src/config/form.zig:162 src/config/form.zig:202
+#: src/config/form.zig:167 src/config/form.zig:168 src/config/form.zig:220
 msgid "Allow"
 msgstr "허용"
 
@@ -53,21 +53,27 @@ msgstr "이 창을 다시 보려면 설정을 다시 불러오세요"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2225
-#: windows/host/src/project_picker.rs:337 windows/host/src/projects_ui.rs:621
-#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:653
-#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:2887
+#: src/apprt/gtk/class/application.zig:2242 windows/host/src/logs_ui.rs:648
+#: windows/host/src/project_picker.rs:422 windows/host/src/project_ui.rs:439
+#: windows/host/src/project_ui.rs:479 windows/host/src/projects_ui.rs:779
+#: windows/host/src/projects_ui.rs:806 windows/host/src/projects_ui.rs:815
+#: windows/host/src/prompt.rs:475 windows/host/src/roles_ui.rs:3295
+#: windows/settings-shell/src/close_confirm.rs:55
+#: windows/control-room/src/confirm.rs:33
+#: windows/control-room/src/project_words.rs:87
 msgid "Cancel"
 msgstr "취소"
 
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
+#: windows/host/src/project_ui.rs:479
+#: windows/settings-shell/src/close_confirm.rs:54
 msgid "Close"
 msgstr "닫기"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:6
-#: windows/host/src/general_ui.rs:1856
+#: windows/host/src/general_ui.rs:2107
 msgid "Configuration Errors"
 msgstr "설정 오류"
 
@@ -85,8 +91,8 @@ msgstr "무시"
 
 #: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
 #: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
-#: windows/host/src/general_ui.rs:576 windows/host/src/general_ui.rs:842
-#: windows/host/src/menu.rs:495
+#: windows/host/src/general_ui.rs:701 windows/host/src/general_ui.rs:988
+#: windows/host/src/menu.rs:609
 msgid "Reload Configuration"
 msgstr "설정 값 다시 불러오기"
 
@@ -100,8 +106,8 @@ msgstr "⚠️ Ghostty 디버그 빌드로 실행 중입니다! 성능이 저하
 msgid "Ghostty: Terminal Inspector"
 msgstr "Ghostty: 터미널 인스펙터"
 
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:108
-#: windows/host/src/menu.rs:299
+#: src/apprt/gtk/ui/1.2/search-overlay.blp:29 windows/host/src/ctxmenu.rs:210
+#: windows/host/src/menu.rs:397
 msgid "Find…"
 msgstr "찾기…"
 
@@ -130,18 +136,17 @@ msgstr ""
 "이 터미널은 읽기 전용 모드입니다. 콘텐츠를 보고 선택하고 스크롤할 수는 있지"
 "만 실행 중인 애플리케이션으로 입력 이벤트가 전송되지 않습니다."
 
-#: src/apprt/gtk/ui/1.2/surface.blp:107 windows/host/src/ctxmenu.rs:129
-#: windows/host/src/menu.rs:343
+#: src/apprt/gtk/ui/1.2/surface.blp:107
 msgid "Read-only"
 msgstr "읽기 전용"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
-#: windows/host/src/ctxmenu.rs:104 windows/host/src/menu.rs:309
+#: windows/host/src/ctxmenu.rs:113 windows/host/src/menu.rs:414
 msgid "Copy"
 msgstr "복사"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
-#: windows/host/src/ctxmenu.rs:105 windows/host/src/menu.rs:310
+#: windows/host/src/ctxmenu.rs:114 windows/host/src/menu.rs:415
 msgid "Paste"
 msgstr "붙여넣기"
 
@@ -167,29 +172,30 @@ msgstr "제목 변경…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
 #: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
-#: windows/host/src/ctxmenu.rs:125 windows/host/src/menu.rs:275
+#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:347
 msgid "Split Up"
 msgstr "위로 창 나누기"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
 #: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
-#: windows/host/src/ctxmenu.rs:124 windows/host/src/menu.rs:274
+#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:346
 msgid "Split Down"
 msgstr "아래로 창 나누기"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
 #: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
-#: windows/host/src/ctxmenu.rs:123 windows/host/src/menu.rs:273
+#: windows/host/src/ctxmenu.rs:121 windows/host/src/menu.rs:345
 msgid "Split Left"
 msgstr "왼쪽으로 창 나누기"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
 #: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
-#: windows/host/src/ctxmenu.rs:122 windows/host/src/menu.rs:272
+#: windows/host/src/ctxmenu.rs:120 windows/host/src/menu.rs:344
 msgid "Split Right"
 msgstr "오른쪽으로 창 나누기"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/menu.rs:277
+#: src/apprt/gtk/ui/1.2/surface.blp:372 windows/host/src/ctxmenu.rs:128
+#: windows/host/src/menu.rs:349
 msgid "Close Split"
 msgstr "분할 닫기"
 
@@ -204,32 +210,33 @@ msgstr "탭 제목 변경…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
 #: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
-#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:110
-#: windows/host/src/menu.rs:252 windows/host/src/strip.rs:2073
+#: src/input/command.zig:427 windows/host/src/ctxmenu.rs:216
+#: windows/host/src/menu.rs:324 windows/host/src/strip.rs:3147
 msgid "New Tab"
 msgstr "새 탭"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:674 windows/host/src/ctxmenu.rs:116
-#: windows/host/src/menu.rs:278 windows/host/src/strip.rs:1589
+#: src/input/command.zig:714 windows/host/src/ctxmenu.rs:217
+#: windows/host/src/menu.rs:350 windows/host/src/strip.rs:2311
 msgid "Close Tab"
 msgstr "탭 닫기"
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:520
+#: src/apprt/gtk/ui/1.2/surface.blp:398 windows/host/src/menu.rs:634
 msgid "Window"
 msgstr "창"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:401 src/apprt/gtk/ui/1.5/window.blp:215
+#: src/input/command.zig:470
 msgid "Change Window Title…"
 msgstr "창 제목 변경…"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
-#: src/input/command.zig:421 windows/host/src/menu.rs:251
+#: src/input/command.zig:421 windows/host/src/menu.rs:323
 msgid "New Window"
 msgstr "새 창"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:691 windows/host/src/menu.rs:279
+#: src/input/command.zig:731 windows/host/src/menu.rs:351
 msgid "Close Window"
 msgstr "창 닫기"
 
@@ -250,6 +257,8 @@ msgid "Leave blank to restore the default title."
 msgstr "제목란을 비워 두면 기본값으로 복원됩니다."
 
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:9
+#: windows/host/src/control_room.rs:2697 windows/host/src/logs_ui.rs:206
+#: windows/control-room/src/scene.rs:67
 msgid "OK"
 msgstr "확인"
 
@@ -265,13 +274,12 @@ msgstr "열린 탭 보기"
 msgid "Main Menu"
 msgstr "메인 메뉴"
 
-#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:192
-#: windows/host/src/menu.rs:328 windows/host/src/strip.rs:2080
+#: src/apprt/gtk/ui/1.5/window.blp:293 windows/host/src/ctxmenu.rs:218
+#: windows/host/src/menu.rs:433 windows/host/src/strip.rs:3154
 msgid "Command Palette"
 msgstr "명령 팔레트"
 
-#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/ctxmenu.rs:128
-#: windows/host/src/menu.rs:352
+#: src/apprt/gtk/ui/1.5/window.blp:298 windows/host/src/menu.rs:461
 msgid "Terminal Inspector"
 msgstr "터미널 인스펙터"
 
@@ -279,40 +287,40 @@ msgstr "터미널 인스펙터"
 msgid "About Ghostty"
 msgstr "Ghostty 정보"
 
-#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:769
+#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:809
 msgid "Quit"
 msgstr "종료"
 
-#: src/apprt/gtk/ui/1.5/command-palette.blp:17
+#: src/apprt/gtk/ui/1.5/command-palette.blp:17 windows/host/src/palette.rs:913
 msgid "Execute a command…"
 msgstr "명령을 실행하세요…"
 
-#: src/apprt/gtk/class/application.zig:1810
+#: src/apprt/gtk/class/application.zig:1827
 msgid "The keybind was revoked by the system."
 msgstr "시스템에서 단축키 등록을 취소했습니다."
 
-#: src/apprt/gtk/class/application.zig:1812
+#: src/apprt/gtk/class/application.zig:1829
 msgid "The keybind was denied by the system."
 msgstr "시스템에서 단축키 등록을 거부했습니다."
 
-#: src/apprt/gtk/class/application.zig:1823
+#: src/apprt/gtk/class/application.zig:1840
 msgid "Global keybind unavailable"
 msgstr "전역 단축키를 사용할 수 없음"
 
-#: src/apprt/gtk/class/application.zig:2221
+#: src/apprt/gtk/class/application.zig:2238
 msgid "Export Terminal IO Events"
 msgstr "터미널 입출력 이벤트 내보내기"
 
-#: src/apprt/gtk/class/application.zig:2224
+#: src/apprt/gtk/class/application.zig:2241
 msgid "Export"
 msgstr "내보내기"
 
-#: src/apprt/gtk/class/application.zig:2743
+#: src/apprt/gtk/class/application.zig:2760
 msgid "Editing configuration file"
 msgstr "설정 파일 편집 중"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2571
+#: windows/host/src/main.rs:2756
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
@@ -321,7 +329,7 @@ msgstr ""
 "래와 같습니다."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2565
+#: windows/host/src/main.rs:2750
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
@@ -330,12 +338,12 @@ msgstr ""
 "아래와 같습니다."
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2575
+#: windows/host/src/main.rs:2760
 msgid "Warning: Potentially Unsafe Paste"
 msgstr "경고: 잠재적으로 안전하지 않은 붙여넣기"
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2577
+#: windows/host/src/main.rs:2762
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -348,17 +356,15 @@ msgid "Quit Ghostty?"
 msgstr "Ghostty를 종료하시겠습니까?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:185
-#: windows/host/src/tabs.rs:3515
 msgid "Close Tab?"
 msgstr "탭을 닫으시겠습니까?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:186
-#: windows/host/src/tabs.rs:3516
+#: windows/settings-shell/src/close_confirm.rs:74
 msgid "Close Window?"
 msgstr "창을 닫으시겠습니까?"
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:187
-#: windows/host/src/tabs.rs:3517
 msgid "Close Split?"
 msgstr "분할을 닫으시겠습니까?"
 
@@ -367,17 +373,15 @@ msgid "All terminal sessions will be terminated."
 msgstr "모든 터미널 세션이 종료됩니다."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:194
-#: windows/host/src/tabs.rs:3525
 msgid "All terminal sessions in this tab will be terminated."
 msgstr "이 탭의 모든 터미널 세션이 종료됩니다."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:195
-#: windows/host/src/tabs.rs:3526
+#: windows/settings-shell/src/close_confirm.rs:75
 msgid "All terminal sessions in this window will be terminated."
 msgstr "이 창의 모든 터미널 세션이 종료됩니다."
 
 #: src/apprt/gtk/class/close_confirmation_dialog.zig:196
-#: windows/host/src/tabs.rs:3527
 msgid "The currently running process in this split will be terminated."
 msgstr "이 분할에서 현재 실행 중인 프로세스가 종료됩니다."
 
@@ -423,7 +427,7 @@ msgstr "클립보드 지워짐"
 msgid "Ghostty Developers"
 msgstr "Ghostty 개발자들"
 
-#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:127
+#: src/input/command.zig:149 windows/host/src/ctxmenu.rs:130
 msgid "Reset Terminal"
 msgstr "터미널 초기화"
 
@@ -542,7 +546,7 @@ msgstr "이전 검색 결과"
 msgid "Navigate to the previous search result, if any."
 msgstr "이전 검색 결과가 있으면 해당 결과로 이동합니다."
 
-#: src/input/command.zig:225
+#: src/input/command.zig:225 windows/host/src/menu.rs:430
 msgid "Increase Font Size"
 msgstr "글꼴 크기 키우기"
 
@@ -550,7 +554,7 @@ msgstr "글꼴 크기 키우기"
 msgid "Increase the font size by 1 point."
 msgstr "글꼴 크기를 1포인트 키웁니다."
 
-#: src/input/command.zig:231
+#: src/input/command.zig:231 windows/host/src/menu.rs:431
 msgid "Decrease Font Size"
 msgstr "글꼴 크기 줄이기"
 
@@ -558,7 +562,7 @@ msgstr "글꼴 크기 줄이기"
 msgid "Decrease the font size by 1 point."
 msgstr "글꼴 크기를 1포인트 줄입니다."
 
-#: src/input/command.zig:237 windows/host/src/menu.rs:324
+#: src/input/command.zig:237 windows/host/src/menu.rs:429
 msgid "Reset Font Size"
 msgstr "글꼴 크기 초기화"
 
@@ -574,8 +578,8 @@ msgstr "화면 지우기"
 msgid "Clear the screen and scrollback."
 msgstr "화면과 스크롤백을 지웁니다."
 
-#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:106
-#: windows/host/src/menu.rs:318
+#: src/input/command.zig:249 windows/host/src/ctxmenu.rs:209
+#: windows/host/src/menu.rs:423
 msgid "Select All"
 msgstr "모두 선택"
 
@@ -834,7 +838,7 @@ msgstr "탭을 오른쪽으로 이동"
 msgid "Move the current tab to the right."
 msgstr "현재 탭을 오른쪽으로 이동합니다."
 
-#: src/input/command.zig:446 windows/host/src/strip.rs:1592
+#: src/input/command.zig:446 windows/host/src/strip.rs:2314
 msgid "Move Tab to New Window"
 msgstr "탭을 새 창으로 이동"
 
@@ -861,6 +865,10 @@ msgstr "현재 터미널의 새 제목을 입력합니다."
 #: src/input/command.zig:465
 msgid "Prompt for a new title for the current tab."
 msgstr "현재 탭의 새 제목을 입력합니다."
+
+#: src/input/command.zig:471
+msgid "Prompt for a new title for the current window."
+msgstr ""
 
 #: src/input/command.zig:478
 msgid "Split the terminal to the left."
@@ -942,245 +950,303 @@ msgstr "다음 창으로 포커스 이동"
 msgid "Focus the next window, if any."
 msgstr "다음 창이 있으면 포커스를 이동합니다."
 
-#: src/input/command.zig:545
+#: src/input/command.zig:546
+msgid "Stack: New Terminal in This Pane"
+msgstr ""
+
+#: src/input/command.zig:547
+msgid "Open a new terminal in the focused pane, in front of the one there."
+msgstr ""
+
+#: src/input/command.zig:551
+msgid "Stack: Next Terminal"
+msgstr ""
+
+#: src/input/command.zig:552
+msgid "Bring the next terminal of the focused pane's stack to the front."
+msgstr ""
+
+#: src/input/command.zig:556
+msgid "Stack: Previous Terminal"
+msgstr ""
+
+#: src/input/command.zig:557
+msgid "Bring the previous terminal of the focused pane's stack to the front."
+msgstr ""
+
+#: src/input/command.zig:561
+msgid "Stack: Move Terminal Out"
+msgstr ""
+
+#: src/input/command.zig:562
+msgid "Take the focused terminal out of its stack, into a pane of its own."
+msgstr ""
+
+#: src/input/command.zig:566
+msgid "Stack: Onto the Next Pane"
+msgstr ""
+
+#: src/input/command.zig:567
+msgid "Put the focused terminal onto the stack of the next pane."
+msgstr ""
+
+#: src/input/command.zig:571
+msgid "Stack: Onto the Previous Pane"
+msgstr ""
+
+#: src/input/command.zig:572
+msgid "Put the focused terminal onto the stack of the previous pane."
+msgstr ""
+
+#: src/input/command.zig:578
 msgid "Toggle Split Zoom"
 msgstr "분할 확대/축소 전환"
 
-#: src/input/command.zig:546
+#: src/input/command.zig:579
 msgid "Toggle the zoom state of the current split."
 msgstr "현재 분할을 확대하거나 원래 크기로 되돌립니다."
 
-#: src/input/command.zig:551
+#: src/input/command.zig:584
 msgid "Toggle Read-Only Mode"
 msgstr "읽기 전용 모드 전환"
 
-#: src/input/command.zig:552
+#: src/input/command.zig:585
 msgid "Toggle read-only mode for the current surface."
 msgstr "현재 터미널의 읽기 전용 모드를 켜거나 끕니다."
 
-#: src/input/command.zig:557 windows/host/src/ctxmenu.rs:142
-#: windows/host/src/menu.rs:373 windows/host/src/strip.rs:1598
+#: src/input/command.zig:590 windows/host/src/ctxmenu.rs:149
+#: windows/host/src/menu.rs:478 windows/host/src/strip.rs:2320
 msgid "Make This Terminal a Supervisor"
 msgstr ""
 
-#: src/input/command.zig:558
+#: src/input/command.zig:591
 msgid ""
 "Let this terminal's agent mind terminals it claims. There may be several "
 "supervisors; each reaches only its own."
 msgstr ""
 
-#: src/input/command.zig:563 windows/host/src/ctxmenu.rs:147
-#: windows/host/src/menu.rs:374 windows/host/src/strip.rs:1599
+#: src/input/command.zig:596
 msgid "Toggle Supervision of This Terminal"
 msgstr ""
 
-#: src/input/command.zig:564
+#: src/input/command.zig:597
 msgid "Report this terminal to the supervisor when its screen goes quiet."
 msgstr ""
 
-#: src/input/command.zig:594 windows/host/src/menu.rs:432
+#: src/input/command.zig:627 windows/host/src/menu.rs:543
 msgid "Hold This Terminal to Its Work"
 msgstr ""
 
-#: src/input/command.zig:595
+#: src/input/command.zig:628
 msgid ""
 "Stop this terminal being clocked off, by a supervisor or by anything else. "
 "Its tab wears a ring while the hold lasts. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:600 windows/host/src/ctxmenu.rs:152
-#: windows/host/src/menu.rs:375 windows/host/src/strip.rs:1600
+#: src/input/command.zig:633 windows/host/src/ctxmenu.rs:159
+#: windows/host/src/menu.rs:480 windows/host/src/strip.rs:2322
 msgid "Keep Agents Out of This Terminal"
 msgstr ""
 
-#: src/input/command.zig:601
+#: src/input/command.zig:634
 msgid ""
 "Stop every agent, supervisors included, from reading this terminal or typing "
 "into it. Its tab wears a lock while the shield stands. Only you can set this."
 msgstr ""
 
-#: src/input/command.zig:612 windows/host/src/menu.rs:364
-#: windows/control-room/src/rules.rs:165
+#: src/input/command.zig:639 windows/host/src/ctxmenu.rs:165
+#: windows/host/src/menu.rs:483 windows/host/src/strip.rs:2323
+msgid "Don't Start Workers in This Terminal"
+msgstr ""
+
+#: src/input/command.zig:640
+msgid ""
+"Keep this terminal for your own commands: a supervisor starts no agent in it "
+"or beside it. Agents can still read it and type into it. Only you can set "
+"this."
+msgstr ""
+
+#: src/input/command.zig:652 windows/host/src/menu.rs:473
+#: windows/control-room/src/rules.rs:262
 msgid "Control Room"
 msgstr ""
 
-#: src/input/command.zig:613
+#: src/input/command.zig:653
 msgid ""
 "Go to the tab that lists every group by who is waiting for you, opening it "
 "if it is closed."
 msgstr ""
 
-#: src/input/command.zig:618 windows/host/src/menu.rs:450
+#: src/input/command.zig:658 windows/host/src/menu.rs:563
 msgid "Equalize Splits"
 msgstr "분할 크기 균등화"
 
-#: src/input/command.zig:619
+#: src/input/command.zig:659
 msgid "Equalize the size of all splits."
 msgstr "모든 분할의 크기를 균등하게 맞춥니다."
 
-#: src/input/command.zig:624 windows/host/src/menu.rs:472
+#: src/input/command.zig:664
 msgid "Reset Window Size"
 msgstr "창 크기 초기화"
 
-#: src/input/command.zig:625
+#: src/input/command.zig:665
 msgid "Reset the window size to the default."
 msgstr "창 크기를 기본값으로 되돌립니다."
 
-#: src/input/command.zig:630
+#: src/input/command.zig:670
 msgid "Toggle Inspector"
 msgstr "인스펙터 표시 전환"
 
-#: src/input/command.zig:631
+#: src/input/command.zig:671
 msgid "Toggle the inspector."
 msgstr "인스펙터를 표시하거나 숨깁니다."
 
-#: src/input/command.zig:636
+#: src/input/command.zig:676
 msgid "Show the GTK Inspector"
 msgstr "GTK 인스펙터 표시"
 
-#: src/input/command.zig:637
+#: src/input/command.zig:677
 msgid "Show the GTK inspector."
 msgstr "GTK 인스펙터를 표시합니다."
 
-#: src/input/command.zig:642
+#: src/input/command.zig:682
 msgid "Show On-Screen Keyboard"
 msgstr "화상 키보드 표시"
 
-#: src/input/command.zig:643
+#: src/input/command.zig:683
 msgid "Show the on-screen keyboard if present."
 msgstr "화상 키보드를 사용할 수 있으면 표시합니다."
 
-#: src/input/command.zig:649
+#: src/input/command.zig:689
 msgid "Open Config Using OS editor"
 msgstr "시스템 기본 편집기에서 설정 열기"
 
-#: src/input/command.zig:650
+#: src/input/command.zig:690
 msgid "Open the config file with the OS's default editor."
 msgstr "시스템 기본 편집기로 설정 파일을 엽니다."
 
-#: src/input/command.zig:654
+#: src/input/command.zig:694
 msgid "Open Config in New Terminal Window"
 msgstr "새 터미널 창에서 설정 열기"
 
-#: src/input/command.zig:655
+#: src/input/command.zig:695
 msgid "Open the config file in a new window using $EDITOR or $VISUAL."
 msgstr "$EDITOR 또는 $VISUAL을 사용하여 새 창에서 설정 파일을 엽니다."
 
-#: src/input/command.zig:661
+#: src/input/command.zig:701
 msgid "Reload Config"
 msgstr "설정 값 다시 불러오기"
 
-#: src/input/command.zig:662
+#: src/input/command.zig:702
 msgid "Reload the config file."
 msgstr "설정 파일을 다시 불러옵니다."
 
-#: src/input/command.zig:667
+#: src/input/command.zig:707 windows/host/src/strip.rs:2562
+#: windows/control-room/src/panestack.rs:28
 msgid "Close Terminal"
 msgstr "터미널 닫기"
 
-#: src/input/command.zig:668
+#: src/input/command.zig:708
 msgid "Close the current terminal."
 msgstr "현재 터미널을 닫습니다."
 
-#: src/input/command.zig:675
+#: src/input/command.zig:715
 msgid "Close the current tab."
 msgstr "현재 탭을 닫습니다."
 
-#: src/input/command.zig:679 windows/host/src/strip.rs:1590
-#: windows/host/src/tabs.rs:3518
+#: src/input/command.zig:719 windows/host/src/strip.rs:2312
 msgid "Close Other Tabs"
 msgstr "다른 탭 닫기"
 
-#: src/input/command.zig:680 windows/host/src/tabs.rs:3535
+#: src/input/command.zig:720
 msgid "Close all tabs in this window except the current one."
 msgstr "이 창에서 현재 탭을 제외한 모든 탭을 닫습니다."
 
-#: src/input/command.zig:684 windows/host/src/strip.rs:1591
-#: windows/host/src/tabs.rs:3519
+#: src/input/command.zig:724 windows/host/src/strip.rs:2313
 msgid "Close Tabs to the Right"
 msgstr "오른쪽 탭 닫기"
 
-#: src/input/command.zig:685 windows/host/src/tabs.rs:3536
+#: src/input/command.zig:725
 msgid "Close all tabs to the right of the current one."
 msgstr "현재 탭 오른쪽의 모든 탭을 닫습니다."
 
-#: src/input/command.zig:692
+#: src/input/command.zig:732
 msgid "Close the current window."
 msgstr "현재 창을 닫습니다."
 
-#: src/input/command.zig:697
+#: src/input/command.zig:737
 msgid "Close All Windows"
 msgstr "모든 창 닫기"
 
-#: src/input/command.zig:698
+#: src/input/command.zig:738
 msgid "Close all windows."
 msgstr "모든 창을 닫습니다."
 
-#: src/input/command.zig:703
+#: src/input/command.zig:743
 msgid "Toggle Maximize"
 msgstr "창 최대화 전환"
 
-#: src/input/command.zig:704
+#: src/input/command.zig:744
 msgid "Toggle the maximized state of the current window."
 msgstr "현재 창을 최대화하거나 원래 크기로 복원합니다."
 
-#: src/input/command.zig:709
+#: src/input/command.zig:749
 msgid "Toggle Fullscreen"
 msgstr "전체 화면 전환"
 
-#: src/input/command.zig:710
+#: src/input/command.zig:750
 msgid "Toggle the fullscreen state of the current window."
 msgstr "현재 창의 전체 화면 모드를 켜거나 끕니다."
 
-#: src/input/command.zig:715
+#: src/input/command.zig:755
 msgid "Toggle Window Decorations"
 msgstr "창 장식 표시 전환"
 
-#: src/input/command.zig:716
+#: src/input/command.zig:756
 msgid "Toggle the window decorations."
 msgstr "창 장식을 표시하거나 숨깁니다."
 
-#: src/input/command.zig:721
+#: src/input/command.zig:761
 msgid "Toggle Float on Top"
 msgstr "항상 위에 표시 전환"
 
-#: src/input/command.zig:722
+#: src/input/command.zig:762
 msgid "Toggle the float on top state of the current window."
 msgstr "현재 창의 항상 위에 표시 기능을 켜거나 끕니다."
 
-#: src/input/command.zig:727
+#: src/input/command.zig:767
 msgid "Toggle Secure Input"
 msgstr "보안 입력 전환"
 
-#: src/input/command.zig:728
+#: src/input/command.zig:768
 msgid "Toggle secure input mode."
 msgstr "보안 입력 모드를 켜거나 끕니다."
 
-#: src/input/command.zig:733
+#: src/input/command.zig:773
 msgid "Toggle Mouse Reporting"
 msgstr "마우스 이벤트 전달 전환"
 
-#: src/input/command.zig:734
+#: src/input/command.zig:774
 msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr "터미널 애플리케이션에 마우스 이벤트를 전달하는 기능을 켜거나 끕니다."
 
-#: src/input/command.zig:739
+#: src/input/command.zig:779
 msgid "Toggle Background Opacity"
 msgstr "배경 불투명도 전환"
 
-#: src/input/command.zig:740
+#: src/input/command.zig:780
 msgid "Toggle the background opacity of a window that started transparent."
 msgstr ""
 "투명하게 시작된 창의 배경을 불투명하게 표시하거나 원래 투명도로 되돌립니다."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/command.zig:745 src/input/screenshot.zig:107
-#: windows/settings-shell/src/general.rs:78
+#: src/input/command.zig:785 src/input/screenshot.zig:107
+#: windows/host/src/menu.rs:454 windows/settings-shell/src/general.rs:86
 msgid "Screenshot"
 msgstr "스크린샷"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/command.zig:746 src/input/screenshot.zig:115
+#: src/input/command.zig:786 src/input/screenshot.zig:115
 msgid ""
 "Freeze the screen, pick a window or drag a region, annotate it, and put the "
 "result on the clipboard."
@@ -1188,39 +1254,40 @@ msgstr ""
 "화면을 정지시키고 창을 고르거나 영역을 드래그해 주석을 단 뒤 결과를 클립보드"
 "에 넣습니다."
 
-#: src/input/command.zig:751
+#: src/input/command.zig:791
 msgid "Check for Updates"
 msgstr "업데이트 확인"
 
-#: src/input/command.zig:752
+#: src/input/command.zig:792
 msgid "Check for updates to the application."
 msgstr "애플리케이션의 업데이트를 확인합니다."
 
-#: src/input/command.zig:757 windows/host/src/projects_ui.rs:1349
+#: src/input/command.zig:797 windows/host/src/projects_ui.rs:1644
+#: windows/control-room/src/project_words.rs:100
 msgid "Undo"
 msgstr "실행 취소"
 
-#: src/input/command.zig:758
+#: src/input/command.zig:798
 msgid "Undo the last action."
 msgstr "마지막 작업을 실행 취소합니다."
 
-#: src/input/command.zig:763
+#: src/input/command.zig:803
 msgid "Redo"
 msgstr "다시 실행"
 
-#: src/input/command.zig:764
+#: src/input/command.zig:804
 msgid "Redo the last undone action."
 msgstr "마지막으로 실행 취소한 작업을 다시 실행합니다."
 
-#: src/input/command.zig:770
+#: src/input/command.zig:810
 msgid "Quit the application."
 msgstr "애플리케이션을 종료합니다."
 
-#: src/input/command.zig:775
+#: src/input/command.zig:815
 msgid "Ghostty"
 msgstr "Ghostty"
 
-#: src/input/command.zig:776
+#: src/input/command.zig:816
 msgid "Put a little Ghostty in your terminal."
 msgstr "터미널에 작은 유령 하나를 입력합니다."
 
@@ -1270,7 +1337,8 @@ msgid "Done"
 msgstr "완료"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:93
+#: src/input/screenshot.zig:93 windows/host/src/projects_ui.rs:1464
+#: windows/host/src/strip.rs:2558
 msgid "Color"
 msgstr "색상"
 
@@ -1285,22 +1353,22 @@ msgid "Block Size"
 msgstr "블록 크기"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:96 windows/host/src/strip.rs:1553
+#: src/input/screenshot.zig:96 windows/control-room/src/pane_color.rs:76
 msgid "Red"
 msgstr "빨강"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:97 windows/host/src/strip.rs:1554
+#: src/input/screenshot.zig:97 windows/control-room/src/pane_color.rs:77
 msgid "Orange"
 msgstr "주황"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:98 windows/host/src/strip.rs:1555
+#: src/input/screenshot.zig:98 windows/control-room/src/pane_color.rs:78
 msgid "Yellow"
 msgstr "노랑"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:99 windows/host/src/strip.rs:1556
+#: src/input/screenshot.zig:99 windows/control-room/src/pane_color.rs:79
 msgid "Green"
 msgstr "초록"
 
@@ -1310,12 +1378,12 @@ msgid "Cyan"
 msgstr "청록"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:101 windows/host/src/strip.rs:1550
+#: src/input/screenshot.zig:101 windows/control-room/src/pane_color.rs:73
 msgid "Blue"
 msgstr "파랑"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/input/screenshot.zig:102 windows/host/src/strip.rs:1551
+#: src/input/screenshot.zig:102 windows/control-room/src/pane_color.rs:74
 msgid "Purple"
 msgstr "보라"
 
@@ -1431,10 +1499,10 @@ msgid "The page could not be followed any further, so the picture ends here."
 msgstr "페이지를 더 이상 따라갈 수 없어 이미지는 여기서 끝납니다."
 
 # Machine translation (2026-10-08), not reviewed by a speaker.
-#: src/input/screenshot.zig:126 windows/host/src/plugins_ui.rs:525
-#: windows/host/src/project_picker.rs:323 windows/host/src/roles_ui.rs:2258
-#: windows/host/src/roles_ui.rs:2951 windows/host/src/roles_ui.rs:2968
-#: windows/host/src/roles_ui.rs:2982
+#: src/input/screenshot.zig:126 windows/host/src/control_room.rs:2855
+#: windows/host/src/plugins_ui.rs:521 windows/host/src/roles_ui.rs:2670
+#: windows/host/src/roles_ui.rs:2872 windows/host/src/roles_ui.rs:3317
+#: windows/host/src/roles_ui.rs:3334 windows/host/src/roles_ui.rs:3348
 msgid "Save"
 msgstr "저장"
 
@@ -1472,948 +1540,1612 @@ msgstr ""
 msgid "No settings match."
 msgstr "일치하는 설정이 없습니다."
 
-#: src/cli/chat.zig:603
+#: src/cli/chat.zig:846
 msgid "all"
 msgstr ""
 
-#: src/cli/chat.zig:604
+#: src/cli/chat.zig:847
 msgid "open"
 msgstr ""
 
-#: src/cli/chat.zig:605
+#: src/cli/chat.zig:848
 msgid "blocked"
 msgstr ""
 
-#: src/cli/chat.zig:606
+#: src/cli/chat.zig:849
 msgid "closed"
 msgstr ""
 
-#: src/cli/chat.zig:1857
+#: src/cli/chat.zig:2116
 msgid "Take the group \"{0}\" off this list?"
 msgstr ""
 
-#: src/cli/chat.zig:1862
+#: src/cli/chat.zig:2121
 msgid "Not one word of the conversation is deleted:"
 msgstr ""
 
-#: src/cli/chat.zig:1863
+#: src/cli/chat.zig:2122
 msgid "every day of it stays exactly as it is under"
 msgstr ""
 
-#: src/cli/chat.zig:1864
+#: src/cli/chat.zig:2123
 msgid "<state>/chat/, to be read and grepped later."
 msgstr ""
 
-#: src/cli/chat.zig:1865
+#: src/cli/chat.zig:2124
 msgid "What goes is one row of this list."
 msgstr ""
 
-#: src/cli/chat.zig:1867
+#: src/cli/chat.zig:2126
 msgid "y to confirm    any other key cancels"
 msgstr ""
 
-#: src/cli/chat.zig:1932
+#: src/cli/chat.zig:2191
 msgid "GROUPS   d removes"
 msgstr ""
 
-#: src/cli/chat.zig:1936
+#: src/cli/chat.zig:2195
 msgid "  (no groups yet)"
 msgstr ""
 
-#: src/cli/chat.zig:1984
+#: src/cli/chat.zig:2243
 msgid "MEMBERS"
 msgstr ""
 
-#: src/cli/chat.zig:2210
+#: src/cli/chat.zig:2469
 msgid "No groups. Tasks will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2219
+#: src/cli/chat.zig:2478
 msgid "No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2259 src/cli/chat.zig:2264
+#: src/cli/chat.zig:2518 src/cli/chat.zig:2523
 msgid "filter"
 msgstr ""
 
-#: src/cli/chat.zig:2276
+#: src/cli/chat.zig:2535
 msgid "Nothing matches this filter. Press f to change it."
 msgstr ""
 
-#: src/cli/chat.zig:2368
+#: src/cli/chat.zig:2627
 msgid "No groups. There will be numbers here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:2495
+#: src/cli/chat.zig:2754
 msgid "Waiting on you"
 msgstr ""
 
-#: src/cli/chat.zig:2497 src/cli/chat.zig:2773
+#: src/cli/chat.zig:2756 src/cli/chat.zig:3032
 msgid "  The task record has not been read yet."
 msgstr ""
 
-#: src/cli/chat.zig:2499
+#: src/cli/chat.zig:2758
 msgid "  Nothing open."
 msgstr ""
 
-#: src/cli/chat.zig:2515 src/cli/chat.zig:2528
+#: src/cli/chat.zig:2774 src/cli/chat.zig:2787
 msgid "with nothing happening"
 msgstr ""
 
-#: src/cli/chat.zig:2525
+#: src/cli/chat.zig:2784
 msgid "#{0}  {1} {2}  {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2534
+#: src/cli/chat.zig:2793
 msgid "  and {0} more still open"
 msgstr ""
 
-#: src/cli/chat.zig:2541
+#: src/cli/chat.zig:2800
 msgid "Where it stopped"
 msgstr ""
 
-#: src/cli/chat.zig:2549
+#: src/cli/chat.zig:2808
 msgid "  a day {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2553
+#: src/cli/chat.zig:2812
 msgid "  last message {0} ago"
 msgstr ""
 
-#: src/cli/chat.zig:2560
+#: src/cli/chat.zig:2819
 msgid "  longest silence {0} (from {1})"
 msgstr ""
 
-#: src/cli/chat.zig:2569
+#: src/cli/chat.zig:2828
 msgid "Saying · doing"
 msgstr ""
 
-#: src/cli/chat.zig:2571
+#: src/cli/chat.zig:2830
 msgid "  Nobody has been in this group."
 msgstr ""
 
-#: src/cli/chat.zig:2605 src/cli/chat.zig:2619
+#: src/cli/chat.zig:2864 src/cli/chat.zig:2878
 msgid "said"
 msgstr ""
 
-#: src/cli/chat.zig:2606 src/cli/chat.zig:2622
+#: src/cli/chat.zig:2865 src/cli/chat.zig:2881
 msgid "doing"
 msgstr ""
 
-#: src/cli/chat.zig:2617
+#: src/cli/chat.zig:2876
 msgid "  {0} {1} {2} {3}  {4} {5} {6}"
 msgstr ""
 
-#: src/cli/chat.zig:2629
+#: src/cli/chat.zig:2888
 msgid "  and {0} more"
 msgstr ""
 
-#: src/cli/chat.zig:2636
+#: src/cli/chat.zig:2895
 msgid "Terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2639
+#: src/cli/chat.zig:2898
 msgid "  {0} in the group now, {1} in the record"
 msgstr ""
 
-#: src/cli/chat.zig:2677
+#: src/cli/chat.zig:2936
 msgid "  no supervisor was recorded"
 msgstr ""
 
-#: src/cli/chat.zig:2679
+#: src/cli/chat.zig:2938
 msgid "  last supervisor:"
 msgstr ""
 
-#: src/cli/chat.zig:2700
+#: src/cli/chat.zig:2959
 msgid "  and {0} other terminals"
 msgstr ""
 
-#: src/cli/chat.zig:2730
+#: src/cli/chat.zig:2989
 msgid "This session"
 msgstr ""
 
-#: src/cli/chat.zig:2735
+#: src/cli/chat.zig:2994
 msgid "  first line {0} · {1} since · {2} messages"
 msgstr ""
 
-#: src/cli/chat.zig:2750
+#: src/cli/chat.zig:3009
 msgid "  made {0} · closed {1} · cancelled {2} · open {3}"
 msgstr ""
 
-#: src/cli/chat.zig:2765
+#: src/cli/chat.zig:3024
 msgid "  {0} handed round · {1} progress reports / {2}"
 msgstr ""
 
-#: src/cli/chat.zig:2777
+#: src/cli/chat.zig:3036
 msgid "Task mix"
 msgstr ""
 
-#: src/cli/chat.zig:2785
+#: src/cli/chat.zig:3044
 msgid "  No tasks in this group yet."
 msgstr ""
 
-#: src/cli/chat.zig:2818
+#: src/cli/chat.zig:3077
 msgid "closed {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2823
+#: src/cli/chat.zig:3082
 msgid "past the mark {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2828
+#: src/cli/chat.zig:3087
 msgid "open {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2833
+#: src/cli/chat.zig:3092
 msgid "cancelled {0}"
 msgstr ""
 
-#: src/cli/chat.zig:2840
+#: src/cli/chat.zig:3099
 msgid "How long tasks lived"
 msgstr ""
 
-#: src/cli/chat.zig:2842
+#: src/cli/chat.zig:3101
 msgid "  Nothing has been closed yet."
 msgstr ""
 
-#: src/cli/chat.zig:2850
+#: src/cli/chat.zig:3109
 msgid "  fastest {0} · median {1} · slowest {2} (over {3})"
 msgstr ""
 
-#: src/cli/chat.zig:2860
+#: src/cli/chat.zig:3119
 msgid "Rhythm"
 msgstr ""
 
-#: src/cli/chat.zig:2868
+#: src/cli/chat.zig:3127
 msgid "  00:00{0}23:00"
 msgstr ""
 
-#: src/cli/chat.zig:2874
+#: src/cli/chat.zig:3133
 msgid "  busiest {0}:00 ({1} messages)"
 msgstr ""
 
-#: src/cli/chat.zig:3039
+#: src/cli/chat.zig:3298 windows/control-room/src/rightpage.rs:34
 msgid "Chat"
 msgstr ""
 
-#: src/cli/chat.zig:3040
+#: src/cli/chat.zig:3299 windows/control-room/src/rightpage.rs:35
 msgid "Tasks"
 msgstr ""
 
-#: src/cli/chat.zig:3041
+#: src/cli/chat.zig:3300
 msgid "Stats"
 msgstr ""
 
-#: src/cli/chat.zig:3065
+#: src/cli/chat.zig:3324
 msgid "· unassigned"
 msgstr ""
 
-#: src/cli/chat.zig:3089
+#: src/cli/chat.zig:3348
 msgid ""
 "No groups. The conversation will appear here once a supervisor makes one."
 msgstr ""
 
-#: src/cli/chat.zig:3112
+#: src/cli/chat.zig:3371
 msgid "── nothing older ──"
 msgstr ""
 
-#: src/cli/chat.zig:3123
+#: src/cli/chat.zig:3382
 msgid "  (summary)"
 msgstr ""
 
-#: src/cli/chat.zig:3358
+#: src/cli/chat.zig:3611
+msgid "No group is called \"{0}\"; here are all of them"
+msgstr ""
+
+#: src/cli/chat.zig:3710
 msgid "under a minute"
 msgstr ""
 
-#: src/cli/chat.zig:3361
+#: src/cli/chat.zig:3713
 msgid "{0} min"
 msgstr ""
 
-#: src/cli/chat.zig:3366
+#: src/cli/chat.zig:3718
 msgid "{0} h"
 msgstr ""
 
-#: src/cli/chat.zig:3367
+#: src/cli/chat.zig:3719
 msgid "{0} h {1} min"
 msgstr ""
 
-#: src/cli/chat.zig:3372
+#: src/cli/chat.zig:3724
 msgid "{0} d"
 msgstr ""
 
-#: src/cli/chat.zig:3373
+#: src/cli/chat.zig:3725
 msgid "{0} d {1} h"
 msgstr ""
 
-#: src/termio/scrollback.zig:328
+#: src/termio/scrollback.zig:468
 msgid "Above this line: history restored from the previous session"
 msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:124
+#: src/config/form.zig:125
 msgid "Screenshot Shortcut"
 msgstr "스크린샷 단축키"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:125
+#: src/config/form.zig:126
 msgid "Change it with a keybind line in the config file."
 msgstr "설정 파일의 keybind 줄에서 변경합니다."
 
-#: src/config/form.zig:143
+#: src/config/form.zig:144
 msgid "Theme"
 msgstr ""
 
-#: src/config/form.zig:143
+#: src/config/form.zig:144
 msgid "The color theme; light and dark mode can differ."
 msgstr ""
 
-#: src/config/form.zig:144
+#: src/config/form.zig:145
 msgid "Background Opacity"
 msgstr ""
 
-#: src/config/form.zig:144
+#: src/config/form.zig:145
 msgid "1 is fully opaque; lower lets the desktop show through."
 msgstr ""
 
-#: src/config/form.zig:145
+#: src/config/form.zig:146
 msgid "Background Blur"
 msgstr ""
 
-#: src/config/form.zig:145
+#: src/config/form.zig:146
 msgid "true, false, a strength, or macos-glass-regular/-clear."
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "Cursor Style"
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "The cursor's shape; programs in the terminal may change it."
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "Bar"
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "Block"
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "Underline"
 msgstr ""
 
-#: src/config/form.zig:146
+#: src/config/form.zig:147
 msgid "Hollow Block"
 msgstr ""
 
-#: src/config/form.zig:147
+#: src/config/form.zig:148
 msgid "Blinking Cursor"
 msgstr ""
 
-#: src/config/form.zig:147
+#: src/config/form.zig:148
 msgid "Whether the cursor blinks by default."
 msgstr ""
 
-#: src/config/form.zig:148
+#: src/config/form.zig:149
 msgid "Horizontal Padding"
 msgstr ""
 
-#: src/config/form.zig:148
+#: src/config/form.zig:149
 msgid "Space between the text and the left and right edges."
 msgstr ""
 
-#: src/config/form.zig:149
+#: src/config/form.zig:150
 msgid "Vertical Padding"
 msgstr ""
 
-#: src/config/form.zig:149
+#: src/config/form.zig:150
 msgid "Space between the text and the top and bottom edges."
 msgstr ""
 
-#: src/config/form.zig:150
+#: src/config/form.zig:151
 msgid "Balance Padding"
 msgstr ""
 
-#: src/config/form.zig:150
+#: src/config/form.zig:151
 msgid "Spread leftover space evenly around the text."
 msgstr ""
 
-#: src/config/form.zig:150
+#: src/config/form.zig:151
 msgid "No Balancing"
 msgstr ""
 
-#: src/config/form.zig:150
+#: src/config/form.zig:151
 msgid "Balanced, Top Capped"
 msgstr ""
 
-#: src/config/form.zig:150
+#: src/config/form.zig:151
 msgid "Equal on All Sides"
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Title Bar Style"
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Native, transparent, tabs, or hidden."
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Native"
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Transparent"
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Tabs in Title Bar"
 msgstr ""
 
-#: src/config/form.zig:151
+#: src/config/form.zig:152
 msgid "Hidden"
 msgstr ""
 
-#: src/config/form.zig:154 windows/settings-shell/src/general.rs:74
+#: src/config/form.zig:155 windows/settings-shell/src/general.rs:81
 msgid "Font"
 msgstr ""
 
-#: src/config/form.zig:154
+#: src/config/form.zig:155
 msgid "The font family to use; empty uses the default."
 msgstr ""
 
-#: src/config/form.zig:155
+#: src/config/form.zig:156
 msgid "Font Size"
 msgstr ""
 
-#: src/config/form.zig:155
+#: src/config/form.zig:156
 msgid "In points; may be fractional."
 msgstr ""
 
-#: src/config/form.zig:156
+#: src/config/form.zig:157
 msgid "Line Height"
 msgstr ""
 
-#: src/config/form.zig:156
+#: src/config/form.zig:157
 msgid "Extra height per line, in points or percent (e.g. 20%)."
 msgstr ""
 
-#: src/config/form.zig:159
+#: src/config/form.zig:164
+msgid "Default Shell"
+msgstr ""
+
+#: src/config/form.zig:164
+msgid "The shell a new tab starts."
+msgstr ""
+
+#: src/config/form.zig:165
 msgid "Scrollback Lines"
 msgstr ""
 
-#: src/config/form.zig:159
+#: src/config/form.zig:165
 msgid "How many lines of history each terminal keeps."
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Copy on Select"
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Copy selected text to the clipboard automatically."
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Don't Copy"
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Selection Pasteboard Only"
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Clipboard Only"
 msgstr ""
 
-#: src/config/form.zig:160
+#: src/config/form.zig:166
 msgid "Both"
 msgstr ""
 
-#: src/config/form.zig:161
+#: src/config/form.zig:167
 msgid "Clipboard Reading"
 msgstr ""
 
-#: src/config/form.zig:161
+#: src/config/form.zig:167
 msgid "Whether programs may read the clipboard: ask, allow or deny."
 msgstr ""
 
-#: src/config/form.zig:161 src/config/form.zig:162
+#: src/config/form.zig:167 src/config/form.zig:168
 msgid "Ask"
 msgstr ""
 
-#: src/config/form.zig:162
+#: src/config/form.zig:168
 msgid "Clipboard Writing"
 msgstr ""
 
-#: src/config/form.zig:162
+#: src/config/form.zig:168
 msgid "Whether programs may set the clipboard: ask, allow or deny."
 msgstr ""
 
-#: src/config/form.zig:163
+#: src/config/form.zig:169
 msgid "Hide Pointer While Typing"
 msgstr ""
 
-#: src/config/form.zig:163
+#: src/config/form.zig:169
 msgid "Hide the mouse pointer while you type in a terminal."
 msgstr ""
 
-#: src/config/form.zig:164
+#: src/config/form.zig:170
 msgid "Confirm Before Closing"
 msgstr ""
 
-#: src/config/form.zig:164
+#: src/config/form.zig:170
 msgid "Ask before closing a terminal still running something."
 msgstr ""
 
-#: src/config/form.zig:164
+#: src/config/form.zig:170
 msgid "Don't Confirm"
 msgstr ""
 
-#: src/config/form.zig:164
+#: src/config/form.zig:170
 msgid "When Something Is Running"
 msgstr ""
 
-#: src/config/form.zig:164
+#: src/config/form.zig:170
 msgid "Always Confirm"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Shell Integration"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Lets the shell report its directory and prompt to Polter."
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Detect Automatically"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "No Integration"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Bash"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Elvish"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "fish"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Nushell"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "PowerShell"
 msgstr ""
 
-#: src/config/form.zig:165
+#: src/config/form.zig:171
 msgid "Zsh"
 msgstr ""
 
-#: src/config/form.zig:168
+#: src/config/form.zig:174
 msgid "Restore Windows"
 msgstr ""
 
-#: src/config/form.zig:168
+#: src/config/form.zig:174
 msgid "Reopen windows, tabs and splits where they were."
 msgstr ""
 
-#: src/config/form.zig:168
+#: src/config/form.zig:174
 msgid "System Default"
 msgstr ""
 
-#: src/config/form.zig:168
+#: src/config/form.zig:174
 msgid "Never"
 msgstr ""
 
-#: src/config/form.zig:168
+#: src/config/form.zig:174
 msgid "Always"
 msgstr ""
 
-#: src/config/form.zig:169
+#: src/config/form.zig:175
+msgid "Open the Control Room at Launch"
+msgstr ""
+
+#: src/config/form.zig:175
+msgid "Open the control room when Polter starts."
+msgstr ""
+
+#: src/config/form.zig:176
 msgid "New Windows Inherit Directory"
 msgstr ""
 
-#: src/config/form.zig:169
+#: src/config/form.zig:176
 msgid "New windows start in the focused window's directory."
 msgstr ""
 
-#: src/config/form.zig:170
+#: src/config/form.zig:177
 msgid "Quit After Last Window Closes"
 msgstr ""
 
-#: src/config/form.zig:170
+#: src/config/form.zig:177
 msgid "Quit Polter when its last window is closed."
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178
 msgid "Window Decorations"
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178
 msgid "Whether windows have a title bar and borders."
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178 windows/settings-shell/src/shell_profiles.rs:287
 msgid "Automatic"
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178
 msgid "Drawn by Polter"
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178
 msgid "Drawn by the System"
 msgstr ""
 
-#: src/config/form.zig:171
+#: src/config/form.zig:178
 msgid "No Decorations"
 msgstr ""
 
-#: src/config/form.zig:174
+#: src/config/form.zig:181
 msgid "Notice Interval"
 msgstr ""
 
-#: src/config/form.zig:174
+#: src/config/form.zig:181
 msgid "How often the supervisor is handed what it has not seen."
 msgstr ""
 
-#: src/config/form.zig:175
+#: src/config/form.zig:182
 msgid "Quiet After"
 msgstr ""
 
-#: src/config/form.zig:175
+#: src/config/form.zig:182
 msgid "How long a screen must stay unchanged to count as quiet."
 msgstr ""
 
-#: src/config/form.zig:176
+#: src/config/form.zig:183
 msgid "Repeat Quiet Report"
 msgstr ""
 
-#: src/config/form.zig:176
+#: src/config/form.zig:183
 msgid "How long before a still-quiet terminal is reported again."
 msgstr ""
 
-#: src/config/form.zig:177
+#: src/config/form.zig:184
 msgid "Nudge Workers After"
 msgstr ""
 
-#: src/config/form.zig:177
+#: src/config/form.zig:184
 msgid "How long a worker may sit still before it is told to report."
 msgstr ""
 
-#: src/config/form.zig:178
+#: src/config/form.zig:185
 msgid "Tool Silence Reminder"
 msgstr ""
 
-#: src/config/form.zig:178
+#: src/config/form.zig:185
 msgid "How long without a Polter tool call before it is mentioned."
 msgstr ""
 
-#: src/config/form.zig:179
+#: src/config/form.zig:186
 msgid "Idle Task Reminder"
 msgstr ""
 
-#: src/config/form.zig:179
+#: src/config/form.zig:186
 msgid "How long a task may go untouched before it is mentioned."
 msgstr ""
 
-#: src/config/form.zig:180
+#: src/config/form.zig:187
 msgid "Quiet Group Reminder"
 msgstr ""
 
-#: src/config/form.zig:180
+#: src/config/form.zig:187
 msgid "How long a group may be silent before it is mentioned."
 msgstr ""
 
-#: src/config/form.zig:181
+#: src/config/form.zig:188
 msgid "Hours I May Be Disturbed"
 msgstr ""
 
-#: src/config/form.zig:181
+#: src/config/form.zig:188
 msgid "When you may be asked, as HH:MM-HH:MM; empty is any time."
 msgstr ""
 
-#: src/config/form.zig:182
+#: src/config/form.zig:189
 msgid "Supervisor May Stand Down"
 msgstr ""
 
-#: src/config/form.zig:182
+#: src/config/form.zig:189
 msgid "Let a supervisor whose work is done take itself off duty."
 msgstr ""
 
-#: src/config/form.zig:183
+#: src/config/form.zig:190
 msgid "Supervisor May Answer Prompts"
 msgstr ""
 
-#: src/config/form.zig:183
+#: src/config/form.zig:190
 msgid "Let a supervisor answer workers' permission prompts."
 msgstr ""
 
-#: src/config/form.zig:184
+#: src/config/form.zig:191
 msgid "Frames Around Split Panes"
 msgstr ""
 
-#: src/config/form.zig:184
+#: src/config/form.zig:191
 msgid "Draw a frame round each pane of a split."
 msgstr ""
 
-#: src/config/form.zig:185
+#: src/config/form.zig:192
 msgid "Keep Chat Log"
 msgstr ""
 
-#: src/config/form.zig:185
+#: src/config/form.zig:192
 msgid "Write what the terminals say to each other to disk."
 msgstr ""
 
-#: src/config/form.zig:186
+#: src/config/form.zig:193
 msgid "Keep Terminal Transcripts"
 msgstr ""
 
-#: src/config/form.zig:186
+#: src/config/form.zig:193
 msgid "Keep a transcript of what ran in each terminal."
 msgstr ""
 
-#: src/config/form.zig:187 windows/host/src/language.rs:291
+#: src/config/form.zig:196
+msgid "Group Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:196
+msgid "Transcripts written while in a group, kept by size only."
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Project Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:197
+msgid "Days kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:198
+msgid "Project Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:198
+msgid "Megabytes kept of transcripts from a project's tabs."
+msgstr ""
+
+#: src/config/form.zig:199
+msgid "Other Transcripts, Days"
+msgstr ""
+
+#: src/config/form.zig:199
+msgid "Days kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:200
+msgid "Other Transcripts, Total MB"
+msgstr ""
+
+#: src/config/form.zig:200
+msgid "Megabytes kept of transcripts in no group or project."
+msgstr ""
+
+#: src/config/form.zig:201
+msgid "Logs, Days"
+msgstr ""
+
+#: src/config/form.zig:201
+msgid "Days kept of Polter's own logs and crash reports."
+msgstr ""
+
+#: src/config/form.zig:202
+msgid "Logs, Total MB"
+msgstr ""
+
+#: src/config/form.zig:202
+msgid "Megabytes kept of Polter's own logs."
+msgstr ""
+
+#: src/config/form.zig:203
+msgid "Screenshots, Days"
+msgstr ""
+
+#: src/config/form.zig:203
+msgid "Days kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:204
+msgid "Screenshots, Total MB"
+msgstr ""
+
+#: src/config/form.zig:204
+msgid "Megabytes kept of Polter's screenshots."
+msgstr ""
+
+#: src/config/form.zig:205 windows/host/src/language.rs:291
 msgid "Language"
 msgstr ""
 
-#: src/config/form.zig:187
+#: src/config/form.zig:205
 msgid "The interface language; empty follows the system."
 msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:208
 msgid "Paste Images as Files"
 msgstr "이미지를 파일로 붙여넣기"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:190
+#: src/config/form.zig:208
 msgid "Save a pasted image as a file and paste its path."
 msgstr "붙여넣은 이미지를 파일로 저장하고 그 경로를 붙여넣습니다."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:191
+#: src/config/form.zig:209
 msgid "Screenshot Folder"
 msgstr "스크린샷 폴더"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:191
+#: src/config/form.zig:209
 msgid "Where screenshots and pasted images are saved."
 msgstr "스크린샷과 붙여넣은 이미지가 저장되는 곳입니다."
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:192
+#: src/config/form.zig:210
 msgid "Mouse Trigger"
 msgstr "마우스 트리거"
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:192
+#: src/config/form.zig:210
 msgid "Hold these keys and click to take a screenshot."
 msgstr "이 키들을 누른 채 클릭하면 스크린샷을 찍습니다."
 
-#: src/config/form.zig:193 windows/settings-shell/src/plugins.rs:52
+#: src/config/form.zig:211 windows/settings-shell/src/plugins.rs:68
 msgid "Off"
 msgstr ""
 
 # Machine translation (2026-10-07), not reviewed by a speaker.
-#: src/config/form.zig:200
+#: src/config/form.zig:218
 #, c-format
 msgid "%s + Click"
 msgstr "%s + 클릭"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:201
+#: src/config/form.zig:219
 msgid "Let Agents Take Screenshots"
 msgstr "에이전트의 스크린샷 허용"
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: src/config/form.zig:201
+#: src/config/form.zig:219
 msgid "Agents may capture the screen with the screenshot tools."
 msgstr "에이전트가 스크린샷 도구로 화면을 캡처할 수 있습니다."
 
+#: src/poltergeist/Attention.zig:796
+msgid "Awaiting approval"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:797
+msgid "Awaiting input"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:798
+msgid "Failed"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:799
+msgid "Maybe stuck"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:800
+msgid "Done, not looked at"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:801
+msgid "Working"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:802
+msgid "Stopped, cause unknown"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:803
+msgid "Screen unreadable"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:804
+msgid "Agent left"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:805
+msgid "Unattended"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:806
+msgid "Set aside"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:807
+msgid "Off duty"
+msgstr ""
+
+#: src/poltergeist/Attention.zig:817
+msgid "Held"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1392
+msgid "The process exited"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1393
+msgid "The hooks it was set up with never came"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1395
+msgid "{1}: {2}"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1396
+msgid "Screen still for {1} min"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1397
+msgid "Screen still for {1} min, no tool call for {2} min"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1400
+msgid "Started by hand: no status"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1401
+msgid "Unknown CLI: no status"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1404
+msgid ""
+"This ends the {1} running in this terminal and starts it again through "
+"Polter, with its status hooks, going on with session {2} (last written {3} "
+"min ago)."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1405
+msgid ""
+"This ends the {1} running in this terminal and starts it again through "
+"Polter, with its status hooks, going on with session {2}. That session was "
+"last written {3} min ago, well before its last tool call: if it was cleared "
+"since, what comes back is the conversation from before that."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1406
+msgid ""
+"This ends the {1} running in this terminal and starts it again through "
+"Polter, with its status hooks. Its session was not found, so it starts a new "
+"one."
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1407
+msgid "Taking over…"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1408
+msgid "Not taken over: it is busy. Try again when it is idle"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1409
+msgid "Not taken over: somebody is typing in it"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1410
+msgid "Not taken over: it did not quit"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1411
+msgid "It quit, and the one started in its place did not come"
+msgstr ""
+
+#: src/poltergeist/ControlRoom.zig:1412
+msgid "Not taken over: there is no role or CLI to start it in"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:185
+msgid "Terminal {1} ({2})"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:186
+msgid "Terminal {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:187
+msgid "cause unknown"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:189
+msgid "{1}, {2}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:191
+msgid "{1} failed: {2}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:192
+msgid "Your last turn failed: {1}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:193
+msgid "Your own last turn failed: {1}."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:194
+msgid "{1} failures here:"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:196
+msgid ""
+"Read it with terminal_read first to see where it stopped: if it had not "
+"finished, have it carry on (terminal_send it to continue or retry); if it "
+"had finished, have it say one line that it is done (that line clears the "
+"failure), or close it once it is no longer needed. Say in the group when you "
+"have dealt with it."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:197
+msgid "For each terminal that failed: {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:198
+msgid ""
+"Decide whether your last turn finished: if not, carry on; if it did, say so "
+"in one line."
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:199
+msgid "For yourself: {1}"
+msgstr ""
+
+#: src/poltergeist/ControlFix.zig:201
+msgid "{1} {2}"
+msgstr ""
+
+#: src/poltergeist/ControlAct.zig:330
+msgid ""
+"The person asked from the control room: please report on this group's "
+"progress -- what is done, what is in progress and what is stuck -- in this "
+"group."
+msgstr ""
+
+#: src/poltergeist/ControlAct.zig:331
+msgid ""
+"The person asked from the control room: please close the workers in this "
+"group that are idle -- finished, or waiting with nothing to do -- and say in "
+"this group which ones you closed."
+msgstr ""
+
+#: src/poltergeist/ControlAct.zig:332
+msgid ""
+"The person asked from the control room: please tidy your workers -- move "
+"each into the stack to your right with terminal_stack (onto: your own id), "
+"so your tab is you and that one stack. Leave panes the user keeps for their "
+"own commands, shielded ones and ones that are not workers where they are, "
+"and say in this group what you moved, what you did not and why."
+msgstr ""
+
+#: src/poltergeist/report.zig:197
+msgid ""
+"Not part of this release: probably left over from an older one unpacked over "
+"it. It is loaded all the same; delete {1} to remove it."
+msgstr ""
+
+#: src/poltergeist/report.zig:198
+msgid ""
+"Switched off, so nothing is handed to it. Turn it on with the switch on its "
+"page."
+msgstr ""
+
+#: src/poltergeist/report.zig:199
+msgid ""
+"Its plugin.json subscribes to nothing, so it was not started. That is the "
+"plugin's own file to change."
+msgstr ""
+
+#: src/poltergeist/report.zig:200
+msgid ""
+"It subscribes to chat but names no groups, so it is running and will be "
+"handed nothing."
+msgstr ""
+
+#: src/poltergeist/report.zig:201
+msgid "Switched on, but nothing runs it until a terminal is open."
+msgstr ""
+
+#: src/poltergeist/report.zig:202
+msgid "Switched on, but it would not start. Polter's log says why."
+msgstr ""
+
+#: src/poltergeist/report.zig:203
+msgid ""
+"It failed to start {1} time(s) and will be tried again shortly. Polter's log "
+"has what it said."
+msgstr ""
+
+#: src/poltergeist/report.zig:204
+msgid ""
+"It failed to start {1} time(s) and is now tried every fifteen minutes. "
+"Polter's log says why."
+msgstr ""
+
+#: src/poltergeist/report.zig:205
+msgid "Stopped. It starts again when Polter does."
+msgstr ""
+
+#: src/poltergeist/report.zig:644
+msgid "an agent started here has no Polter tools"
+msgstr ""
+
+#: src/poltergeist/report.zig:645
+msgid "nothing will tell you when a terminal needs you"
+msgstr ""
+
+#: src/poltergeist/report.zig:646
+msgid "the extra copy of the chat is not being written"
+msgstr ""
+
+#: src/poltergeist/report.zig:649
+msgid "{1}, and {2}"
+msgstr ""
+
+#: src/poltergeist/report.zig:657
+msgid "it is not doing what it was installed to do"
+msgstr ""
+
+#: src/poltergeist/report.zig:666
+msgid "polter: the \"{1}\" plugin is not running"
+msgstr ""
+
+#: src/poltergeist/report.zig:669
+msgid ""
+"polter: the \"{1}\" plugin has failed {2} times and is now only retried "
+"every fifteen minutes"
+msgstr ""
+
+#: src/poltergeist/report.zig:673
+msgid ", so {1}"
+msgstr ""
+
+#: src/poltergeist/report.zig:675
+msgid ". It is being retried; what it complained about is in Polter's log."
+msgstr ""
+
+#: src/poltergeist/report.zig:676
+msgid ". Its settings are in $XDG_CONFIG_HOME/polter/plugins/{1}.json"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1042
+msgid "Today"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1049
+msgid "Group chat"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1051
+msgid "Task"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1058
+msgid "Member"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1060 windows/host/src/chat_native.rs:1453
+msgid "Members"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1241 windows/host/src/chat_native.rs:1376
+msgid "Show less"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1243 windows/host/src/chat_native.rs:1378
+msgid "Show more"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1687
+msgid "Locating…"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1689
+msgid "Could not locate that message."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1691
+msgid "Load older results"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1693
+msgid "Load more results"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1699
+msgid "Retry search"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1733
+msgid "Search messages…"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1758
+msgid "Newer results were released. Search again for the newest."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1760
+msgid "Search this group"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1779
+msgid "That message is not loaded here."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1784
+msgid "Searching…"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1789
+#: windows/control-room/src/chat_rows.rs:1081
+msgid "Some records could not be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1790
+#: windows/control-room/src/chat_rows.rs:1080
+msgid "Loading was cancelled."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1792
+msgid "No results."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1903
+msgid "Preview"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:1917 windows/host/src/project_picker.rs:1218
+#: windows/host/src/search.rs:949 windows/host/src/settings_win.rs:981
+#: windows/host/src/settings_win.rs:1408
+msgid "Search"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:2306
+msgid "Loading…"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:2311
+msgid "WebView2 Runtime is not installed."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:2314
+msgid "The WebView2 loader is missing."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:2317
+msgid "Could not show this file."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3025
+msgid "Handoff summary"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3041
+msgid "you"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3155 windows/host/src/chat_native.rs:3173
+msgid "Loading earlier messages…"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3158 windows/host/src/chat_native.rs:3184
+msgid "Earlier messages could not be read. Click to retry."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3163 windows/host/src/chat_native.rs:3176
+#: windows/host/src/chat_native.rs:3191
+msgid "Some earlier records could not be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3167 windows/host/src/chat_native.rs:3187
+#: windows/host/src/chat_native.rs:3195
+msgid "Scroll up for earlier messages."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3169 windows/host/src/chat_native.rs:3174
+#: windows/host/src/chat_native.rs:3197
+msgid "Beginning of the group"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3180
+msgid "Loading earlier messages was cancelled. Click to retry."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3199
+#: windows/control-room/src/chat_rows.rs:1079
+msgid "Loading"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3210
+msgid "Some later records could not be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3214
+msgid "Scroll down for later messages."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3225
+msgid "New messages"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:3227
+msgid "Back to latest"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4687
+msgid "The location of this file cannot be determined."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4689 windows/host/src/chat_native.rs:4709
+#: windows/host/src/chat_native.rs:4756 windows/host/src/chat_native.rs:5068
+#: windows/host/src/chat_native.rs:5099
+msgid "This file cannot be previewed."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4701
+msgid "The file is not in the group's working directory, or it is gone."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4703
+msgid "This file cannot be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4704
+msgid "That link is not a file."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4706
+msgid "This group has no working directory to find the file in."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4708
+msgid "Polter could not prepare the preview."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4820 windows/host/src/chat_native.rs:4833
+#: windows/host/src/chat_native.rs:4843 windows/host/src/chat_native.rs:4925
+#: windows/host/src/chat_native.rs:5147
+msgid "No plugin can show this file."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4831
+msgid "The plugin for this file is switched off."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4832
+msgid "No plugin claims this kind of file."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4910 windows/host/src/chat_native.rs:5141
+msgid "No room for another preview."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:4941 windows/host/src/chat_native.rs:5085
+#: windows/host/src/chat_native.rs:5144
+msgid "That preview is open in another slot."
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:131
+msgid "Toggle Terminal Inspector"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:132 windows/host/src/menu.rs:448
+msgid "Terminal Read-only"
+msgstr ""
+
+#. TRANSLATORS: macOS's words for the title overlay, three ASCII dots and
+#. all, so the two hosts share one catalogue entry. The strip's in-place
+#. rename (rename_tab) is a DIFFERENT action with a different label.
 #. TRANSLATORS: U+2026, not three ASCII dots. This opens the title
 #. overlay. "Rename Tab..." with three dots is a DIFFERENT action
 #. (rename_tab) that edits the tab strip in place. The two entries look
 #. almost identical; do not merge them.
-#: windows/host/src/ctxmenu.rs:138 windows/host/src/menu.rs:340
-msgid "Rename Tab…"
+#: windows/host/src/ctxmenu.rs:140 windows/host/src/menu.rs:445
+msgid "Change Tab Title..."
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:139 windows/host/src/menu.rs:341
-msgid "Rename Terminal…"
+#: windows/host/src/ctxmenu.rs:141 windows/host/src/menu.rs:446
+msgid "Change Terminal Title..."
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:177 windows/host/src/menu.rs:390
+#: windows/host/src/ctxmenu.rs:146 windows/host/src/terminal_id.rs:23
+msgid "Copy Terminal ID"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:154 windows/host/src/menu.rs:479
+#: windows/host/src/strip.rs:2321
+msgid "Supervise This Terminal"
+msgstr ""
+
+#: windows/host/src/ctxmenu.rs:190 windows/host/src/menu.rs:498
+#: windows/host/src/strip.rs:2326
 msgid "Let a Supervisor Answer Prompts Here"
 msgstr ""
 
-#: windows/host/src/ctxmenu.rs:186 windows/host/src/menu.rs:404
-#: windows/host/src/strip.rs:1601
+#: windows/host/src/ctxmenu.rs:202 windows/host/src/menu.rs:515
+#: windows/host/src/strip.rs:2327
 msgid "Let Workers Name Each Other Directly"
 msgstr ""
 
 # Machine translation (2026-10-06), not reviewed by a speaker.
-#: windows/host/src/general_ui.rs:264
+#: windows/host/src/general_ui.rs:306
 msgid "Not set"
 msgstr "설정 안 됨"
 
-#: windows/host/src/general_ui.rs:575 windows/host/src/general_ui.rs:842
-#: windows/host/src/general_ui.rs:844
+#: windows/host/src/general_ui.rs:470
+#, rust-format
+msgid "Saved to {}."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:700 windows/host/src/general_ui.rs:988
+#: windows/host/src/general_ui.rs:991
 msgid "Open config file…"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:577 windows/host/src/general_ui.rs:841
+#: windows/host/src/general_ui.rs:702 windows/host/src/general_ui.rs:987
 msgid "Edit in Config File…"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:585
-msgid "Filter by key"
-msgstr ""
-
-#: windows/host/src/general_ui.rs:871
-msgid "Less"
-msgstr ""
-
-#: windows/host/src/general_ui.rs:871
-msgid "More…"
-msgstr ""
-
-#: windows/host/src/general_ui.rs:891
-#, rust-format
-msgid "Set by {}:{}. Edit it there."
-msgstr ""
-
-#: windows/host/src/general_ui.rs:893
-msgid "Set on the command line, which has the last word."
-msgstr ""
-
-#: windows/host/src/general_ui.rs:894
-msgid "Edit this one in the config file."
-msgstr ""
-
-# Machine translation (2026-10-06), not reviewed by a speaker.
-#: windows/host/src/general_ui.rs:1213 windows/host/src/general_ui.rs:1379
-#: windows/control-room/src/scene.rs:52
-msgid "Choose…"
-msgstr "선택…"
-
-#: windows/host/src/general_ui.rs:1214 windows/host/src/general_ui.rs:1379
-#: windows/host/src/projects_ui.rs:1351
+#: windows/host/src/general_ui.rs:703 windows/host/src/general_ui.rs:990
+#: windows/host/src/general_ui.rs:1414 windows/host/src/general_ui.rs:1600
+#: windows/host/src/projects_ui.rs:1646 windows/control-room/src/rowmenu.rs:212
 msgid "Show in Explorer"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1306
+#: windows/host/src/general_ui.rs:714
+msgid "Filter by setting name"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1018
+msgid "Less"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1018
+msgid "More…"
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1082
+#, rust-format
+msgid "Set in {}, line {}."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1084
+msgid "Set on the command line; a change here would not take effect."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:1085
+msgid "Edited in the config file, not here."
+msgstr ""
+
+# Machine translation (2026-10-06), not reviewed by a speaker.
+#: windows/host/src/general_ui.rs:1413 windows/host/src/general_ui.rs:1600
+#: windows/control-room/src/scene.rs:89
+msgid "Choose…"
+msgstr "선택…"
+
+#: windows/host/src/general_ui.rs:1506
 msgid "Light"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1306
+#: windows/host/src/general_ui.rs:1506
 msgid "Dark"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1480
+#: windows/host/src/general_ui.rs:1701
 msgid "The screenshot folder could not be worked out."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1488 windows/host/src/projects_ui.rs:972
+#: windows/host/src/general_ui.rs:1709 windows/host/src/logs_ui.rs:697
+#: windows/host/src/projects_ui.rs:1148
 msgid "Explorer could not be started."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1586
-msgid "Saved to the config file."
+#: windows/host/src/general_ui.rs:1817
+msgid "Not a valid value for this setting."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1595
-msgid "That value is not valid for this key."
+#: windows/host/src/general_ui.rs:1818
+msgid "This setting is set somewhere the form does not write."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1596
-msgid "This key is set somewhere the form does not write."
-msgstr ""
-
-#: windows/host/src/general_ui.rs:1597
+#: windows/host/src/general_ui.rs:1819
 msgid "The config file kept changing while it was being written. Try again."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1598
+#: windows/host/src/general_ui.rs:1820
 #, rust-format
 msgid "Could not write the config file: {}"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1686
+#: windows/host/src/general_ui.rs:1914
 msgid "Restore Default"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1833
+#. TRANSLATORS: Settings > General, over the rows when this Polter was
+#. started on a config file of its own. The first {} is that file, the
+#. second the one the form would otherwise write.
+#: windows/host/src/general_ui.rs:2018
+#, rust-format
+msgid ""
+"This Polter reads {}, but the form would write {}. The settings are shown "
+"read-only."
+msgstr ""
+
+#: windows/host/src/general_ui.rs:2084
 #, rust-format
 msgid "The settings could not be read: {}"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1850
+#: windows/host/src/general_ui.rs:2101
 #, rust-format
 msgid ""
 "The form writes to:\n"
 "{}"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1859
+#: windows/host/src/general_ui.rs:2110
 msgid "The configuration loaded without errors."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1861
+#: windows/host/src/general_ui.rs:2112
 #, rust-format
 msgid "{} error(s). The lines they name were ignored; fix them and reload."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1876
+#: windows/host/src/general_ui.rs:2127
 #, rust-format
 msgid ""
 "Before this run's first write the config file was copied to:\n"
 "{}"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1892
+#: windows/host/src/general_ui.rs:2169 windows/host/src/general_ui.rs:2230
 msgid ""
 "A terminal that minds the agents running in it. \n"
 "Built on Ghostty."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1901
+#: windows/host/src/general_ui.rs:2233
 msgid "Version"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1902
+#: windows/host/src/general_ui.rs:2234
 msgid "Build"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1903
+#: windows/host/src/general_ui.rs:2235
 msgid "Commit"
 msgstr ""
 
-#: windows/host/src/general_ui.rs:1910
+#: windows/host/src/general_ui.rs:2242
 msgid "MIT licensed. A fork of Ghostty."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:2136
+#: windows/host/src/general_ui.rs:2577
 msgid "The shortcuts could not be read from the configuration."
 msgstr ""
 
-#: windows/host/src/general_ui.rs:2138
+#: windows/host/src/general_ui.rs:2579
 #, rust-format
-msgid ""
-"This page lists actions; {} in all. Some actions have no shortcut assigned."
+msgid "{} actions. Some have no shortcut yet."
 msgstr ""
 
-#: windows/host/src/i18n.rs:360 windows/host/src/plugins_ui.rs:1572
+#: windows/host/src/highlight.rs:780
+#, rust-format
+msgid "{} s"
+msgstr ""
+
+#: windows/host/src/highlight.rs:812
+#, rust-format
+msgid "Press any key or click to end · {} s left"
+msgstr ""
+
+#. TRANSLATORS: the badge at the top left of a read-only pane;
+#. short, it sits in a fixed 110-point box.
+#: windows/host/src/hud.rs:1071
+msgid "READ ONLY"
+msgstr ""
+
+#. TRANSLATORS: the badge on a pane where the terminal thinks a
+#. password is being typed; short, it sits in a fixed
+#. 110-point box.
+#: windows/host/src/hud.rs:1172
+msgid "PASSWORD"
+msgstr ""
+
+#: windows/host/src/i18n.rs:360 windows/host/src/plugins_ui.rs:1621
+#: windows/settings-shell/src/plugin_menu.rs:72
 msgid "Keeps the conversations"
 msgstr ""
 
@@ -2447,314 +3179,486 @@ msgid ""
 "and start Polter again."
 msgstr ""
 
-#: windows/host/src/main.rs:2591
+#: windows/host/src/logs_ui.rs:200
+msgid "Compact…"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:200
+msgid "Clear…"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:349 windows/host/src/logs_ui.rs:613
+msgid "No limit"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:485
+msgid ""
+"This is the first clearing since the upgrade, and nothing is deleted until "
+"you choose OK. You can change the settings below first; a change counts as "
+"agreeing."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:504
+msgid "Polter has no records to show yet."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:515 windows/control-room/src/scene.rs:66
+msgid "The new retention settings will clear %@ of old records"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:522
+msgid ""
+"%1$@ in all, in %2$@. Past the limits, cleared when Polter starts and every "
+"hour after."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:525
+msgid "Kept Going Round"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:525
+msgid "Past the days or the total, the oldest go first"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:526
+msgid "Kept for Good"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:526
+msgid "Deleted only when you choose Clear"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:540
+msgid "Fixed at %lld days"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:541
+msgid "Kept for good"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:551
+msgid "Not by days"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:553
+msgid "days"
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:617
+msgid "Write a whole number, or leave it empty for no limit."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:667
+msgid "Cleared %@."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:669
+msgid ""
+"A project file could not be read, so no shell history was cleared: it might "
+"have named some of it."
+msgstr ""
+
+#: windows/host/src/logs_ui.rs:671
+msgid "Nothing was cleared: Polter's core refused."
+msgstr ""
+
+#: windows/host/src/main.rs:2776
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:6390
+#: windows/host/src/main.rs:7116
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:6396
+#: windows/host/src/main.rs:7123
+msgid ""
+"Polter already started again with software rendering "
+"(GALLIUM_DRIVER=llvmpipe), and that failed as well."
+msgstr ""
+
+#: windows/host/src/main.rs:7128
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:6398
+#: windows/host/src/main.rs:7130
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
 
-#: windows/host/src/menu.rs:263 windows/host/src/strip.rs:2079
+#: windows/host/src/menu.rs:151
+msgid "New Terminal in This Pane"
+msgstr ""
+
+#: windows/host/src/menu.rs:152
+msgid "Next Stacked Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:153
+msgid "Previous Stacked Terminal"
+msgstr ""
+
+#: windows/host/src/menu.rs:154
+msgid "Move Terminal Out of Stack"
+msgstr ""
+
+#: windows/host/src/menu.rs:155
+msgid "Stack onto Next Pane"
+msgstr ""
+
+#: windows/host/src/menu.rs:156
+msgid "Stack onto Previous Pane"
+msgstr ""
+
+#: windows/host/src/menu.rs:285 windows/host/src/settings_win.rs:136
+msgid "Plugins"
+msgstr ""
+
+#: windows/host/src/menu.rs:335 windows/host/src/strip.rs:3153
 msgid "Reopen Closed Tab"
 msgstr ""
 
-#: windows/host/src/menu.rs:293 windows/host/src/projects_ui.rs:619
-#: windows/host/src/strip.rs:1604
+#: windows/host/src/menu.rs:370 windows/host/src/projects_ui.rs:777
+#: windows/host/src/strip.rs:2330
 msgid "Save as Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:294 windows/host/src/strip.rs:1605
+#: windows/host/src/menu.rs:371 windows/host/src/strip.rs:2331
 msgid "Load Project…"
 msgstr ""
 
-#: windows/host/src/menu.rs:295
+#: windows/host/src/menu.rs:376 windows/host/src/strip.rs:2842
+msgid "Add to Project…"
+msgstr ""
+
+#: windows/host/src/menu.rs:377 windows/projects/src/page_rules.rs:178
+msgid "Rename Project…"
+msgstr ""
+
+#: windows/host/src/menu.rs:378 windows/projects/src/page_rules.rs:171
+msgid "Take This Page Out of the Project"
+msgstr ""
+
+#: windows/host/src/menu.rs:379 windows/projects/src/page_rules.rs:177
+msgid "Close Project"
+msgstr ""
+
+#: windows/host/src/menu.rs:381
 msgid "Manage Projects…"
 msgstr ""
 
-#: windows/host/src/menu.rs:302
-msgid "Next"
+#: windows/host/src/menu.rs:400
+msgid "Find Next"
 msgstr ""
 
-#: windows/host/src/menu.rs:303
-msgid "Previous"
+#: windows/host/src/menu.rs:401
+msgid "Find Previous"
 msgstr ""
 
-#: windows/host/src/menu.rs:305
-msgid "Hide the Find Bar"
+#: windows/host/src/menu.rs:403
+msgid "Hide Find Bar"
 msgstr ""
 
-#: windows/host/src/menu.rs:320
+#: windows/host/src/menu.rs:409
+msgid "Use Selection for Find"
+msgstr ""
+
+#: windows/host/src/menu.rs:410
+msgid "Jump to Selection"
+msgstr ""
+
+#: windows/host/src/menu.rs:425
 msgid "Find"
 msgstr ""
 
-#: windows/host/src/menu.rs:325
-msgid "Zoom In"
-msgstr ""
-
-#: windows/host/src/menu.rs:326
-msgid "Zoom Out"
-msgstr ""
-
-#: windows/host/src/menu.rs:345
+#: windows/host/src/menu.rs:450
 msgid "Quick Terminal"
 msgstr ""
 
-#: windows/host/src/menu.rs:436
-msgid "Plugins…"
+#: windows/host/src/menu.rs:556
+msgid "Select Split Above"
 msgstr ""
 
-#: windows/host/src/menu.rs:439 windows/host/src/personas.rs:538
-msgid "Role Library..."
+#: windows/host/src/menu.rs:557
+msgid "Select Split Below"
 msgstr ""
 
-#: windows/host/src/menu.rs:443
-msgid "Up"
+#: windows/host/src/menu.rs:558
+msgid "Select Split Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:444
-msgid "Down"
+#: windows/host/src/menu.rs:559
+msgid "Select Split Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:445
-msgid "Left"
+#: windows/host/src/menu.rs:565
+msgid "Move Divider Up"
 msgstr ""
 
-#: windows/host/src/menu.rs:446
-msgid "Right"
+#: windows/host/src/menu.rs:566
+msgid "Move Divider Down"
 msgstr ""
 
-#: windows/host/src/menu.rs:452
-msgid "Grow Up"
+#: windows/host/src/menu.rs:567
+msgid "Move Divider Left"
 msgstr ""
 
-#: windows/host/src/menu.rs:453
-msgid "Grow Down"
+#: windows/host/src/menu.rs:568
+msgid "Move Divider Right"
 msgstr ""
 
-#: windows/host/src/menu.rs:454
-msgid "Grow Left"
-msgstr ""
-
-#: windows/host/src/menu.rs:455
-msgid "Grow Right"
-msgstr ""
-
-#: windows/host/src/menu.rs:461
+#: windows/host/src/menu.rs:574
 msgid "Minimize"
 msgstr ""
 
-#: windows/host/src/menu.rs:462
+#: windows/host/src/menu.rs:575
 msgid "Maximize"
 msgstr ""
 
-#: windows/host/src/menu.rs:464
-msgid "Full Screen"
+#: windows/host/src/menu.rs:577
+msgid "Toggle Full Screen"
 msgstr ""
 
-#: windows/host/src/menu.rs:466
-msgid "Split Zoom"
+#: windows/host/src/menu.rs:579
+msgid "Zoom Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:467
-msgid "Previous Split"
+#: windows/host/src/menu.rs:580
+msgid "Select Previous Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:468
-msgid "Next Split"
+#: windows/host/src/menu.rs:581
+msgid "Select Next Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:469
+#: windows/host/src/menu.rs:582
 msgid "Select Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:470
+#: windows/host/src/menu.rs:583 windows/settings-shell/src/general.rs:807
 msgid "Resize Split"
 msgstr ""
 
-#: windows/host/src/menu.rs:474
+#: windows/host/src/menu.rs:584
+msgid "Stack"
+msgstr ""
+
+#: windows/host/src/menu.rs:586
+msgid "Return To Default Size"
+msgstr ""
+
+#: windows/host/src/menu.rs:588
 msgid "Float on Top"
 msgstr ""
 
-#: windows/host/src/menu.rs:481
+#: windows/host/src/menu.rs:595
 msgid "Polter Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:494
+#: windows/host/src/menu.rs:608
 msgid "Check for Updates…"
 msgstr ""
 
-#: windows/host/src/menu.rs:500
+#: windows/host/src/menu.rs:614
 msgid "File"
 msgstr ""
 
-#: windows/host/src/menu.rs:501
+#: windows/host/src/menu.rs:615
 msgid "Edit"
 msgstr ""
 
-#: windows/host/src/menu.rs:502
+#: windows/host/src/menu.rs:616
 msgid "View"
 msgstr ""
 
-#: windows/host/src/menu.rs:518
+#: windows/host/src/menu.rs:632
 msgid "Agents"
 msgstr ""
 
-#: windows/host/src/menu.rs:519
+#: windows/host/src/menu.rs:633 windows/control-room/src/rowmenu.rs:223
 msgid "Project"
 msgstr ""
 
-#: windows/host/src/menu.rs:521
+#: windows/host/src/menu.rs:635
 msgid "Help"
 msgstr ""
 
-#: windows/host/src/menu.rs:526
+#: windows/host/src/menu.rs:640 windows/settings-shell/src/plugin_menu.rs:110
 msgid "Settings…"
 msgstr ""
 
-#: windows/host/src/menu.rs:538
+#: windows/host/src/menu.rs:652
 msgid "Language…"
 msgstr ""
 
-#: windows/host/src/menu.rs:552
+#: windows/host/src/menu.rs:666
 msgid "Keyboard Shortcuts…"
 msgstr ""
 
-#: windows/host/src/menu.rs:553
+#: windows/host/src/menu.rs:667
 msgid "About Polter"
 msgstr ""
 
-#: windows/host/src/personas.rs:166
+#: windows/host/src/menu.rs:675
+msgid "Quit Polter"
+msgstr ""
+
+#: windows/host/src/menu.rs:1600 windows/host/src/plugins_ui.rs:1359
+msgid "Restart Polter to apply"
+msgstr ""
+
+#: windows/host/src/menu.rs:1601
+msgid ""
+"Takes effect after Polter restarts. Its running copy still has the settings "
+"it started with."
+msgstr ""
+
+#: windows/host/src/palette.rs:307
+#, rust-format
+msgid "Focus: {}"
+msgstr ""
+
+#: windows/host/src/palette.rs:1408
+msgid "No matches"
+msgstr ""
+
+#: windows/host/src/personas.rs:174
 msgid ""
 "The roles file couldn't be read. Until it's fixed, what's in it isn't used."
 msgstr ""
 
-#: windows/host/src/personas.rs:168
+#: windows/host/src/personas.rs:176
 msgid "This menu is out of date. Close it and open it again"
 msgstr ""
 
-#: windows/host/src/personas.rs:339
+#: windows/host/src/personas.rs:347
 #, rust-format
 msgid "{} (modified)"
 msgstr ""
 
-#: windows/host/src/personas.rs:353
+#: windows/host/src/personas.rs:361
 msgid "Takes effect the next time the agent starts"
 msgstr ""
 
-#: windows/host/src/personas.rs:358
+#: windows/host/src/personas.rs:366
 msgid "May need the agent to restart before it takes effect"
 msgstr ""
 
-#: windows/host/src/personas.rs:454 windows/host/src/personas.rs:1238
+#: windows/host/src/personas.rs:475 windows/host/src/personas.rs:1371
 msgid "Agents are kept out of this terminal, so its role cannot be changed"
 msgstr ""
 
-#: windows/host/src/personas.rs:460
+#: windows/host/src/personas.rs:481
 msgid "No agent is connected here, so nothing is wearing this yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:478
+#: windows/host/src/personas.rs:499
 msgid "Nothing has reported which roles exist yet"
 msgstr ""
 
-#: windows/host/src/personas.rs:479 windows/host/src/personas.rs:1279
+#: windows/host/src/personas.rs:500 windows/host/src/personas.rs:1412
 msgid "No roles are defined"
 msgstr ""
 
-#: windows/host/src/personas.rs:485
+#: windows/host/src/personas.rs:506
 msgid "No Role"
 msgstr ""
 
-#: windows/host/src/personas.rs:602 windows/host/src/personas.rs:1017
-#: windows/control-room/src/scene.rs:50
+#: windows/host/src/personas.rs:577
+msgid "Role Library..."
+msgstr ""
+
+#: windows/host/src/personas.rs:642 windows/host/src/personas.rs:1087
+#: windows/control-room/src/scene.rs:87
 msgid "Role"
 msgstr ""
 
-#: windows/host/src/personas.rs:607
+#: windows/host/src/personas.rs:647
 #, rust-format
 msgid "Role: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:522
-msgid "Enabled"
+#: windows/host/src/plugins_ui.rs:518 windows/host/src/plugins_ui.rs:633
+msgid "Let this plugin run"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:523
+#: windows/host/src/plugins_ui.rs:519
 msgid "Test"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:524 windows/host/src/roles_ui.rs:2258
+#: windows/host/src/plugins_ui.rs:520
 msgid "Revert"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:526
+#: windows/host/src/plugins_ui.rs:522
+#: windows/settings-shell/src/plugin_menu.rs:103
 msgid "Show Log"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:527
+#: windows/host/src/plugins_ui.rs:523
+msgid "Refresh"
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:524
 msgid "Show Plugin Folder"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:708
+#: windows/host/src/plugins_ui.rs:734
 msgid "Polter's core did not say whether this plugin is running."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1081
+#: windows/host/src/plugins_ui.rs:1038
+msgid ""
+"A value may be a reference instead of the thing itself: env:NAME, file:/"
+"path, or cmd:… for a password manager. It is resolved at the moment the "
+"plugin is called, and never stored here."
+msgstr ""
+
+#: windows/host/src/plugins_ui.rs:1127
 #, rust-format
 msgid "Test: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1085
-msgid "The log is empty."
+#: windows/host/src/plugins_ui.rs:1131
+msgid "Nothing written yet."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1087
+#: windows/host/src/plugins_ui.rs:1133
 #, rust-format
 msgid "No log yet: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1133
+#: windows/host/src/plugins_ui.rs:1175
 msgid "Saved."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1140
+#: windows/host/src/plugins_ui.rs:1182
 #, rust-format
 msgid "Could not save: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1153
+#: windows/host/src/plugins_ui.rs:1195
 msgid "Save changes to this plugin?"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1162
+#: windows/host/src/plugins_ui.rs:1204
 msgid "Tested less than a minute ago. Try again in a minute."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1163
+#: windows/host/src/plugins_ui.rs:1205
 msgid "Polter's core does not know this plugin."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1164
+#: windows/host/src/plugins_ui.rs:1206
 msgid "Polter is not ready yet."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1165
+#: windows/host/src/plugins_ui.rs:1207
 #, rust-format
 msgid "Test failed: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1295
+#: windows/host/src/plugins_ui.rs:1337
 #, rust-format
 msgid ""
 "No plugins found. The bundled plugin directory exists and holds none this "
@@ -2762,7 +3666,7 @@ msgid ""
 "{}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1297
+#: windows/host/src/plugins_ui.rs:1339
 #, rust-format
 msgid ""
 "The bundled plugin directory is missing:\n"
@@ -2770,44 +3674,40 @@ msgid ""
 "This build's resources are not installed next to it."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1299
+#: windows/host/src/plugins_ui.rs:1341
 msgid ""
 "The bundled plugin directory could not be located: POLTER_RESOURCES_DIR is "
 "not set."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1317
-msgid "Restart Polter to apply"
-msgstr ""
-
-#: windows/host/src/plugins_ui.rs:1338
+#: windows/host/src/plugins_ui.rs:1380 windows/host/src/roles_ui.rs:941
 msgid "Status"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1341
+#: windows/host/src/plugins_ui.rs:1383
 #, rust-format
-msgid "Still empty and required: {}"
+msgid "Fill in first: {}"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1361
+#: windows/host/src/plugins_ui.rs:1403
 msgid "Settings"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1362
+#: windows/host/src/plugins_ui.rs:1404
 msgid "Page"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1372
-msgid "This plugin has no settings."
+#: windows/host/src/plugins_ui.rs:1414
+msgid "This plugin has nothing to configure."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1380
+#: windows/host/src/plugins_ui.rs:1422
 msgid ""
 "This plugin brings its own page, and it cannot be shown: WebView2Loader.dll "
 "is not next to polter-host.exe, so this installation is incomplete."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1383
+#: windows/host/src/plugins_ui.rs:1425
 #, rust-format
 msgid ""
 "This plugin brings its own page, and it cannot be shown: the Microsoft Edge "
@@ -2815,294 +3715,322 @@ msgid ""
 "reopen this window."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1387
+#: windows/host/src/plugins_ui.rs:1429
 #, rust-format
 msgid ""
 "This plugin brings its own page, and it could not be opened (error 0x{})."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1396
+#: windows/host/src/plugins_ui.rs:1438
 msgid "Log"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1573
+#: windows/host/src/plugins_ui.rs:1622
+#: windows/settings-shell/src/plugin_menu.rs:73
 msgid "Notifies you"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1574
+#: windows/host/src/plugins_ui.rs:1623
+#: windows/settings-shell/src/plugin_menu.rs:74
 msgid "Sets your agent up to reach Polter"
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1581
+#: windows/host/src/plugins_ui.rs:1630
 msgid ""
-"Subscribes to nothing, so Polter has nothing to hand it and will not start "
-"it."
+"This plugin subscribes to nothing, so Polter has nothing to hand it and will "
+"not start it."
 msgstr ""
 
-#: windows/host/src/plugins_ui.rs:1596
+#: windows/host/src/plugins_ui.rs:1645
 #, rust-format
 msgid "What it is handed: {}"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:95 windows/host/src/project_picker.rs:542
+#: windows/host/src/project_picker.rs:101
+#: windows/host/src/project_picker.rs:734
 msgid "Load Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:96 windows/host/src/project_picker.rs:596
+#: windows/host/src/project_picker.rs:102
+#: windows/host/src/project_picker.rs:331
+#: windows/host/src/project_picker.rs:425
+#: windows/host/src/project_picker.rs:810
+#: windows/host/src/project_picker.rs:816
 msgid "Save as Project"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:258
-#, rust-format
-msgid "Saves this tab: {} pane(s)"
-msgstr ""
-
-#: windows/host/src/project_picker.rs:542 windows/host/src/projects_ui.rs:686
+#: windows/host/src/project_picker.rs:734 windows/host/src/projects_ui.rs:848
 msgid "The project could not be opened."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:596 windows/host/src/projects_ui.rs:913
-#: windows/host/src/projects_ui.rs:926
+#: windows/host/src/project_picker.rs:810
+#: windows/host/src/project_picker.rs:816 windows/host/src/projects_ui.rs:1103
+#: windows/host/src/projects_ui.rs:1116
 msgid "The project could not be saved."
 msgstr ""
 
-#: windows/host/src/project_picker.rs:906 windows/host/src/settings_win.rs:934
-#: windows/host/src/settings_win.rs:1351
-msgid "Search"
-msgstr ""
-
-#: windows/host/src/project_picker.rs:907
+#: windows/host/src/project_picker.rs:1219
 msgid "New Project Name"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1184
+#: windows/host/src/project_picker.rs:1351 windows/host/src/roles_ui.rs:932
+#: windows/host/src/roles_ui.rs:963
+msgid "Name"
+msgstr ""
+
+#: windows/host/src/project_picker.rs:1363 windows/host/src/projects_ui.rs:1407
 msgid "No Saved Projects"
 msgstr ""
 
-#: windows/host/src/project_picker.rs:987 windows/host/src/projects_ui.rs:1186
+#: windows/host/src/project_picker.rs:1363 windows/host/src/projects_ui.rs:1409
 msgid "No matching projects"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:557 windows/host/src/roles_ui.rs:732
-#: windows/settings-shell/src/general.rs:77
-#: windows/control-room/src/rules.rs:168
+#: windows/host/src/project_ui.rs:395 windows/host/src/projects_ui.rs:601
+#: windows/host/src/projects_ui.rs:662 windows/host/src/projects_ui.rs:715
+#: windows/host/src/roles_ui.rs:1004 windows/settings-shell/src/general.rs:84
+#: windows/settings-shell/src/official.rs:162
+#: windows/control-room/src/rules.rs:265
 msgid "Polter"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:620
+#: windows/host/src/project_ui.rs:437
+msgid "Close Project?"
+msgstr ""
+
+#: windows/host/src/project_ui.rs:438
+msgid ""
+"A terminal of this project still has a running process. If you close the "
+"project the process will be killed."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:778
 msgid "Close Without Saving"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:627
+#: windows/host/src/projects_ui.rs:785
 msgid "Save as a Project Before Closing?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:628
+#: windows/host/src/projects_ui.rs:786
 msgid ""
 "The terminal still has a running process. Closing it without saving as a "
 "project will kill it."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:644
+#: windows/host/src/projects_ui.rs:802
 #, rust-format
 msgid ""
 "\"{}\" already has {} pane(s), saved {}. The replaced version is kept as the "
 "previous version."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:648
+#: windows/host/src/projects_ui.rs:806
 msgid "Overwrite Project?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:648 windows/host/src/projects_ui.rs:903
+#: windows/host/src/projects_ui.rs:806 windows/host/src/projects_ui.rs:1092
 msgid "Overwrite"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:675 windows/host/src/projects_ui.rs:896
-#: windows/host/src/projects_ui.rs:935
+#: windows/host/src/projects_ui.rs:837 windows/host/src/projects_ui.rs:1085
+#: windows/host/src/projects_ui.rs:1125
 msgid "There is no terminal window to open the project in."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:683
+#: windows/host/src/projects_ui.rs:845
 #, rust-format
 msgid "Opened “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:702 windows/host/src/projects_ui.rs:726
+#: windows/host/src/projects_ui.rs:864 windows/host/src/projects_ui.rs:888
+#: windows/host/src/projects_ui.rs:907
 msgid "The project could not be renamed."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:709
+#: windows/host/src/projects_ui.rs:871
 msgid "A project needs a name."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:711
+#: windows/host/src/projects_ui.rs:873
 #, rust-format
 msgid "There is already a project called “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:722
+#: windows/host/src/projects_ui.rs:884
+msgid "Its group is being renamed; the project follows."
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:903
 #, rust-format
 msgid "Renamed to “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:800
+#: windows/host/src/projects_ui.rs:981
 #, rust-format
 msgid "{} copy"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:810
+#: windows/host/src/projects_ui.rs:991
 #, rust-format
 msgid "Copied as “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:812
+#: windows/host/src/projects_ui.rs:993
 msgid "The project could not be copied."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:819
+#: windows/host/src/projects_ui.rs:1000
+msgid "Delete Project?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1001
 #, rust-format
-msgid "Delete “{}”?"
+msgid ""
+"“{}” moves to the Recycle Bin. You can undo this until you close this window."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:820
-msgid "You can undo this until the settings window closes."
-msgstr ""
-
-#: windows/host/src/projects_ui.rs:821 windows/host/src/roles_ui.rs:3120
+#: windows/host/src/projects_ui.rs:1002 windows/host/src/roles_ui.rs:3657
 msgid "Delete"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:846
+#: windows/host/src/projects_ui.rs:1031
 msgid "The project could not be deleted."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:858
+#: windows/host/src/projects_ui.rs:1043
 #, rust-format
 msgid "“{}” is back."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:867
+#: windows/host/src/projects_ui.rs:1052
 msgid "The project could not be put back."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:875
+#: windows/host/src/projects_ui.rs:1060
+msgid "Restore Previous Version?"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1061
 #, rust-format
-msgid "Restore the previous version of “{}”?"
+msgid ""
+"“{}” goes back to its layout before the last change. The current version is "
+"kept, so doing this again undoes it."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:876
-msgid "The current version becomes the previous one, so you can switch back."
-msgstr ""
-
-#: windows/host/src/projects_ui.rs:877 windows/host/src/projects_ui.rs:1348
+#: windows/host/src/projects_ui.rs:1062 windows/host/src/projects_ui.rs:1643
+#: windows/host/src/roles_ui.rs:3525
 msgid "Restore"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:887
+#: windows/host/src/projects_ui.rs:1076
 msgid "Restored the previous version."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:889
+#: windows/host/src/projects_ui.rs:1078
 msgid "The previous version could not be restored."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:900
+#: windows/host/src/projects_ui.rs:1089
 #, rust-format
 msgid "Overwrite “{}” with the current tab?"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:901
+#: windows/host/src/projects_ui.rs:1090
 #, rust-format
 msgid ""
 "“{}” replaces what the project holds. The version it replaces is kept and "
 "can be restored."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:924
+#: windows/host/src/projects_ui.rs:1114
 #, rust-format
 msgid "Saved the current tab as “{}”."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1106
+#: windows/host/src/projects_ui.rs:1329
 msgid "1 pane"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1108
+#: windows/host/src/projects_ui.rs:1331
 #, rust-format
 msgid "{} panes"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1157
+#: windows/host/src/projects_ui.rs:1380
 #, rust-format
 msgid "Deleted “{}”"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1193
+#: windows/host/src/projects_ui.rs:1416
 msgid "Select a project, or save the current tab as one with +."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1238
-msgid "Last saved"
+#: windows/host/src/projects_ui.rs:1465
+msgid "Saved"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1239
+#: windows/host/src/projects_ui.rs:1466
 msgid "Panes"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1240
+#: windows/host/src/projects_ui.rs:1467
 msgid "Directories"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1240
+#: windows/host/src/projects_ui.rs:1467
 msgid "None recorded"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1242 windows/host/src/settings_win.rs:136
+#: windows/host/src/projects_ui.rs:1469 windows/host/src/settings_win.rs:134
 msgid "Roles"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1242
+#: windows/host/src/projects_ui.rs:1469
 msgid "Not recorded in project files"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1243
+#: windows/host/src/projects_ui.rs:1470
 msgid "Scrollback"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1245
+#: windows/host/src/projects_ui.rs:1474 windows/host/src/projects_ui.rs:1476
 msgid "Autosave"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1245
+#: windows/host/src/projects_ui.rs:1474
+msgid "Saved automatically as it changes"
+msgstr ""
+
+#: windows/host/src/projects_ui.rs:1476
 msgid "Not bound to an open window"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1252
+#: windows/host/src/projects_ui.rs:1485
 msgid "Version History"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1256
-msgid "Current version"
+#: windows/host/src/projects_ui.rs:1489
+msgid "Current"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1256
+#: windows/host/src/projects_ui.rs:1489
 msgid "Previous version"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1266
+#: windows/host/src/projects_ui.rs:1499
 msgid "No earlier version is kept yet."
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1347
+#: windows/host/src/projects_ui.rs:1642
 msgid "Rename…"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1352
-msgid "Overwrite with Current Tab"
+#: windows/host/src/projects_ui.rs:1647
+msgid "Overwrite with Current Tab…"
 msgstr ""
 
-#: windows/host/src/projects_ui.rs:1353
+#: windows/host/src/projects_ui.rs:1650 windows/control-room/src/scene.rs:93
 msgid "Open"
 msgstr ""
 
@@ -3119,792 +4047,2662 @@ msgstr ""
 msgid "Rename"
 msgstr ""
 
-#: windows/host/src/roles.rs:34 windows/host/src/roles.rs:1163
-#: windows/control-room/src/scene.rs:57
-msgid "Polter Supervisor"
-msgstr ""
-
-#: windows/host/src/roles.rs:355
+#: windows/host/src/roles.rs:786
+#, rust-format
 msgid ""
-"Makes the terminal it starts in this window's supervisor: splits the work, "
-"hands it out and checks it."
+"The {} plugin is off: {} won't be offered when this role starts. Its "
+"settings stay in the role."
 msgstr ""
 
-#: windows/host/src/roles.rs:621
+#: windows/host/src/roles.rs:789
+#, rust-format
+msgid ""
+"{} here is the other major version: turn on the plugin for the version that "
+"is installed. The settings stay in the role."
+msgstr ""
+
+#: windows/host/src/roles.rs:791
+#, rust-format
+msgid ""
+"{} can't be started on this machine, so it won't be offered when this role "
+"starts. Its settings stay in the role."
+msgstr ""
+
+#: windows/host/src/roles.rs:794
+msgid "No plugin manages this CLI any more"
+msgstr ""
+
+#: windows/host/src/roles.rs:887
 msgid "Yours"
 msgstr ""
 
-#: windows/host/src/roles.rs:622
+#: windows/host/src/roles.rs:888
 msgid "This Project"
 msgstr ""
 
-#: windows/host/src/roles.rs:623
+#: windows/host/src/roles.rs:889
 msgid "This Project, Only on This Machine"
 msgstr ""
 
-#: windows/host/src/roles.rs:684
+#: windows/host/src/roles.rs:950
 msgid ""
 "This role can't be saved: it needs a name, and a key of lowercase letters, "
 "digits and dashes."
 msgstr ""
 
-#: windows/host/src/roles.rs:685
+#: windows/host/src/roles.rs:951
 msgid ""
 "The role library file has an error in it, so saving would overwrite it. Fix "
 "the file first."
 msgstr ""
 
-#: windows/host/src/roles.rs:686 windows/control-room/src/act.rs:167
+#: windows/host/src/roles.rs:952 windows/control-room/src/act.rs:401
 msgid "That role no longer exists."
 msgstr ""
 
-#: windows/host/src/roles.rs:687
+#: windows/host/src/roles.rs:953
 msgid "The role was written but didn't read back. This is a bug in Polter."
 msgstr ""
 
-#: windows/host/src/roles.rs:688
+#: windows/host/src/roles.rs:954
 msgid "The role library file couldn't be written."
 msgstr ""
 
-#: windows/host/src/roles.rs:689
+#: windows/host/src/roles.rs:955
 msgid "This role isn't set up for that agent CLI."
 msgstr ""
 
-#: windows/host/src/roles.rs:690 windows/control-room/src/act.rs:169
+#: windows/host/src/roles.rs:956 windows/control-room/src/act.rs:403
 msgid ""
 "This role isn't set up for any agent CLI yet. Pick one in the role library."
 msgstr ""
 
-#: windows/host/src/roles.rs:691
+#: windows/host/src/roles.rs:957
 msgid "This role is set up for more than one agent CLI. Choose one."
 msgstr ""
 
-#: windows/host/src/roles.rs:692
+#: windows/host/src/roles.rs:958
 msgid ""
 "A tab was opened but didn't appear in time, so nothing was started in it."
 msgstr ""
 
-#: windows/host/src/roles.rs:693
+#: windows/host/src/roles.rs:959
 msgid "Polter isn't ready yet."
 msgstr ""
 
-#: windows/host/src/roles.rs:698 windows/host/src/roles_ui.rs:3493
+#: windows/host/src/roles.rs:963
 msgid ""
-"This role comes with Polter and can't be changed or deleted. Duplicate it to "
-"make one of your own."
+"An official role's name, description and what it grants can't be changed. "
+"Duplicate it to make one of your own."
 msgstr ""
 
-#: windows/host/src/roles.rs:699
+#: windows/host/src/roles.rs:965
+msgid ""
+"The file that holds your changes to official roles can't be read, so nothing "
+"was saved into it. Restore Factory Settings sets it aside."
+msgstr ""
+
+#: windows/host/src/roles.rs:966
+msgid ""
+"This doesn't read as the skill: it needs its opening lines, with its own "
+"name in them."
+msgstr ""
+
+#: windows/host/src/roles.rs:967
+msgid "This skill couldn't be saved."
+msgstr ""
+
+#: windows/host/src/roles.rs:971
 msgid ""
 "Only you can make a role's terminal a supervisor, let it answer permission "
 "prompts, or keep agents out of it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:162
+#: windows/host/src/roles_ui.rs:191
 msgid "New Role"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:184
+#: windows/host/src/roles_ui.rs:213
 #, rust-format
 msgid "{} Copy"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:240
+#: windows/host/src/roles_ui.rs:271
 msgid "Another role already uses this key."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:363 windows/host/src/roles_ui.rs:4564
-msgid "Unsaved changes"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:366 windows/host/src/roles_ui.rs:4561
+#: windows/host/src/roles_ui.rs:430 windows/host/src/roles_ui.rs:5305
+#: windows/host/src/roles_ui.rs:5309
 msgid "Open a terminal window first; the new tab goes beside it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:391
+#: windows/host/src/roles_ui.rs:433 windows/host/src/roles_ui.rs:5310
+#: windows/host/src/roles_ui.rs:5312
+msgid "Save the role before launching it."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:436 windows/host/src/roles_ui.rs:5296
+msgid "Pick an agent CLI under Basics to launch this role."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:441
+msgid "Unsaved changes"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:461
 msgid "Basics"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:393
+#: windows/host/src/roles_ui.rs:463
 #, rust-format
 msgid "Skills {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:394 windows/host/src/roles_ui.rs:875
+#: windows/host/src/roles_ui.rs:464 windows/host/src/roles_ui.rs:1225
 msgid "Skills"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:397
+#: windows/host/src/roles_ui.rs:467
 #, rust-format
 msgid "MCP {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:398
+#: windows/host/src/roles_ui.rs:468
 msgid "MCP"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:425
+#: windows/host/src/roles_ui.rs:506
 msgid "No agent CLI"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:456
+#: windows/host/src/roles_ui.rs:531
+msgid "Official Skills"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:562
 msgid "Reading the role library…"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:459
+#: windows/host/src/roles_ui.rs:565
 msgid "No roles yet"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:460
+#: windows/host/src/roles_ui.rs:566
 msgid ""
 "A role is a saved way to start an agent CLI: which skills and MCP servers it "
 "keeps, and what it's told."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:682
+#: windows/host/src/roles_ui.rs:816
 msgid "Select a role, or make a new one."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:697
-msgid "Name"
+#: windows/host/src/roles_ui.rs:857
+msgid ""
+"Your changes to official roles couldn't be read, so they are not in use."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:699 windows/host/src/roles_ui.rs:709
+#: windows/host/src/roles_ui.rs:860
+#, rust-format
+msgid ""
+"Your role \"{}\" has the key {}, which is now an official role's. Yours is "
+"kept in the file but isn't in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:863
+msgid "Keep It Under a New Key"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:871
+msgid "The official version has changed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:873
+#, rust-format
+msgid "The official version has changed: {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:879
+msgid "Keep Mine"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:880
+msgid ""
+"The official version of what you changed here has changed since. Yours is "
+"still the one in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:885
+msgid "Your changes weren't read, so the factory settings are in use."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:942
+msgid "Skill Text"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:950
+msgid ""
+"Takes effect as soon as it's saved. When an agent that is already running "
+"reads the new text depends on the tool it uses."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:965 windows/host/src/roles_ui.rs:975
 msgid "Key"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:702
+#: windows/host/src/roles_ui.rs:968
 msgid "Lowercase letters, digits and dashes. It can't be changed after saving."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:704
+#: windows/host/src/roles_ui.rs:970
 msgid "Only lowercase letters, digits and dashes, at most 32."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:712
-msgid "Description"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:713
+#: windows/host/src/roles_ui.rs:982
 msgid "What this role is for, for whoever picks it"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:716
+#: windows/host/src/roles_ui.rs:986
+msgid "Description"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:988 windows/settings-shell/src/official.rs:161
 msgid "Instructions"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:727
+#: windows/host/src/roles_ui.rs:999
 msgid ""
 "Added to the agent's system prompt when it starts. Leave it empty to add "
 "nothing. Drag the bottom edge to make the box taller."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:733
+#: windows/host/src/roles_ui.rs:1005
 msgid "Make this terminal a supervisor"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:734
+#: windows/host/src/roles_ui.rs:1006
 msgid "Let the supervisor answer this terminal's permission prompts"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:735
+#: windows/host/src/roles_ui.rs:1007
 msgid "Shield it: no tool can reach it, a supervisor's included"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:737
-msgid ""
-"These three give the terminal something, so only you can set them, here. A "
-"supervisor that edits roles can't change them."
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:740
+#: windows/host/src/roles_ui.rs:1009
 msgid "Hand it to the supervisor to watch"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:744
+#: windows/host/src/roles_ui.rs:1013
 msgid ""
 "The supervisor that started it, or the only one there is. With several and "
 "you starting it, nobody."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:745
+#: windows/host/src/roles_ui.rs:1014
 msgid "Report it as still after"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:753
+#: windows/host/src/roles_ui.rs:1022
 msgid "min"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:759
+#: windows/host/src/roles_ui.rs:1028
 msgid "Open in"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1032
 msgid "Here when at a prompt, else a new tab"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:763
+#: windows/host/src/roles_ui.rs:1032
 msgid "Always a new tab"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:773
+#: windows/host/src/roles_ui.rs:1042
 msgid ""
 "Applied once, when the role starts an agent CLI. Putting the role on a "
 "terminal that's already running changes its tools, not these."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:777
+#: windows/host/src/roles_ui.rs:1046 windows/settings-shell/src/official.rs:163
 msgid "Agent CLIs"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:779 windows/host/src/roles_ui.rs:861
+#: windows/host/src/roles_ui.rs:1048 windows/host/src/roles_ui.rs:1207
 msgid "Reading what's installed…"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:781
+#: windows/host/src/roles_ui.rs:1050
 msgid "No plugin that manages an agent CLI is installed and switched on."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:786
+#: windows/host/src/roles_ui.rs:1055
 #, rust-format
 msgid "{} isn't on this machine's PATH"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:789 windows/host/src/roles_ui.rs:868
+#: windows/host/src/roles_ui.rs:1066
 msgid "Its plugin couldn't list what's installed"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:799 windows/host/src/roles_ui.rs:861
-msgid "No plugin manages this CLI any more"
+#: windows/host/src/roles_ui.rs:1077
+msgid "Open Plugin Settings"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:811
+#: windows/host/src/roles_ui.rs:1084
+msgid ""
+"With no CLI named: a worker its supervisor starts uses the supervisor's own; "
+"when you start it from a menu or the control room, you choose."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1095
 #, rust-format
 msgid "Starting {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:813
+#: windows/host/src/roles_ui.rs:1097
+msgid "Can't be used at launch; the settings here are still saved"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1101
 msgid "Model"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:814
+#: windows/host/src/roles_ui.rs:1102 windows/host/src/roles_ui.rs:1154
 msgid "The CLI's default"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:818
+#: windows/host/src/roles_ui.rs:1108
 msgid "Extra Arguments"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:822
+#: windows/host/src/roles_ui.rs:1112
 msgid "Added to the command line as typed. Quote anything with a space in it."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:851
+#: windows/host/src/roles_ui.rs:1136
+msgid "Permission mode"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1136
+msgid "Approval"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1136
+msgid "Sandbox"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1164
+#, rust-format
+msgid "{} isn't a value this version takes; it is left out at launch."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1193
 msgid ""
 "Pick an agent CLI under Basics first: skills and MCP servers belong to a CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:852
+#: windows/host/src/roles_ui.rs:1194
 msgid "Go to Basics"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:874
+#: windows/host/src/roles_ui.rs:1199
+msgid ""
+"Both CLIs share these switches. One marked “Only …” is installed in that CLI "
+"alone, and its switch acts on that CLI alone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1201
+msgid ""
+"The role's CLIs share these switches. One marked “Only …” is installed in "
+"that CLI alone, and its switch acts on that CLI alone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1217
+#, rust-format
+msgid "{}'s plugin couldn't list what's installed"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1224
 msgid "Filter skills"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:876
+#: windows/host/src/roles_ui.rs:1226
 msgid "Keep skills installed later"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:877
+#: windows/host/src/roles_ui.rs:1227
 msgid "No skills are installed for this CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:878
+#: windows/host/src/roles_ui.rs:1228
 msgid ""
 "This list is what the CLI has on this machine. A project's own skills aren't "
 "in it; at launch they follow the switch above."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:881
+#: windows/host/src/roles_ui.rs:1231
 msgid "Filter MCP servers"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:882
+#: windows/host/src/roles_ui.rs:1232
 msgid "MCP Servers"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:883
+#: windows/host/src/roles_ui.rs:1233
 msgid "Keep MCP servers added later"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:884
+#: windows/host/src/roles_ui.rs:1234
 msgid "No MCP servers are configured for this CLI."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:885
+#: windows/host/src/roles_ui.rs:1235
 msgid ""
 "This list is what the CLI has on this machine. A project's own MCP servers "
 "aren't in it; at launch they follow the switch above."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:911
+#: windows/host/src/roles_ui.rs:1259
 #, rust-format
 msgid "{} of {} kept"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:913
+#: windows/host/src/roles_ui.rs:1261
 msgid "Keep All"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:914
+#: windows/host/src/roles_ui.rs:1262
 msgid "Turn All Off"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:921
+#: windows/host/src/roles_ui.rs:1269
 msgid ""
 "What happens to anything that isn't listed here yet, such as something "
 "installed tomorrow or a project's own."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:935
+#: windows/host/src/roles_ui.rs:1283
 msgid "Nothing matches the filter."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:950
+#: windows/host/src/roles_ui.rs:1298
 msgid "Keep or turn off everything in this group"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:978
+#: windows/host/src/roles_ui.rs:1318
+#, rust-format
+msgid "Only {}"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:1331
 msgid "No description"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1347
 msgid "Show Less"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:994
+#: windows/host/src/roles_ui.rs:1347
 msgid "Show More"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:1016
+#: windows/host/src/roles_ui.rs:1369
 #, rust-format
 msgid "Also in this role but not installed here: {}"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2257
-msgid "Duplicate"
+#: windows/host/src/roles_ui.rs:1387
+#, rust-format
+msgid ""
+"The {} plugin is off, so what it has installed can't be read; the role's "
+"switches for {} stay as they are."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2258 windows/host/src/roles_ui.rs:2357
+#: windows/host/src/roles_ui.rs:1390
+#, rust-format
+msgid ""
+"What {} has installed can't be read here; the role's switches for {} stay as "
+"they are."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2669 windows/host/src/roles_ui.rs:2872
+msgid "Restore Factory Settings…"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2670 windows/host/src/roles_ui.rs:2771
+#: windows/host/src/roles_ui.rs:2872
 msgid "Launch"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2452
+#: windows/host/src/roles_ui.rs:2670 windows/host/src/roles_ui.rs:2872
+msgid "Discard Changes"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:2881
 msgid ""
 "The role library file has an error in it. Roles can't be changed here until "
 "it's fixed."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2887 windows/host/src/settings_win.rs:808
-msgid "Polter Settings"
-msgstr ""
-
-#: windows/host/src/roles_ui.rs:2949 windows/host/src/roles_ui.rs:2966
+#: windows/host/src/roles_ui.rs:3315 windows/host/src/roles_ui.rs:3332
 msgid "Save changes to this role?"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2950 windows/host/src/roles_ui.rs:2967
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3316 windows/host/src/roles_ui.rs:3333
+#: windows/host/src/roles_ui.rs:3348
 msgid "Your changes will be lost if you don't save them."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:2952 windows/host/src/roles_ui.rs:2969
-#: windows/host/src/roles_ui.rs:2982
+#: windows/host/src/roles_ui.rs:3318 windows/host/src/roles_ui.rs:3335
+#: windows/host/src/roles_ui.rs:3348
 msgid "Don't Save"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3118
+#: windows/host/src/roles_ui.rs:3523
+#, rust-format
+msgid "Restore \"{}\" to factory settings?"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3524
+msgid ""
+"Your changes to it are removed, along with anything typed here and not "
+"saved. This can't be undone."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3541
+msgid "The file that holds your changes can't be read."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3542
+msgid ""
+"Restoring will put every official role and skill back to factory settings, "
+"not only this one. The file of your changes and your own copies of official "
+"skills are kept where they were, renamed, so nothing in them is lost."
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3543
+msgid "Restore All"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:3655
 #, rust-format
 msgid "Delete the role \"{}\"?"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3119
+#: windows/host/src/roles_ui.rs:3656
 msgid ""
 "Terminals wearing it are taken out of it. Agents already running keep "
 "running."
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3177
+#: windows/host/src/roles_ui.rs:3714
 msgid "The role couldn't be launched"
 msgstr ""
 
-#: windows/host/src/roles_ui.rs:3473
+#: windows/host/src/roles_ui.rs:4019
+msgid "Official"
+msgstr ""
+
+#: windows/host/src/roles_ui.rs:4051
 msgid "No matching roles"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:137
+#: windows/host/src/settings_win.rs:135
 msgid "Projects"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:138
-msgid "Plugins"
-msgstr ""
-
-#: windows/host/src/settings_win.rs:139
+#: windows/host/src/settings_win.rs:137
 msgid "General"
 msgstr ""
 
-#: windows/host/src/settings_win.rs:1360 windows/host/src/settings_win.rs:1363
+#: windows/host/src/settings_win.rs:862
+msgid "Polter Settings"
+msgstr ""
+
+#: windows/host/src/settings_win.rs:1417 windows/host/src/settings_win.rs:1420
 #, rust-format
 msgid "{} (not in the search results)"
-msgstr ""
-
-#: windows/host/src/strip.rs:1549
-msgid "None"
-msgstr ""
-
-#: windows/host/src/strip.rs:1552
-msgid "Pink"
-msgstr ""
-
-#: windows/host/src/strip.rs:1557
-msgid "Teal"
-msgstr ""
-
-#: windows/host/src/strip.rs:1558
-msgid "Graphite"
 msgstr ""
 
 #. TRANSLATORS: three ASCII dots, not U+2026. This renames the tab
 #. in place on the tab strip. "Rename Tab…" with U+2026 is a
 #. DIFFERENT action (prompt_tab_title) that opens the title overlay.
 #. The two entries look almost identical; do not merge them.
-#: windows/host/src/strip.rs:1597
+#: windows/host/src/strip.rs:2319
 msgid "Rename Tab..."
 msgstr ""
 
-#: windows/host/src/strip.rs:1823
-msgid "Tab Color"
+#: windows/host/src/strip.rs:2825
+msgid "Save as New Project…"
+msgstr ""
+
+#: windows/host/src/terminal_id.rs:25
+msgid "Copy All"
 msgstr ""
 
 #: windows/host/src/uia.rs:1171
 msgid "Menu"
 msgstr ""
 
-#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:80
+#: windows/host/src/uia.rs:2301 windows/settings-shell/src/general.rs:88
 msgid "Keyboard Shortcuts"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:73
+#: windows/host/src/update.rs:192
+msgid "Update Available"
+msgstr ""
+
+#. TRANSLATORS: the update notification's body; the first {}
+#. is the new version, the second the release page's address.
+#: windows/host/src/update.rs:195
+#, rust-format
+msgid "Polter {} is available: {}"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:60
+msgid "Close Terminal?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:61
+msgid ""
+"The terminal still has a running process. If you close the terminal the "
+"process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:68
+msgid "Quit Polter?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:69
+msgid ""
+"The terminal still has a running process. If you quit, the process will be "
+"killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:70
+msgid "Terminate"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:79
+msgid "Close Other Tabs?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:80
+msgid ""
+"At least one other tab still has a running process. If you close the tab the "
+"process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:84
+msgid "Close Tabs on the Right?"
+msgstr ""
+
+#: windows/settings-shell/src/close_confirm.rs:85
+msgid ""
+"At least one tab to the right still has a running process. If you close the "
+"tab the process will be killed."
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:80
 msgid "Appearance"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:75
+#: windows/settings-shell/src/general.rs:82
 msgid "Terminal"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:76
+#: windows/settings-shell/src/general.rs:83
 msgid "Windows & Tabs"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:79
+#: windows/settings-shell/src/general.rs:85
+msgid "Log Management"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:87
 msgid "All Options"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:81
+#: windows/settings-shell/src/general.rs:89
 msgid "Advanced"
 msgstr ""
 
-#: windows/settings-shell/src/general.rs:82
+#: windows/settings-shell/src/general.rs:90
 msgid "About"
 msgstr ""
 
-#: windows/settings-shell/src/plugins.rs:51
+#: windows/settings-shell/src/general.rs:782
+msgid "Activate Key Table"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:783
+msgid "Activate Key Table Once"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:784
+msgid "Adjust Selection"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:785
+msgid "Crash (for debugging)"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:786
+msgid "Send CSI Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:787
+msgid "Send Cursor Key Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:788
+msgid "Deactivate All Key Tables"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:789
+msgid "Deactivate Key Table"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:790
+msgid "End Key Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:791
+msgid "Send Escape Sequence"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:792
+msgid "Go to Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:793
+msgid "Do Nothing"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:794
+msgid "Jump to Prompt"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:795
+msgid "Go to Last Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:796
+msgid "Next Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:797
+msgid "Toggle: Let a Supervisor Answer Prompts"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:798
+msgid "Toggle: Let Workers Name Each Other Directly"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:799
+msgid "Set This Terminal's Role"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:800
+msgid "Set: Keep Agents Out of This Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:801
+msgid "Set This Pane's Colour"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:802
+msgid "Set: Don't Start Workers in This Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:803
+msgid "Clear This Terminal's Role"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:804
+msgid "Switch One Skill On or Off Here"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:805
+msgid "Switch One MCP Server On or Off Here"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:806
+msgid "Previous Tab"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:808
+msgid "Scroll by a Fraction of a Page"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:809
+msgid "Scroll by Lines"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:810
+msgid "Scroll to Row"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:811
+msgid "Search in Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:812
+msgid "Set Font Size"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:813
+msgid "Set Terminal Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:814
+msgid "Set Tab Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:815
+msgid "Set Window Title"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:816
+msgid "Toggle Command Palette"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:817
+msgid "Toggle Quick Terminal"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:818
+msgid "Toggle Polter Visibility"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:819
+msgid "Unbind This Key"
+msgstr ""
+
+#: windows/settings-shell/src/general.rs:820
+msgid "Write Scrollback to a File"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:218
+msgid "Terminal Records · In Groups"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:219
+msgid "Terminal Records · In Projects"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:220
+msgid "Terminal Records · Other"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:221
+msgid "Logs"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:222
+msgid "Screenshots"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:223
+msgid "Group Rename Backups"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:224
+msgid "Group Chat Records"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:225
+msgid "Task Records"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:226
+msgid "Shell History"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:227
+msgid "Archive Plugin's Copy"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:233
+msgid ""
+"What terminals printed while working in a group; supervisors look back "
+"through it"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:234
+msgid "In a project's tabs, while in no group"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:235
+msgid "Terminals in no group and no project"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:236
+msgid "Plugins' older logs, crash reports, hourly group snapshots"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:237
+msgid "Polter's screenshots; nothing else in the folder is touched"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:238
+msgid "Old files a rename set aside, only to finish an interrupted one"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:239
+msgid "What each group said, day by day"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:240
+msgid "The task panel's history; compacting keeps where each task stands"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:241
+msgid "Each pane's commands; clearing removes only what no project uses"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:242
+msgid "The archive plugin's own copy of the chat, not Polter's records"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:260
+msgid "%1$@ (%2$lld files) will be deleted. This cannot be undone."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:261
+msgid "After this, the AI can no longer find them when it looks back."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:262
+msgid "Today's file that is still being written is kept."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:263
+msgid "Clear “%@”?"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:264
+msgid "Clear Now"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:267
+msgid "These are what terminals printed while working in a group."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:268
+msgid "These are what terminals printed in a project's tabs while in no group."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:269
+msgid ""
+"These are what terminals printed while in no group and no project's tab."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:270
+msgid ""
+"They are only for finding out what went wrong; nothing Polter does depends "
+"on them."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:271
+msgid ""
+"Only Polter's own screenshots go; nothing else in the folder is touched. The "
+"AI can no longer list or open them."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:272
+msgid ""
+"They are only needed to finish a rename that was interrupted, and none is "
+"under way."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:274
+msgid "Clear the group chat records?"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:276
+msgid ""
+"Every group's chat before today will be deleted, at most %@. This cannot be "
+"undone."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:277
+msgid ""
+"The list of groups, their notes, the last supervisor and project ties are "
+"kept."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:278
+msgid ""
+"The chat page and the AI reading back a group can no longer reach messages "
+"before today."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:283
+msgid "Compact the task records?"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:285
+msgid ""
+"Each task keeps only where it stands now: title, owner, progress, open or "
+"closed. The history of changes before today, at most %@, will be deleted. "
+"This cannot be undone."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:286
+msgid "The task panel is unchanged and task numbers stay the same."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:287
+msgid ""
+"The history of task changes and the statistics page will no longer show "
+"events before today."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:289
+msgid "Compact"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:292
+msgid "Clear shell history?"
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:294
+msgid ""
+"History files no saved project and no open pane uses will be deleted, at "
+"most %@. This cannot be undone."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:295
+msgid "Panes opened from a project, and panes open now, keep their history."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:302
+msgid ""
+"The archive plugin's copies before today will be deleted, at most %@. This "
+"cannot be undone."
+msgstr ""
+
+#: windows/settings-shell/src/logs.rs:303
+msgid ""
+"This is the archive plugin's own copy of the chat; Polter's chat records are "
+"not touched."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:49
+msgid "Factory settings"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:50
+msgid "Changed"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:51
+msgid "Changed · The official version has changed"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:52
+#, rust-format
+msgid "Your changes weren't read: {}"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:128
+#, rust-format
+msgid "Could not read {}"
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:129
+msgid "official-overrides.json can't be read as a file of changes."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:130
+msgid "What is written for this role is not an object."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:131
+#, rust-format
+msgid "\"{}\" is not a field this version of Polter knows."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:132
+#, rust-format
+msgid "\"{}\" is not written as a value and its base."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:133
+#, rust-format
+msgid "\"{}\" has no value."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:134
+#, rust-format
+msgid "The value of \"{}\" can't be read."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:135
+#, rust-format
+msgid "\"{}\" has no base, so it can't be compared with the official version."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:136
+#, rust-format
+msgid "The base of \"{}\" can't be read."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:137
+msgid "What is written for this skill is not an object."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:138
+msgid "The record for this skill has no base."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:139
+msgid "The base recorded for this skill is not text."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:140
+#, rust-format
+msgid ""
+"Your copy at {} doesn't read as this skill, so the shipped one is in use."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:141
+msgid ""
+"This copy wasn't saved from Polter, so whether the official text has changed "
+"since is not known."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:204
+msgid ""
+"These three are part of the official role and can't be changed. Duplicate "
+"the role to make one of your own."
+msgstr ""
+
+#: windows/settings-shell/src/official.rs:206
+msgid ""
+"These three give the terminal something, so only you can set them, here. A "
+"supervisor that edits roles can't change them."
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:92
+msgid "No plugins installed"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:96
+msgid "Switch Off"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:98
+msgid "Switch On (needs settings first)"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:100
+msgid "Switch On"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:105
+msgid "Show Log (nothing written yet)"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:114
+msgid "Open Plugins Folder"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:116
+msgid "Open Plugin Logs"
+msgstr ""
+
+#: windows/settings-shell/src/plugin_menu.rs:118
+msgid "Open Plugin Logs (nothing written yet)"
+msgstr ""
+
+#: windows/settings-shell/src/plugins.rs:67
 msgid "Restart to apply"
 msgstr ""
 
-#: windows/settings-shell/src/plugins.rs:53
-msgid "Needs setup"
+#: windows/settings-shell/src/plugins.rs:69
+msgid "Needs settings"
 msgstr ""
 
-#: windows/settings-shell/src/plugins.rs:54
+#: windows/settings-shell/src/plugins.rs:70
 msgid "Error"
 msgstr ""
 
-#: windows/settings-shell/src/plugins.rs:55
+#: windows/settings-shell/src/plugins.rs:71
 msgid "On"
 msgstr ""
 
-#: windows/control-room/src/act.rs:161
+#: windows/settings-shell/src/shell_profiles.rs:77
+msgid "Windows PowerShell"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs:83
+msgid "Command Prompt"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs:237
+msgid "Default"
+msgstr ""
+
+#: windows/settings-shell/src/shell_profiles.rs:257
+msgid "Change Default Shell…"
+msgstr ""
+
+#: windows/control-room/src/act.rs:381
+msgid ""
+"That could not be sent. This is a fault in Polter, not something you did."
+msgstr ""
+
+#: windows/control-room/src/act.rs:382
+msgid "That group is no longer there."
+msgstr ""
+
+#: windows/control-room/src/act.rs:383
+msgid "That time has already passed."
+msgstr ""
+
+#: windows/control-room/src/act.rs:384
+msgid "That terminal is no longer there."
+msgstr ""
+
+#: windows/control-room/src/act.rs:385
+msgid ""
+"The prompt has changed since this was drawn. Nothing was sent; look again."
+msgstr ""
+
+#: windows/control-room/src/act.rs:386
+msgid "It is not waiting to be told anything right now."
+msgstr ""
+
+#: windows/control-room/src/act.rs:387
+msgid "It has moved on since this was drawn. Nothing was sent; look again."
+msgstr ""
+
+#: windows/control-room/src/act.rs:388
+msgid "There is nothing to send."
+msgstr ""
+
+#: windows/control-room/src/act.rs:389
+msgid ""
+"Somebody typed in that terminal a moment ago. Nothing was sent; try again "
+"shortly."
+msgstr ""
+
+#: windows/control-room/src/act.rs:390
+msgid ""
+"That terminal has unsent text in its input line. Nothing was sent; go to the "
+"terminal."
+msgstr ""
+
+#: windows/control-room/src/act.rs:391
+msgid "The program in that terminal has ended."
+msgstr ""
+
+#: windows/control-room/src/act.rs:392
+msgid "The key did not reach the program. Go to the terminal."
+msgstr ""
+
+#: windows/control-room/src/act.rs:395
 msgid "A group's name is lowercase letters, digits and dashes, 48 at most."
 msgstr ""
 
-#: windows/control-room/src/act.rs:162
+#: windows/control-room/src/act.rs:396
 msgid "There is already a group by that name."
 msgstr ""
 
-#: windows/control-room/src/act.rs:163
+#: windows/control-room/src/act.rs:397
 msgid "There is no room for another group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:164
+#: windows/control-room/src/act.rs:398
 msgid "This group already has a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:165
+#: windows/control-room/src/act.rs:399
 msgid "A supervisor is already being started for this group."
 msgstr ""
 
-#: windows/control-room/src/act.rs:166
+#: windows/control-room/src/act.rs:400
 msgid "There is no role that makes a supervisor. Add one in the role library."
 msgstr ""
 
-#: windows/control-room/src/act.rs:168
+#: windows/control-room/src/act.rs:402
 msgid "That role does not make a supervisor."
 msgstr ""
 
-#: windows/control-room/src/act.rs:170
+#: windows/control-room/src/act.rs:404
+msgid "That role isn't set up for that agent CLI."
+msgstr ""
+
+#: windows/control-room/src/act.rs:405
+msgid "That agent CLI's plugin is off. Turn it on in Plugins."
+msgstr ""
+
+#: windows/control-room/src/act.rs:406
+msgid "That agent CLI can't be started on this machine."
+msgstr ""
+
+#: windows/control-room/src/act.rs:407
+msgid "That agent CLI isn't installed on this machine."
+msgstr ""
+
+#: windows/control-room/src/act.rs:408
+msgid ""
+"The agent CLI on this machine is not a version that plugin starts. Turn on "
+"the plugin for the version that is installed."
+msgstr ""
+
+#: windows/control-room/src/act.rs:409
 msgid "That directory is not there."
 msgstr ""
 
-#: windows/control-room/src/act.rs:171
+#: windows/control-room/src/act.rs:410
 msgid "No tab could be opened for it."
 msgstr ""
 
-#: windows/control-room/src/act.rs:172
+#: windows/control-room/src/act.rs:411
 msgid "Polter could not find its own program to start the role with."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:50
-msgid "Fix"
-msgstr ""
-
-#: windows/control-room/src/scene.rs:51
-msgid "Supervisor notified"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:183
-msgid "Terminal {1} ({2})"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:184
-msgid "Terminal {1}"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:185
-msgid "cause unknown"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:187
-msgid "{1}, {2}"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:189
-msgid "{1} failed: {2}."
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:190
-msgid "Your last turn failed: {1}."
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:191
-msgid "Your own last turn failed: {1}."
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:192
-msgid "{1} failures here:"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:194
-msgid ""
-"Read it with terminal_read first to see where it stopped: if it had not "
-"finished, have it carry on (terminal_send it to continue or retry); if it "
-"had finished, have it say one line that it is done (that line clears the "
-"failure), or close it once it is no longer needed. Say in the group when "
-"you have dealt with it."
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:195
-msgid "For each terminal that failed: {1}"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:196
-msgid ""
-"Decide whether your last turn finished: if not, carry on; if it did, say so "
-"in one line."
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:197
-msgid "For yourself: {1}"
-msgstr ""
-
-#: src/poltergeist/ControlFix.zig:199
-msgid "{1} {2}"
-msgstr ""
-
-#: windows/control-room/src/act.rs:255
+#: windows/control-room/src/act.rs:412
 msgid "It is no longer failing. Nothing was sent."
 msgstr ""
 
-#: windows/control-room/src/act.rs:256
+#: windows/control-room/src/act.rs:413
 msgid "The supervisor has already been told."
 msgstr ""
 
-#: windows/control-room/src/act.rs:257
+#: windows/control-room/src/act.rs:414
 msgid ""
 "No agent is connected in that terminal, so nothing was typed. It is kept in "
 "the group."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:327
+#: windows/control-room/src/act.rs:415
+msgid "A group's name cannot be empty."
+msgstr ""
+
+#: windows/control-room/src/act.rs:416 windows/control-room/src/scene.rs:49
+msgid "This group has no supervisor."
+msgstr ""
+
+#: windows/control-room/src/act.rs:417
+msgid "The group could not be renamed. Nothing was changed."
+msgstr ""
+
+#: windows/control-room/src/act.rs:418
+msgid "Records of a group by that name are still on disk. Pick another name."
+msgstr ""
+
+#: windows/control-room/src/act.rs:419
+msgid ""
+"Another Polter is renaming a group right now. Try again in a few seconds."
+msgstr ""
+
+#: windows/control-room/src/act.rs:420
+msgid "An earlier rename was left unfinished. Restart Polter, then try again."
+msgstr ""
+
+#: windows/control-room/src/act.rs:421
+msgid ""
+"The rename could not be finished now; it will be finished the next time "
+"Polter starts."
+msgstr ""
+
+#: windows/control-room/src/act.rs:422
+msgid "Deleted from the list, but some of its records could not be deleted."
+msgstr ""
+
+#: windows/control-room/src/act.rs:423
+msgid "There is nothing here the control room can take over."
+msgstr ""
+
+#: windows/control-room/src/act.rs:424
+msgid "The control room is already taking over a supervisor."
+msgstr ""
+
+#: windows/control-room/src/act.rs:425
+msgid ""
+"The projects on this computer have not been read yet. Try again in a moment."
+msgstr ""
+
+#: windows/control-room/src/act.rs:426
+msgid "That project is not there any more."
+msgstr ""
+
+#: windows/control-room/src/act.rs:427
+msgid "That project is another group's."
+msgstr ""
+
+#: windows/control-room/src/act.rs:428
+msgid "Another project already has this group's name."
+msgstr ""
+
+#: windows/control-room/src/act.rs:429
+msgid ""
+"This group's supervisor already has a project through another group: one "
+"supervisor, one project."
+msgstr ""
+
+#: windows/control-room/src/act.rs:430
+#, rust-format
+msgid "It was not done ({})."
+msgstr ""
+
+#: windows/control-room/src/act.rs:562
+msgid "the supervisor's input line has text in it"
+msgstr ""
+
+#: windows/control-room/src/act.rs:563
+msgid "somebody just typed in the supervisor's terminal"
+msgstr ""
+
+#: windows/control-room/src/act.rs:564
+msgid "no agent is connected in the supervisor's terminal"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:36
+#, rust-format
+msgid "{} is waiting for your approval"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:37
+#, rust-format
+msgid "{} is waiting for your answer"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:38
+#, rust-format
+msgid "{} has stopped on an error"
+msgstr ""
+
+#: windows/control-room/src/alert.rs:61
+msgid "1 more group of the same supervisor is waiting too."
+msgstr ""
+
+#: windows/control-room/src/alert.rs:63
+#, rust-format
+msgid "{} more groups of the same supervisor are waiting too."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1082
+msgid "No messages yet."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1083
+msgid "The chat could not be read."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1084
+msgid "This chat is not available now."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1085
+msgid "This page is too large to show."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1086
+msgid "This history has expired."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1087
+msgid "This build cannot show the chat."
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1088
+msgid "This message could not be measured."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:29
+#, rust-format
+msgid "Archive {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:30
+msgid ""
+"It goes into “Archived” at the bottom of the list, and you are not notified "
+"about it any more. Its chat, tasks, brief and project are all kept; right-"
+"click it in “Archived” and choose “Unarchive” to bring it back."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:31
+msgid ""
+"The supervisor is still running. Archiving does not close its terminal or "
+"its workers'."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:32
+msgid "Archive"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:34
+#, rust-format
+msgid "Delete the group {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:35
+#, rust-format
+msgid ""
+"This group still has {} members and {} unfinished tasks. Deleting does not "
+"close their terminals, but they leave the group, and the unfinished tasks "
+"are deleted too."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:36
+#, rust-format
+msgid ""
+"This group still has {} members. Deleting does not close their terminals, "
+"but they leave the group."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:37
+#, rust-format
+msgid "This group still has {} unfinished tasks. They are deleted with it."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:38
+msgid ""
+"Its chat, task panel and brief are deleted with it, and cannot be recovered."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:39
+#, rust-format
+msgid "The project {} stays; it just no longer belongs to any group."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:40
+msgid "If you would rather not delete this much, archive it instead."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:41
+msgid "Delete Group"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:42
+msgid "Take Over"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:43
+#, rust-format
+msgid "Close the supervisor terminal of {}?"
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:45
+msgid ""
+"The supervisor that is running will end. The group's record, its tasks and "
+"its workers are kept."
+msgstr ""
+
+#: windows/control-room/src/confirm.rs:46
+msgid "Close Supervisor"
+msgstr ""
+
+#: windows/control-room/src/lend.rs:440
 msgid "The supervisor's terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/lend.rs:329 windows/control-room/src/list.rs:103
+#: windows/control-room/src/lend.rs:442 windows/control-room/src/list.rs:161
 msgid "Supervisor"
 msgstr ""
 
-#: windows/control-room/src/list.rs:90
+#: windows/control-room/src/list.rs:148
 msgid "No group is waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:91
+#: windows/control-room/src/list.rs:149
 #, rust-format
 msgid "{} group waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:92
+#: windows/control-room/src/list.rs:150
 #, rust-format
 msgid "{} groups waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:95
+#: windows/control-room/src/list.rs:153
 #, rust-format
 msgid "{} waiting for you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:96
+#: windows/control-room/src/list.rs:154
 #, rust-format
 msgid "{} group needs nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:97
+#: windows/control-room/src/list.rs:155
 #, rust-format
 msgid "{} groups need nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:98
+#: windows/control-room/src/list.rs:156
 #, rust-format
 msgid "{} needs nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:99
+#: windows/control-room/src/list.rs:157
 #, rust-format
 msgid "{} need nothing from you"
 msgstr ""
 
-#: windows/control-room/src/list.rs:101
+#: windows/control-room/src/list.rs:159
 #, rust-format
 msgid "{} more"
 msgstr ""
 
-#: windows/control-room/src/list.rs:106
+#: windows/control-room/src/list.rs:164
 #, rust-format
 msgid "{}, via the supervisor"
 msgstr ""
 
-#: windows/control-room/src/pane.rs:40
+#: windows/control-room/src/pane.rs:41
 msgid "Worker"
 msgstr ""
 
-#: windows/control-room/src/rules.rs:166
+#: windows/control-room/src/pane_color.rs:75
+msgid "Pink"
+msgstr ""
+
+#: windows/control-room/src/pane_color.rs:80
+msgid "Teal"
+msgstr ""
+
+#: windows/control-room/src/pane_color.rs:81
+msgid "Graphite"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:26
+msgid "Add a terminal to this pane"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:29
+msgid "Close Others"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:30
+msgid "Close to the Right"
+msgstr ""
+
+#: windows/control-room/src/panestack.rs:31
+msgid "Close to the Left"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:21
+#, rust-format
+msgid "Open Project “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:22
+msgid "Show in Project Settings"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:23
+msgid "Stop Using It as This Group's Project…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:24
+#, rust-format
+msgid "Save the Supervisor's Tab as Project “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:25
+msgid "Use an Existing Project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:26
+msgid "This Group Has No Project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:27
+msgid "Use a Project for This Group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:28
+msgid "Join and Link"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:29
+#, rust-format
+msgid "Replace “{}”…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:30
+#, rust-format
+msgid "Open “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:31
+#, rust-format
+msgid "Use “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:33
+#, rust-format
+msgid "There is already a project “{}”, in no group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:34
+msgid "More than one project says it is this group's"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:35
+msgid "The supervisor's tab is in a project that is another group's."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:37
+msgid ""
+"This supervisor already looks after another group, which has a project. One "
+"supervisor, one project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:39
+msgid ""
+"This supervisor looks after several groups with no project, so it is not "
+"known which one its tab is for."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:40
+msgid "There is more than one supervisor in this group."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:41
+msgid "The projects on this computer have not been read yet"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:42
+msgid "A project file could not be read"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:44
+#, rust-format
+msgid "{} — in no group"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:45
+#, rust-format
+msgid "{} — group “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:46
+msgid "No projects"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:48
+#, rust-format
+msgid "Save as the Project of Group “{}”…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:49
+#, rust-format
+msgid "As the project of group “{}”"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:52
+#, rust-format
+msgid "Another project is called “{}”. Rename it “{}” and link?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:53
+#, rust-format
+msgid "{} (old)"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:54
+msgid "Rename and Link"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:56
+msgid "Same-name project"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:57
+msgid "Two projects"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:58
+msgid "Project not made"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:59
+msgid "Project file unreadable"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:62
+#, rust-format
+msgid ""
+"There is already a project “{}” ({}, {} pages), in no group. A group's "
+"project has the group's name: add the supervisor's tab to it, as this "
+"group's project?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:64
+msgid ""
+"More than one project says it is this group's. Choose the one it uses; the "
+"others lose the group's name, and no file is deleted."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:67
+#, rust-format
+msgid ""
+"The project file {} could not be read, so this group keeps its project as it "
+"is. Once the file reads again, the project is used again by itself."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:69
+#, rust-format
+msgid "Open “{}” First"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:70
+msgid "Use an Existing Project…"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:72
+#, rust-format
+msgid "There is already a project “{}”. Add the supervisor's tab to it?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:73
+#, rust-format
+msgid ""
+"A group's project has the group's name. “{}” was saved on {}, has {} pages, "
+"and is in no group."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:75
+msgid ""
+"The supervisor's tab becomes one of its pages; the pages already there stay. "
+"The file is rewritten in the current format, and the old one is kept as the "
+"previous version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:77
+msgid ""
+"The supervisor's tab takes its place. What is there now is kept as the "
+"previous version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:78
+msgid "Not Now"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:79
+msgid ""
+"Asked again the next time Polter starts; until then the control room keeps "
+"saying so."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:80
+msgid "Never asked again. To change your mind: right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:82
+#, rust-format
+msgid "Replace “{}”?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:84
+#, rust-format
+msgid ""
+"“{}” will be replaced by the tab “{}” ({} panes), and the tab is saved to it "
+"automatically from then on. The layout it replaces is kept as the previous "
+"version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:85
+#, rust-format
+msgid ""
+"To get the old page back: Settings › Projects, choose “{}”, Restore Previous "
+"Version."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:86
+msgid "Replace"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:89
+#, rust-format
+msgid "Stop using “{}” as the project of group “{}”?"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:90
+msgid ""
+"The tabs stay as they are. The group then has no project until you choose "
+"one."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:91
+msgid "Also move the project file to the Recycle Bin"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:92
+msgid "Stop Using It"
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:94
+#, rust-format
+msgid "Saved the supervisor's tab as project “{}”, this group's project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:95
+#, rust-format
+msgid ""
+"The supervisor's tab was in project “{}”; it was renamed “{}”, this group's "
+"project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:96
+#, rust-format
+msgid "Joined project “{}”, which is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:97
+#, rust-format
+msgid "Project “{}”, which the supervisor's tab is in, is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:98
+#, rust-format
+msgid ""
+"Replaced project “{}” with the supervisor's tab; the old one is the previous "
+"version. It is this group's now."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:99
+#, rust-format
+msgid "Saved as project “{}”, this group's."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:101
+#, rust-format
+msgid ""
+"Undone: project “{}” is in the Recycle Bin, and this group has no project. "
+"To change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:102
+#, rust-format
+msgid ""
+"Undone: the project is called “{}” again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:103
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was before the tab joined it, and this "
+"group has no project. To change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:104
+#, rust-format
+msgid ""
+"Undone: project “{}” is in no group again, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/project_words.rs:105
+#, rust-format
+msgid ""
+"Undone: project “{}” is back as it was, and this group has no project. To "
+"change that, right-click the group, Project."
+msgstr ""
+
+#: windows/control-room/src/quota.rs:217
+msgid "5-hour"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:218
+msgid "7-day"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:219
+msgid "30-day"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:220
+#, rust-format
+msgid "{} h ago"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:221
+#, rust-format
+msgid "{} d ago"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:222
+msgid "Allowance used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:223
+msgid "Allowance"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:224
+msgid "No numbers yet"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:225
+msgid "reset"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:226
+msgid "unreadable"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:228
+#: windows/control-room/src/tabmarks.rs:99
+#, rust-format
+msgid "{}, {}"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:230
+#, rust-format
+msgid "{} {} {} used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:231
+#, rust-format
+msgid "{} {} used"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:232
+#, rust-format
+msgid "{} {} allowance used up"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:233
+#, rust-format
+msgid "{} allowance used up"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:234
+#, rust-format
+msgid "back in {} min"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:235
+#, rust-format
+msgid "back in {} h"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:236
+#, rust-format
+msgid "back in {} d"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:237
+#, rust-format
+msgid "back at {}"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:238
+#, rust-format
+msgid "{} has room."
+msgstr ""
+
+#: windows/control-room/src/quota.rs:242
+#, rust-format
+msgid "{} {} at {}"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:244
+msgid "Jan"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:245
+msgid "Feb"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:246
+msgid "Mar"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:247
+msgid "Apr"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:248
+msgid "May"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:249
+msgid "Jun"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:250
+msgid "Jul"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:251
+msgid "Aug"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:252
+msgid "Sep"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:253
+msgid "Oct"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:254
+msgid "Nov"
+msgstr ""
+
+#: windows/control-room/src/quota.rs:255
+msgid "Dec"
+msgstr ""
+
+#: windows/control-room/src/rightpage.rs:36
+msgid "Performance"
+msgstr ""
+
+#: windows/control-room/src/rightpage.rs:40
+msgid "The chat has ended. Click here to open it again."
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:200
+msgid "Go to Supervisor"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:201
+msgid "Close Supervisor…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:202
+msgid "Let the Control Room Take Over…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:203
+msgid "Start Supervisor, Going On with the Last Session"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:204
+msgid "Start Supervisor with a New Session"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:207
+msgid "Last used"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:208 windows/control-room/src/scene.rs:90
+msgid "Start Supervisor"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:209
+msgid "Ask the Supervisor for a Progress Report"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:210
+msgid "Ask the Supervisor to Close Idle Workers"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:211
+msgid "Ask the Supervisor to Tidy Its Workers"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:213
+msgid "Copy Supervisor's Terminal ID"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:214
+msgid "Pin"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:215
+msgid "Unpin"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:216
+msgid "Mute This Group's Notifications"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:217
+msgid "Unmute"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:218
+msgid "For 1 Hour"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:219
+msgid "Until Tomorrow"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:220
+msgid "Until Turned Back On"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:221
+msgid "Rename Group…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:222
+msgid "Edit Group Note…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:224
+msgid "Archive…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:225
+msgid "Unarchive"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:226
+msgid "Delete Group…"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:271
+#, rust-format
+msgid "until {}"
+msgstr ""
+
+#: windows/control-room/src/rowmenu.rs:272
+#, rust-format
+msgid "until tomorrow {}"
+msgstr ""
+
+#: windows/control-room/src/rules.rs:263
 msgid "Polter — Control Room"
 msgstr ""
 
+#: windows/control-room/src/scene.rs:28
+msgid "Asked the supervisor for a progress report"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:29
+msgid "Asked the supervisor to close idle workers"
+msgstr ""
+
 #: windows/control-room/src/scene.rs:30
+msgid "Asked the supervisor to tidy its workers"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:31
 #, rust-format
-msgid "The control room's data could not be read ({})."
+msgid "Not delivered: {}"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:32
-msgid "Nothing has been worked out yet."
+#, rust-format
+msgid "Not delivered yet: {}. It will be tried again."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:33
-msgid "Select a group on the left."
-msgstr ""
-
-#: windows/control-room/src/scene.rs:34
-msgid "This group has no supervisor."
+#, rust-format
+msgid "Archived ({})"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:35
-msgid "The supervisor's terminal is in its own tab."
-msgstr ""
-
-#: windows/control-room/src/scene.rs:36
-msgid "Go to Its Tab"
+#, rust-format
+msgid "archived {}/{}"
 msgstr ""
 
 #: windows/control-room/src/scene.rs:37
 #, rust-format
-msgid "{} more steps"
+msgid "{}'s brief"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:38
+msgid "The group's supervisor and workers can all read this."
 msgstr ""
 
 #: windows/control-room/src/scene.rs:39
+#, rust-format
+msgid "{} characters"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:40
+#, rust-format
+msgid "{} characters, not saved"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:44
+#, rust-format
+msgid "The control room's data could not be read ({})."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:46
+msgid "Nothing has been worked out yet."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:48
+msgid "Select a group to see its supervisor."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:50
+msgid "Showing in the supervisor's tab"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:53
+msgid "Click to go there"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:57
+msgid "Click to switch here"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:58
+#, rust-format
+msgid "{} more steps"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:60
 msgid "New Group"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:42
+#: windows/control-room/src/scene.rs:62
+msgid "Group name"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:70
+msgid "Fix"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:71
+msgid "Supervisor notified"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:74
 msgid "Starting the supervisor…"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:43
+#: windows/control-room/src/scene.rs:77
+msgid "The supervisor is waiting in its tab for you to answer a question."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:78
+msgid "Go to Its Tab"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:79
 msgid "The supervisor did not start: its tab never opened."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:45
+#: windows/control-room/src/scene.rs:80
+msgid "The supervisor did not start: its group's project never opened."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:82
 msgid ""
 "The supervisor did not start: its tab opened, but no agent connected from "
 "it. Its tab shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:46
+#: windows/control-room/src/scene.rs:83
 msgid "The supervisor did not start: its tab was closed first."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:47
+#: windows/control-room/src/scene.rs:84
 msgid ""
 "The supervisor did not start: its agent CLI was not found. Its tab shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:48
+#: windows/control-room/src/scene.rs:85
 msgid ""
 "The supervisor did not start: its agent CLI could not be started. Its tab "
 "shows why."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:49
+#: windows/control-room/src/scene.rs:86
 msgid "The supervisor did not start."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:51
+#: windows/control-room/src/scene.rs:88
 msgid "Directory"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:53
-msgid "Start Supervisor"
+#: windows/control-room/src/scene.rs:96
+msgid ""
+"This group has no project yet, so only the supervisor starts. Once it takes "
+"up the group, its tab is saved as a project of the group's name; you are "
+"told when it is, and it can be undone."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:55
+#: windows/control-room/src/scene.rs:98
+#, rust-format
+msgid ""
+"All {} page(s) of its project come back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:99
+msgid ""
+"Every page of its project comes back and the supervisor starts in its own "
+"pane. The workers' panes come back as terminals only; who is called back is "
+"the supervisor's to decide."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:103
+#, rust-format
+msgid "The last supervisor worked in {}, using {}."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:104
+#, rust-format
+msgid "The last supervisor worked in {}."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:105
+#, rust-format
+msgid "The last supervisor used {}."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:107
+msgid "Go on with the last session"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:108
+msgid "New session"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:111
+msgid ""
+"A new session will be started: the last supervisor's CLI never said which "
+"session it was in."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:112
+msgid ""
+"A new session will be started: going on with the last one did not work the "
+"last time it was tried."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:113
+msgid "A new session will be started: the last session was in another CLI."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:114
+msgid "Checking whether the last session can be gone on with…"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:115
+msgid ""
+"A new session will be started: this CLI cannot go on with an earlier session."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:116
+msgid ""
+"A new session will be started: an open terminal is in the last session now."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:119
+msgid "Agent CLI"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:123
+#, rust-format
+msgid "The last session was {}'s; {} can't go on with it."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:126
+msgid "Looking for the last session…"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:129
+msgid "Didn't find the last session"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:132
+#, rust-format
+msgid "{}, which the last supervisor used, isn't installed on this machine."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:138
+#, rust-format
+msgid ""
+"{}, which the last supervisor used, is the other major version: turn on the "
+"plugin for the version that is here."
+msgstr ""
+
+#: windows/control-room/src/scene.rs:140
 msgid "Where the tab starts"
 msgstr ""
 
-#: windows/control-room/src/scene.rs:60
+#: windows/control-room/src/scene.rs:143
 msgid "This terminal is no longer open."
 msgstr ""
 
-#: windows/control-room/src/scene.rs:61
-msgid "This terminal is in its own tab."
+#: windows/control-room/src/scene.rs:144
+msgid "Showing in its own tab"
+msgstr ""
+
+#: windows/control-room/src/scene.rs:148
+msgid "Let the control room take over?"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:98
+msgid "Panes with a colour"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:100
+#, rust-format
+msgid "{}, supervisor"
+msgstr ""
+
+#: windows/control-room/src/tabmarks.rs:101
+#, rust-format
+msgid "{}, supervisor, {}"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs:86
+msgid "Seated"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs:87
+msgid "Not seated yet"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs:88
+msgid "Seat left"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs:112
+msgid "Ready"
+msgstr ""
+
+#: windows/control-room/src/tasks.rs:113
+msgid "Planned, not made yet"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:112
+msgid "This page"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:113
+#, rust-format
+msgid "{} pane(s)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:114
+#, rust-format
+msgid "Already in the project \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:118
+msgid "Tabs of this window to save"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:120
+msgid ""
+"Once saved, these tabs are saved back to the project whenever their layout "
+"changes. There is no need to save again."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:128
+msgid "This page is in no project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:129
+#, rust-format
+msgid "This page is in the project \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:172
+#, rust-format
+msgid "Take This Page Out of \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:176
+msgid "Add to Project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:181
+msgid ""
+"The group's supervisor is on this page, so it stays in the group's project."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:216
+msgid "Ask each time"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:217
+msgid "Keep it in the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:218
+msgid "Take it out of the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:282
+#, rust-format
+msgid "Close the page \"{}\""
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:286
+#, rust-format
+msgid ""
+"It is a page of the project \"{}\". If you only close it, it comes back the "
+"next time the project is opened."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:289
+msgid "Also take it out of the project"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:290
+msgid "Don't ask again (do as chosen this time)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:296
+#, rust-format
+msgid "{} page(s) · {} pane(s)"
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:334
+#, rust-format
+msgid ""
+"\"{}\" is open in other tabs, which save it automatically. Close those tabs "
+"first."
+msgstr ""
+
+#: windows/projects/src/page_rules.rs:338
+#, rust-format
+msgid ""
+"The tab \"{}\" is already a page of the project \"{}\". Take it out of that "
+"project first."
 msgstr ""

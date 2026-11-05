@@ -1826,6 +1826,10 @@ GHOSTTY_API uintptr_t ghostty_app_files(ghostty_app_t, const char*, uintptr_t, c
 // caller, so a tab cannot read as somebody else. `group_read` here does not
 // move that person's cursor -- a window is not a member -- and the reply
 // carries `cursor`, `since`, `next` and `more`.
+// Also accepts chat_metadata, chat_history_begin/poll/cancel (history,
+// around, context, reference), and chat_search_begin/poll/cancel. New requests
+// are <= 16384 UTF-8 bytes. Replies fit 98304 bytes; pass a 98305-byte buffer
+// including NUL. No cap-zero probe. Jobs/tokens are opaque, shared and bounded.
 GHOSTTY_API uintptr_t ghostty_app_chat_read(ghostty_app_t, const char*, uintptr_t, char*, uintptr_t);
 // Where the person is, as far as the control room goes: whether it is in
 // front, and which groups' cards it has on screen, as JSON

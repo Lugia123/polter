@@ -235,44 +235,58 @@ struct PanePreviewPanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(theme.windowBase.color)
             } else {
-                switch state.presentation {
-                case .unavailable, .browser:
-                    // **A plugin claims this file and its page did not load.**
-                    // The file itself is right there and could be drawn -- and
-                    // drawing it is the silent fallback this branch exists to
-                    // prevent (task 2779 S7B). The two cases get different
-                    // sentences: a `browser` plugin is working as declared and
-                    // the host has not built its path.
-                    VStack(spacing: 6) {
-                        Spacer()
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 14))
-                            .foregroundStyle(theme.textSecondary.color)
-                        Text(words(state.presentation))
-                            .font(.system(size: 12))
-                            .foregroundStyle(theme.textSecondary.color)
-                            .multilineTextAlignment(.center)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(theme.windowBase.color)
-                case .file, .pluginPage:
-                    PreviewWebView(token: state.token, presentation: state.presentation)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                PreviewBody(token: state.token, presentation: state.presentation)
             }
         }
         .background(theme.windowBase.color)
     }
+}
 
-    /// The sentence for the two ways there is nothing to draw. Shared, so the
-    /// pane and the working-directories page cannot come to say two different
-    /// things about one plugin (task 2779 S7B).
-    private func words(_ p: PreviewTicket.Presentation) -> String {
-        switch p {
-        case .browser: return PreviewTicket.browserPreviewNotYet
-        case .unavailable: return PreviewTicket.pluginUnavailable
-        case .file, .pluginPage: return ""
+/// The ticket's own body: the file, the matched browser page, or the
+/// sentence for a page plugin that did not load.
+///
+/// **One body for both shells** (task 2982): the working-directories pane
+/// and the chat's preview draw the same ticket, and two copies would let one
+/// of them say something different about the same plugin (`PreviewTicket`'s
+/// S7B rule). The chat's shell adds its own header because the pane's is a
+/// working-directory header; it does not re-draw what is inside.
+struct PreviewBody: View {
+    typealias Look = ControlRoomLook
+
+    var token: String
+    var presentation: PreviewTicket.Presentation
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let theme = Look.theme(scheme)
+        switch presentation {
+        case .browser:
+            // **A matched `render: browser` plugin**: the ticket's own file,
+            // scripts and network allowed, no bridge.
+            PreviewBrowserView(token: token)
+                .id(token)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .unavailable:
+            // **A page plugin whose page did not load.** The file is there
+            // and drawing it would be the silent fallback this branch exists
+            // to prevent (task 2779 S7B).
+            VStack(spacing: 6) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: Look.Font.min))
+                    .foregroundStyle(theme.textSecondary.color)
+                Text(PreviewTicket.pluginUnavailable)
+                    .font(.system(size: Look.Font.min))
+                    .foregroundStyle(theme.textSecondary.color)
+                    .multilineTextAlignment(.center)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.windowBase.color)
+        case .file, .pluginPage:
+            PreviewWebView(token: token, presentation: presentation)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

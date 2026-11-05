@@ -36,6 +36,7 @@ const Allocator = std.mem.Allocator;
 const Bus = @import("Bus.zig");
 const Chat = @import("Chat.zig");
 const daylog = @import("daylog.zig");
+pub const Range = @import("ChatRange.zig");
 
 // The record's shape -- how a name becomes a directory, what a day is, and
 // the day files themselves -- lives in `daylog.zig` rather than here,
@@ -642,6 +643,48 @@ fn rotateIfFull(self: *ChatLog) void {
     self.written = 0;
 }
 
+/// Where one record physically sits in the record: the file that holds it
+/// and the bytes of its line.
+///
+/// **This is the identity of a line written before the log had a `seq`.**
+/// Those lines are real messages and there is nothing to give them a number
+/// with -- inventing one would put two different messages at the same
+/// number across a restart, which is exactly what a cursor must never do.
+/// What they do have is a place: the day file (and its part beside it), the
+/// file's own identity, and the byte range of the line in it.
+///
+/// `inode` and `check` are what make the place **trustworthy** rather than
+/// merely descriptive. A file replaced under the same name is a different
+/// file even when its size matches, so the inode is compared; and a line
+/// rewritten in place keeps the inode and the size, so the shot of its
+/// exact bytes (`check`) is compared as well. Neither is the identity: the
+/// identity is the place, and these two decide whether the place still
+/// holds the record it did.
+pub const Pos = struct {
+    day: u32,
+    part: u32,
+
+    /// The file's inode, or 0 where the host cannot say. Zero is "not
+    /// known", never "matches everything": a check written to conclude
+    /// from it must not.
+    inode: u64,
+
+    /// The line's bytes as a half-open range `[start, end)`: `start` is
+    /// its first byte and `end` is the byte after its last, so **the
+    /// terminating newline is not part of the range** and `end - start`
+    /// is the line's own length.
+    start: u64,
+    end: u64,
+
+    /// A hash of the line's own bytes, without the terminating newline.
+    ///
+    /// **A checksum, not an identity.** Two different places never compare
+    /// equal because of it, and a message is never looked up by it; it
+    /// exists so that an in-place rewrite of the same length is caught
+    /// instead of being read as the record that used to be there.
+    check: u64,
+};
+
 /// One message as the log remembers it.
 ///
 /// Everything here, strings included, belongs to the allocator passed
@@ -676,6 +719,17 @@ pub const Entry = struct {
     /// The role the speaker wore then, `""` for a terminal in no role.
     /// Null means the line did not record one, on the same terms as above.
     role: ?[]const u8 = null,
+
+    /// Where this record sits in the record files, or null for a line that
+    /// was read out of the **stream** rather than out of a day file.
+    ///
+    /// **No default.** Every constructor says, because "no place" and
+    /// "the place at offset zero" must not be the same value: a fabricated
+    /// zero position would read as the first line of the first day file,
+    /// which is a real message.
+    ///
+    /// This is what lets a line with no `seq` be named at all -- see `Pos`.
+    pos: ?Pos,
 };
 
 /// A line's mentions, copied into the shape `Entry` hands back.
@@ -741,6 +795,13 @@ pub fn freeMentions(alloc: Allocator, mentions: ?[]const Chat.Mention) void {
     if (m.len == 0) return;
     for (m) |one| if (one.title.len > 0) alloc.free(one.title);
     alloc.free(m);
+}
+
+/// The fingerprint a scan's continuation is bound to: which group, which
+/// filter, and whose eyes. Exposed so that a caller combining scans (the
+/// `around` walk) can hand each its own cursor under the same question.
+pub fn questionFor(group: []const u8, filter: Filter, scope: Chat.Scope) u64 {
+    return questionOf(group, filter, scope);
 }
 
 /// Whether `group_history` keeps `e` from a member whose bar sits at
@@ -893,10 +954,35 @@ pub const ScanStop = enum {
     gap,
 };
 
+/// A flag a long read checks between bounded steps.
+///
+/// **Inside the loops, not around them.** A 2 MiB scan of a busy group is
+/// tens of thousands of lines; a check only before and after it is a
+/// cancellation that arrives when the work is already done. The flag is
+/// atomic because the thread that sets it is the app's.
+pub const Cancel = struct {
+    flag: *const std.atomic.Value(bool),
+
+    pub fn asked(self: Cancel) bool {
+        return self.flag.load(.acquire);
+    }
+};
+
 /// One page of a walk that can be continued.
 pub const ScanPage = struct {
+    /// Lowest numbered record physically examined, including filtered rows.
+    scanned_seq_floor: ?u64,
     /// Oldest first, the same order as `Page.entries`.
     entries: []const Entry,
+
+    /// The caller's flag asked to stop before the walk was done.
+    ///
+    /// **Not a claim about the record.** `stop` then says only "short of
+    /// the page" (`budget`), `next` names the byte the walk was about to
+    /// read, and nothing was consumed: the same call with that cursor
+    /// continues from exactly there. A caller that is being cancelled
+    /// must check this before treating the page as an answer.
+    cancelled: bool,
 
     /// Where to continue, or null when the walk reached `at_end`. Handing
     /// it back to `historyScan` is what makes the next call read new
@@ -931,13 +1017,881 @@ pub const ScanPage = struct {
     /// True when the record ran out. A gap is not the beginning: the walk
     /// cannot say what it could not read.
     pub fn exhausted(self: ScanPage) bool {
-        return self.stop == .at_end;
+        return self.stop == .at_end and !self.gap and !self.restarted and !self.cancelled;
     }
 };
 
 pub fn freeScanPage(alloc: Allocator, page: ScanPage) void {
     for (page.entries) |e| freeEntry(alloc, e);
     alloc.free(page.entries);
+}
+
+/// Why a record could not be read back by its place.
+pub const PosError = Allocator.Error || error{
+    /// The place is no longer the record it was: the file is gone or is a
+    /// different file, it was truncated below the place, or the bytes there
+    /// changed. **Never resolved to another message.**
+    Stale,
+
+    /// There is nothing of this group at that place.
+    NotFound,
+
+    /// The record is there, and this reader may not see it.
+    NotVisible,
+};
+
+/// Read the one record a `Pos` names, checking that the place still holds
+/// the record it did when the position was taken.
+///
+/// **The check is the whole point.** A path and an offset name a byte
+/// range, and a byte range is not an identity: the day file may have been
+/// replaced under the same name, or a line rewritten in place at the same
+/// length. The inode catches the replacement, the file's size catches a
+/// truncation, and `pos.check` catches the rewrite. Any of those failing
+/// is `Stale` -- the honest answer, and the one that makes the caller say
+/// the target is unavailable rather than show a different message.
+///
+/// `pos.day`/`pos.part` are looked up in the record's own listing first:
+/// an anchor naming a file this group does not have is `NotFound`, not a
+/// read of some other group's file at the same path.
+pub fn readPos(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    pos: Pos,
+    scope: Chat.Scope,
+) PosError!Entry {
+    return readPosVerified(alloc, io, tree, group, pos, scope, null);
+}
+
+pub fn readPosVerified(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    pos: Pos,
+    scope: Chat.Scope,
+    verifier: ?*Range.Verifier,
+) PosError!Entry {
+    if (pos.end <= pos.start) return error.NotFound;
+    const len = pos.end - pos.start;
+    // `append` cannot write a line longer than the scan window, so a place
+    // claiming one is not a place this log produced.
+    if (len > scan_chunk_bytes) return error.NotFound;
+
+    // The file must still be one the record lists for **this** group: a
+    // day/part is a place inside one group's directory, and the name alone
+    // does not establish which group's file sits there.
+    var days = try tree.days(alloc, group);
+    defer days.deinit(alloc);
+    var listed = false;
+    for (days.items) |d| {
+        if (d.day == pos.day and d.part == pos.part) {
+            listed = true;
+            break;
+        }
+    }
+    if (!listed) return error.NotFound;
+
+    const path = try tree.partPath(alloc, group, pos.day, pos.part);
+    defer alloc.free(path);
+
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return error.Stale;
+    defer file.close(io);
+
+    const st = file.stat(io) catch return error.Stale;
+
+    // **Unknown is not a match.** Zero is what a host that cannot say an
+    // inode writes down, and a check that treats it as agreement would
+    // accept a file replaced under the same name -- including one replaced
+    // with the very same bytes, where the checksum below would agree too.
+    // Without this half of the identity there is nothing to verify the
+    // place against, so the honest answer is `Stale`.
+    const here: u64 = @intCast(st.inode);
+    if (pos.inode == 0 or here == 0 or here != pos.inode) return error.Stale;
+    if (st.size < pos.end) return error.Stale;
+
+    const buf = try alloc.alloc(u8, @intCast(len));
+    defer alloc.free(buf);
+    const n = if (verifier) |v|
+        v.read(file, pos.day, pos.part, buf, pos.start) catch return error.Stale
+    else
+        file.readPositionalAll(io, buf, pos.start) catch return error.Stale;
+    if (n != len) return error.Stale;
+
+    const body = if (buf.len > 0 and buf[buf.len - 1] == '\n') buf[0 .. buf.len - 1] else buf;
+    if (std.hash.Wyhash.hash(0, body) != pos.check) return error.Stale;
+
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const parsed = parseLine(arena.allocator(), body) orelse return error.NotFound;
+    if (!std.mem.eql(u8, parsed.group, group)) return error.NotFound;
+    if (!scope.sees(parsed.channel, @intCast(@max(parsed.at_ms, 0)))) return error.NotVisible;
+
+    const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch return error.NotFound;
+
+    const owned = try alloc.dupe(u8, parsed.group);
+    errdefer alloc.free(owned);
+    const author = try alloc.dupe(u8, parsed.author);
+    errdefer alloc.free(author);
+    const text = try alloc.dupe(u8, parsed.text);
+    errdefer alloc.free(text);
+    const mentions = try copyMentions(alloc, parsed.mentions);
+    errdefer freeMentions(alloc, mentions);
+    const role = try copyRole(alloc, parsed.role);
+    errdefer if (role) |r| alloc.free(r);
+
+    return .{
+        .seq = parsed.seq,
+        .at_ms = parsed.at_ms,
+        .group = owned,
+        .from = from,
+        .author = author,
+        .summary = parsed.summary,
+        .text = text,
+        .channel = parsed.channel,
+        .covers_from_log = parsed.covers_from_log,
+        .mentions = mentions,
+        .role = role,
+        .pos = pos,
+    };
+}
+
+/// Where a **newer** walk resumes: the file, the byte below the next
+/// record, the round's own upper bound, and the question it answers.
+///
+/// The mirror of `ScanCursor`, because a conversation is read in both
+/// directions from a target and only one of them walks backwards.
+pub const ForwardCursor = struct {
+    day: u32,
+    part: u32,
+    offset: u64,
+    end: u64,
+    inode: u64,
+    question: u64,
+};
+
+/// One page of a walk towards newer records.
+pub const ForwardPage = struct {
+    /// Oldest first, the order they were read.
+    entries: []const Entry,
+
+    /// Where to continue, or null when the captured range ran out.
+    next: ?ForwardCursor,
+    stop: ScanStop,
+    gap: bool,
+
+    /// The caller's flag stopped this walk. See `ScanPage.cancelled` for
+    /// what that does and does not mean.
+    cancelled: bool,
+};
+
+/// Messages newer than `from`, oldest first, stopping at `limit`, at the
+/// captured end of the record, or at `upper_seq`.
+///
+/// **`upper_seq` is what keeps a moving group from being chased.** The
+/// caller captured the persisted head when the question was asked; records
+/// numbered above it were written afterwards and belong to the next
+/// question, not this page (`contract, "History and direct around"`).
+///
+/// A cursor is trusted only while its file is still the one it was: a
+/// replaced or truncated generation is `CursorStale`, never a read of some
+/// other record at the same offset.
+pub fn forwardScan(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    limit: usize,
+    scope: Chat.Scope,
+    upper_seq: u64,
+    from: ForwardCursor,
+    question: u64,
+    output: ?OutputBudget,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes })!ForwardPage {
+    return forwardScanCancel(alloc, io, tree, group, limit, scope, upper_seq, from, question, output, null);
+}
+
+/// `forwardScan`, with a flag checked between lines and windows.
+pub fn forwardScanCancel(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    limit: usize,
+    scope: Chat.Scope,
+    upper_seq: u64,
+    from: ForwardCursor,
+    question: u64,
+    output: ?OutputBudget,
+    cancel: ?Cancel,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes })!ForwardPage {
+    return forwardScanVerified(alloc, io, tree, group, limit, scope, upper_seq, from, question, output, cancel, null);
+}
+
+pub fn forwardScanVerified(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    limit: usize,
+    scope: Chat.Scope,
+    upper_seq: u64,
+    from: ForwardCursor,
+    question: u64,
+    output: ?OutputBudget,
+    cancel: ?Cancel,
+    verifier: ?*Range.Verifier,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes })!ForwardPage {
+    if (from.question != question) return error.CursorMismatch;
+    if (output) |b| try b.validate();
+
+    if (limit == 0) return .{ .entries = &.{}, .cancelled = false, .next = from, .stop = .full, .gap = false };
+
+    var days = if (verifier) |v| try v.capture.days(alloc) else try tree.days(alloc, group);
+    defer days.deinit(alloc);
+
+    var idx: usize = days.items.len;
+    for (days.items, 0..) |d, i| {
+        if (d.day == from.day and d.part == from.part) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == days.items.len) return error.CursorStale;
+
+    var out: std.ArrayListUnmanaged(Entry) = .empty;
+    errdefer {
+        for (out.items) |e| freeEntry(alloc, e);
+        out.deinit(alloc);
+    }
+
+    const scratch = try alloc.alloc(u8, scan_chunk_bytes);
+    defer alloc.free(scratch);
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+
+    var offset = from.offset;
+    var end = from.end;
+    const want_inode = from.inode;
+    var gap = false;
+    var cancelled = false;
+    var scanned: u64 = 0;
+    var used: usize = 0;
+    var stop: ScanStop = .at_end;
+    var next: ?ForwardCursor = null;
+
+    var i = idx;
+    files: while (true) {
+        const d = days.items[i];
+        const path = try tree.partPath(alloc, group, d.day, d.part);
+        defer alloc.free(path);
+
+        const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch {
+            gap = true;
+            stop = .gap;
+            break :files;
+        };
+        defer file.close(io);
+
+        const st = file.stat(io) catch {
+            gap = true;
+            stop = .gap;
+            break :files;
+        };
+        const here: u64 = @intCast(st.inode);
+        const first = i == idx;
+
+        // **Only the file the cursor names is checked against it.** A file
+        // reached during this walk was not part of that round and has no
+        // identity to agree with; its own size is its bound.
+        if (first) {
+            if (want_inode == 0 or here == 0 or here != want_inode) return error.CursorStale;
+            if (st.size < end) return error.CursorStale;
+
+            // **The cursor must still stand on a line start.** The inode
+            // catches a replaced file and the size a truncation; a
+            // rewrite in place keeps both, so the one thing left to check
+            // is that the byte before the cursor is still the newline
+            // that ended the record before it. (A record already read is
+            // never read again; only the record at the cursor matters,
+            // and that one is parsed fresh.)
+            if (offset > 0) {
+                if (offset > st.size) return error.CursorStale;
+                var b: [1]u8 = undefined;
+                const got = if (verifier) |v| v.read(file, d.day, d.part, &b, offset - 1) catch return error.CursorStale else file.readPositionalAll(io, &b, offset - 1) catch return error.CursorStale;
+                if (got != 1 or b[0] != '\n') return error.CursorStale;
+            }
+        } else end = if (verifier) |v| blk: {
+            const captured = v.capture.find(d.day, d.part) orelse return error.CursorStale;
+            if (here != captured.inode or st.size < captured.end) return error.CursorStale;
+            break :blk captured.end;
+        } else st.size;
+        if (verifier) |v| {
+            const captured = v.capture.find(d.day, d.part) orelse return error.CursorStale;
+            if (here != captured.inode or end != captured.end) return error.CursorStale;
+        }
+        const file_inode: u64 = here;
+
+        while (offset < end) {
+            if (cancel) |c| if (c.asked()) {
+                stop = .budget;
+                cancelled = true;
+                next = .{
+                    .day = d.day,
+                    .part = d.part,
+                    .offset = offset,
+                    .end = end,
+                    .inode = file_inode,
+                    .question = question,
+                };
+                break :files;
+            };
+            const take: usize = @intCast(@min(end - offset, scratch.len));
+            const n = if (verifier) |v| v.read(file, d.day, d.part, scratch[0..take], offset) catch |err| switch (err) {
+                error.CursorStale => return error.CursorStale,
+                error.Cancelled => {
+                    cancelled = true;
+                    stop = .budget;
+                    next = .{ .day = d.day, .part = d.part, .offset = offset, .end = end, .inode = file_inode, .question = question };
+                    break :files;
+                },
+            } else file.readPositionalAll(io, scratch[0..take], offset) catch {
+                gap = true;
+                stop = .gap;
+                break :files;
+            };
+            if (n != take) return error.CursorStale;
+            const win = scratch[0..n];
+            scanned += win.len;
+
+            const nl = std.mem.lastIndexOfScalar(u8, win, '\n') orelse {
+                // A captured partial/overlong line is unavailable, never clean EOF.
+                gap = true;
+                stop = .gap;
+                break :files;
+            };
+
+            // **Bytes of this window already processed.** `rest` is the
+            // *prefix* of complete lines, so `win.len - rest.len` would
+            // count the trailing half-line as consumed -- exactly the
+            // offset that made a straddling record unreadable. One counter,
+            // advanced with the line.
+            var consumed: usize = 0;
+            var rest = win[0 .. nl + 1];
+            while (rest.len > 0) {
+                const e = std.mem.indexOfScalar(u8, rest, '\n').?;
+                const line = rest[0..e];
+                const line_start = offset + consumed;
+                consumed += e + 1;
+                rest = rest[e + 1 ..];
+
+                if (cancel) |c| if (c.asked()) {
+                    stop = .budget;
+                    cancelled = true;
+                    next = .{
+                        .day = d.day,
+                        .part = d.part,
+                        .offset = line_start,
+                        .end = end,
+                        .inode = file_inode,
+                        .question = question,
+                    };
+                    break :files;
+                };
+
+                _ = arena.reset(.retain_capacity);
+                const parsed = parseLine(arena.allocator(), line) orelse {
+                    if (line.len > 0) gap = true;
+                    continue;
+                };
+
+                // Above the captured head: live traffic written after the
+                // question was asked. The rest of the file is newer still.
+                if ((upper_seq != 0 or verifier != null) and parsed.seq > upper_seq) {
+                    stop = .at_end;
+                    break :files;
+                }
+                if (!std.mem.eql(u8, parsed.group, group)) continue;
+                if (!scope.sees(parsed.channel, @intCast(@max(parsed.at_ms, 0)))) continue;
+
+                const from_id = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch {
+                    gap = true;
+                    continue;
+                };
+                const pos: Pos = .{
+                    .day = d.day,
+                    .part = d.part,
+                    .inode = file_inode,
+                    .start = line_start,
+                    .end = line_start + @as(u64, @intCast(line.len)),
+                    .check = std.hash.Wyhash.hash(0, line),
+                };
+
+                const owned = try ownEntry(alloc, parsed, pos, from_id);
+                if (output) |b| {
+                    const separator: usize = if (out.items.len == 0) 0 else 1;
+                    const cost = outputCost(b, used, &owned, separator) orelse {
+                        freeEntry(alloc, owned);
+                        stop = if (out.items.len == 0) .too_large else .full;
+                        next = .{
+                            .day = d.day,
+                            .part = d.part,
+                            .offset = line_start,
+                            .end = end,
+                            .inode = file_inode,
+                            .question = question,
+                        };
+                        break :files;
+                    };
+                    used += cost;
+                }
+                try out.append(alloc, owned);
+
+                if (out.items.len >= limit) {
+                    stop = .full;
+                    // The cursor names the byte after this line's newline:
+                    // `consumed` already moved past it.
+                    next = .{
+                        .day = d.day,
+                        .part = d.part,
+                        .offset = @min(offset + consumed, end),
+                        .end = end,
+                        .inode = file_inode,
+                        .question = question,
+                    };
+                    break :files;
+                }
+            }
+            // **Only the complete prefix is behind us.** A half-line at the
+            // end of the window is re-read from its own start next time,
+            // instead of being jumped over with the window's length.
+            offset += @as(u64, @intCast(nl + 1));
+
+            if (scanned >= history_scan_bytes) {
+                stop = .budget;
+                next = .{
+                    .day = d.day,
+                    .part = d.part,
+                    .offset = offset,
+                    .end = end,
+                    .inode = file_inode,
+                    .question = question,
+                };
+                break :files;
+            }
+        }
+
+        // This file is behind the walk. A newer one is the next index down
+        // (`days` is newest first); none means the captured range ended.
+        if (i == 0) {
+            stop = .at_end;
+            break :files;
+        }
+        i -= 1;
+        offset = 0;
+    }
+
+    if (stop == .at_end and gap) stop = .gap;
+    return .{
+        .entries = try out.toOwnedSlice(alloc),
+        .next = next,
+        .stop = stop,
+        .gap = gap,
+        .cancelled = cancelled,
+    };
+}
+
+/// Why an `around` window is the size it is, from what each side said.
+fn aroundStop(older: ScanPage, newer: ForwardPage, cancelled: bool) ScanStop {
+    if (cancelled) return .budget;
+    // Target already fit. An oversized neighbor remains behind its cursor.
+    if (older.stop == .too_large or newer.stop == .too_large) return .full;
+    if (older.stop == .gap or newer.stop == .gap) return .gap;
+    if (older.stop == .budget or newer.stop == .budget) return .budget;
+    if (older.stop == .full or newer.stop == .full) return .full;
+    return .at_end;
+}
+
+/// One target and its neighbours, oldest first.
+pub const AroundPage = struct {
+    /// Older records, the target, newer records -- in conversation order.
+    entries: []const Entry,
+
+    /// Where the target is in `entries`.
+    target_index: usize,
+
+    /// Where to continue towards older records, and whether there are any.
+    older: ?ScanCursor,
+    older_at_end: bool,
+
+    /// Where to continue towards newer records, and whether the captured
+    /// range ended.
+    newer: ?ForwardCursor,
+    newer_at_end: bool,
+
+    gap: bool,
+    restarted: bool,
+
+    /// The caller's flag stopped the neighbour walk. The target was read
+    /// and is valid; one or both sides stopped early and their cursors
+    /// re-read the record they did not consume.
+    cancelled: bool,
+
+    /// Why the neighbour window is the size it is: `at_end` when both
+    /// sides ran out, `full` when a count stopped it, `budget`/`gap` when
+    /// the walk did. **The two `*_at_end` flags are the per-side facts**;
+    /// this is the page's own word, and a null cursor alone never means
+    /// "there is nothing there" (see `PageEdges`).
+    stop: ScanStop,
+};
+
+/// The two ends of a context page, as facts about each side.
+///
+/// **A null cursor and "this is the end" are different answers.** `older`
+/// being null only says no cursor was issued; `older_at_end` says whether
+/// that is because the record ended. An empty page keeps the boundary on
+/// the side it did not walk, which the caller passes in.
+pub const WalkFacts = struct {
+    stop: ScanStop,
+    gap: bool,
+    restarted: bool,
+    cancelled: bool,
+    pub fn cleanEnd(self: WalkFacts) bool {
+        return self.stop == .at_end and !self.gap and !self.restarted and !self.cancelled;
+    }
+};
+
+pub const PageEdges = struct {
+    older: ?ScanCursor,
+    newer: ?ForwardCursor,
+    older_at_end: bool,
+    newer_at_end: bool,
+};
+
+/// Which way a context page was walked.
+pub const WalkDirection = enum { older, newer };
+
+/// The cursor that reads *below* `pos`, for a page walked towards older
+/// records. `captured_end` is the round's fixed upper bound -- **never a
+/// fresh `stat`**, which would grow the range after an append.
+pub fn edgeBelow(pos: Pos, captured_end: u64, question: u64) ScanCursor {
+    return .{
+        .day = pos.day,
+        .part = pos.part,
+        .offset = pos.start,
+        .end = captured_end,
+        .inode = pos.inode,
+        .question = question,
+    };
+}
+
+/// The cursor that reads *above* `pos`, for a page walked towards newer
+/// records. See `edgeBelow` for `captured_end`.
+pub fn edgeAbove(pos: Pos, captured_end: u64, question: u64) ForwardCursor {
+    return .{
+        .day = pos.day,
+        .part = pos.part,
+        .offset = @min(pos.end +| 1, captured_end),
+        .end = captured_end,
+        .inode = pos.inode,
+        .question = question,
+    };
+}
+
+/// Why a boundary could not be built. **Never a null cursor**: a caller
+/// that cannot tell "the record ended" from "I could not look" would show
+/// an empty direction where it should say the place is unavailable.
+pub const EdgeError = Allocator.Error || error{ NotFound, CursorStale };
+
+/// A forward cursor at the start of a day file a page's newer side
+/// continues into, under a **captured** bound.
+///
+/// The file is checked against the group's own listing first, its
+/// generation is read from the file itself (an unknown inode is
+/// `CursorStale`, not a match), and `captured_end` is used exactly as
+/// given: `0` means "capture this file's end now", which is what a page
+/// does the first time its walk reaches a file; any other value is a bound
+/// from an earlier round and must still be inside what the file holds.
+/// Every failure is an error, so no caller can mistake it for the end.
+pub fn forwardAtFileStart(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    day: u32,
+    part: u32,
+    captured_end: u64,
+    question: u64,
+) EdgeError!ForwardCursor {
+    var days = try tree.days(alloc, group);
+    defer days.deinit(alloc);
+    var listed = false;
+    for (days.items) |d| {
+        if (d.day == day and d.part == part) {
+            listed = true;
+            break;
+        }
+    }
+    if (!listed) return error.NotFound;
+
+    const path = try tree.partPath(alloc, group, day, part);
+    defer alloc.free(path);
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return error.NotFound;
+    defer file.close(io);
+    const st = file.stat(io) catch return error.CursorStale;
+    const inode: u64 = @intCast(st.inode);
+    if (inode == 0) return error.CursorStale;
+
+    const end: u64 = if (captured_end == 0) st.size else captured_end;
+    if (st.size < end) return error.CursorStale;
+    return .{
+        .day = day,
+        .part = part,
+        .offset = 0,
+        .end = end,
+        .inode = inode,
+        .question = question,
+    };
+}
+
+/// The edges of a page that was walked towards **older** records.
+///
+/// The older side is the scan's own continuation; the newer side is
+/// recomputed from the newest record returned. **An empty page has no
+/// record to recompute from**, so the boundary on the side that was not
+/// walked is kept exactly as the caller passed it (`incoming_newer` with
+/// its own `incoming_newer_at_end` fact) rather than being reported as
+/// the end of the record.
+pub fn edgesWalkedOlder(
+    entries: []const Entry,
+    next_older: ?ScanCursor,
+    incoming_newer: ?ForwardCursor,
+    incoming_newer_at_end: bool,
+    captured_end: u64,
+    question: u64,
+    facts: WalkFacts,
+) PageEdges {
+    if (entries.len == 0) return .{
+        .older = next_older,
+        .newer = incoming_newer,
+        .older_at_end = facts.cleanEnd(),
+        .newer_at_end = incoming_newer_at_end,
+    };
+    const newer = edgeAbove(entries[entries.len - 1].pos.?, captured_end, question);
+    return .{
+        .older = next_older,
+        .newer = newer,
+        .older_at_end = facts.cleanEnd(),
+        .newer_at_end = false,
+    };
+}
+
+/// The mirror of `edgesWalkedOlder` for a page walked towards newer
+/// records.
+pub fn edgesWalkedNewer(
+    entries: []const Entry,
+    next_newer: ?ForwardCursor,
+    incoming_older: ?ScanCursor,
+    incoming_older_at_end: bool,
+    captured_end: u64,
+    question: u64,
+    facts: WalkFacts,
+) PageEdges {
+    if (entries.len == 0) return .{
+        .older = incoming_older,
+        .newer = next_newer,
+        .older_at_end = incoming_older_at_end,
+        .newer_at_end = facts.cleanEnd(),
+    };
+    const older = edgeBelow(entries[0].pos.?, captured_end, question);
+    return .{
+        .older = older,
+        .newer = next_newer,
+        .older_at_end = false,
+        .newer_at_end = facts.cleanEnd(),
+    };
+}
+
+/// The record at `target` and up to `before`/`after` visible neighbours on
+/// each side, read straight from the place the anchor named.
+///
+/// **Nothing is paged until the target turns up.** The target is read by
+/// its own bytes (`readPos`), and the neighbours are walked outward from
+/// it; a hint that no longer holds its record is `Stale`, never a different
+/// message that happens to sit at the same offset.
+///
+/// `seq` is the anchor's own number when it has one; a record found at the
+/// place whose number is something else is a place that changed, and that
+/// is `Stale` too. `upper_seq` bounds the newer side to the head captured
+/// when the question was asked.
+pub fn around(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    scope: Chat.Scope,
+    target: Pos,
+    seq: u64,
+    before: usize,
+    after: usize,
+    upper_seq: u64,
+    output: ?OutputBudget,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes, Stale, NotFound, NotVisible, TooLarge })!AroundPage {
+    return aroundCancel(alloc, io, tree, group, scope, target, seq, before, after, upper_seq, output, null);
+}
+
+/// `around`, with a flag checked between lines and windows on both sides.
+pub fn aroundCancel(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    scope: Chat.Scope,
+    target: Pos,
+    seq: u64,
+    before: usize,
+    after: usize,
+    upper_seq: u64,
+    output: ?OutputBudget,
+    cancel: ?Cancel,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes, Stale, NotFound, NotVisible, TooLarge })!AroundPage {
+    return aroundVerified(alloc, io, tree, group, scope, target, seq, before, after, upper_seq, output, cancel, null);
+}
+
+pub fn aroundVerified(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    scope: Chat.Scope,
+    target: Pos,
+    seq: u64,
+    before: usize,
+    after: usize,
+    upper_seq: u64,
+    output: ?OutputBudget,
+    cancel: ?Cancel,
+    verifier: ?*Range.Verifier,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes, Stale, NotFound, NotVisible, TooLarge })!AroundPage {
+    const question = questionFor(group, .{}, scope);
+
+    var entry = try readPosVerified(alloc, io, tree, group, target, scope, verifier);
+    errdefer freeEntry(alloc, entry);
+    if (seq != 0 and entry.seq != seq) return error.Stale;
+
+    // The file's size now: the round's bound for both directions.
+    const path = try tree.partPath(alloc, group, target.day, target.part);
+    defer alloc.free(path);
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return error.Stale;
+    defer file.close(io);
+    const stat = file.stat(io) catch return error.Stale;
+    const size: u64 = if (verifier) |v| blk: {
+        const captured = v.capture.find(target.day, target.part) orelse return error.CursorStale;
+        if (captured.inode != stat.inode or stat.size < captured.end) return error.CursorStale;
+        break :blk captured.end;
+    } else stat.size;
+
+    var used: usize = 0;
+    if (output) |b| {
+        const cost = b.measure(b.context, &entry);
+        if (cost == std.math.maxInt(usize) or cost > b.recordBytes()) return error.TooLarge;
+        used = cost;
+    }
+
+    var older_page = try scanTreeOpts(alloc, io, tree, group, 0, before, .{}, scope, .{
+        .day = target.day,
+        .part = target.part,
+        .offset = target.start,
+        .end = size,
+        .inode = target.inode,
+        .question = question,
+    }, if (output) |b| .{
+        .bytes = b.bytes,
+        .shell = @min(b.bytes, b.shell + used + @as(usize, if (before > 0) 1 else 0)),
+        .measure = b.measure,
+        .context = b.context,
+    } else null, .keep, cancel, verifier);
+    errdefer freeScanPage(alloc, older_page);
+
+    if (output) |b| for (older_page.entries, 0..) |*e, k| {
+        const cost = b.measure(b.context, e);
+        if (cost != std.math.maxInt(usize)) {
+            used += cost + @as(usize, if (k == 0 and used == 0) 0 else 1);
+        }
+    };
+
+    const after_target: u64 = if (target.end < size) target.end + 1 else size;
+    const newer_page = try forwardScanVerified(alloc, io, tree, group, after, scope, upper_seq, .{
+        .day = target.day,
+        .part = target.part,
+        .offset = after_target,
+        .end = size,
+        .inode = target.inode,
+        .question = question,
+    }, question, if (output) |b| .{
+        .bytes = b.bytes,
+        .shell = @min(b.bytes, b.shell + used + @as(usize, if (after > 0) 1 else 0)),
+        .measure = b.measure,
+        .context = b.context,
+    } else null, cancel, verifier);
+    errdefer {
+        for (newer_page.entries) |e| freeEntry(alloc, e);
+        alloc.free(newer_page.entries);
+    }
+
+    const older_n = older_page.entries.len;
+    const entries = try alloc.alloc(Entry, older_n + 1 + newer_page.entries.len);
+    @memcpy(entries[0..older_n], older_page.entries);
+    entries[older_n] = entry;
+    @memcpy(entries[older_n + 1 ..], newer_page.entries);
+
+    // The buffers only: the entries themselves were moved above.
+    alloc.free(older_page.entries);
+    alloc.free(newer_page.entries);
+
+    return .{
+        .entries = entries,
+        .target_index = older_n,
+        .older = older_page.next,
+        .older_at_end = older_page.exhausted(),
+        .newer = newer_page.next,
+        .newer_at_end = newer_page.stop == .at_end and !newer_page.gap and !newer_page.cancelled,
+        .gap = older_page.gap or newer_page.gap,
+        .restarted = older_page.restarted,
+        .cancelled = older_page.cancelled or newer_page.cancelled,
+        .stop = aroundStop(older_page, newer_page, older_page.cancelled or newer_page.cancelled),
+    };
+}
+
+/// A record read out of a file, owned by `alloc`.
+pub fn ownEntry(alloc: Allocator, parsed: Line, pos: ?Pos, from: Bus.Id) Allocator.Error!Entry {
+    const group = try alloc.dupe(u8, parsed.group);
+    errdefer alloc.free(group);
+    const author = try alloc.dupe(u8, parsed.author);
+    errdefer alloc.free(author);
+    const text = try alloc.dupe(u8, parsed.text);
+    errdefer alloc.free(text);
+    const mentions = try copyMentions(alloc, parsed.mentions);
+    errdefer freeMentions(alloc, mentions);
+    const role = try copyRole(alloc, parsed.role);
+    errdefer if (role) |r| alloc.free(r);
+
+    return .{
+        .seq = parsed.seq,
+        .at_ms = parsed.at_ms,
+        .group = group,
+        .from = from,
+        .author = author,
+        .summary = parsed.summary,
+        .text = text,
+        .channel = parsed.channel,
+        .covers_from_log = parsed.covers_from_log,
+        .mentions = mentions,
+        .role = role,
+        .pos = pos,
+    };
 }
 
 /// What a scan may spend on the records it hands back, and how one record
@@ -1161,6 +2115,86 @@ pub fn scanTree(
     cursor: ?ScanCursor,
     output: ?OutputBudget,
 ) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+    // **Legacy lines stay out of the old pages, for now.** The serializer
+    // that answers the hosts builds an anchor from `log_seq`, and these
+    // lines have none: handing one back today would name it `p:0`, which is
+    // an identity that belongs to no message. The same walk with
+    // `scanTreeUnsequenced` hands them back -- for the slice that also
+    // teaches the serializer to name them by place, and only then.
+    return scanTreeOpts(alloc, io, tree, group, before_seq, limit, filter, scope, cursor, output, .skip, null, null) catch |err| switch (err) {
+        error.CursorStale => unreachable,
+        else => |e| return e,
+    };
+}
+
+/// `scanTree`, handing back lines written before the log numbered its
+/// lines, each with the `Pos` that names it.
+///
+/// **Only for a caller that does not page by `before_seq`**: such a line
+/// has no number to be asked from, so a seq-paged caller would ask for the
+/// same stretch every time. A caller continuing by the physical cursor, or
+/// locating a record by the anchor built from its place, can name one.
+///
+/// **Not wired to a reply yet.** The serializer must learn to write a
+/// legacy anchor first; until it does, a page from here would hand the
+/// hosts `p:0`.
+pub fn scanTreeUnsequenced(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+    output: ?OutputBudget,
+) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+    return scanTreeOpts(alloc, io, tree, group, before_seq, limit, filter, scope, cursor, output, .keep, null, null) catch |err| switch (err) {
+        error.CursorStale => unreachable,
+        else => |e| return e,
+    };
+}
+
+/// `scanTreeUnsequenced`, with a flag checked between lines and windows.
+///
+/// A cancelled walk stops at the record it was about to consume and says
+/// so (`ScanPage.cancelled`); the cursor it returns re-reads that record
+/// next time.
+pub fn scanTreeCancel(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+    output: ?OutputBudget,
+    cancel: ?Cancel,
+) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+    return scanTreeOpts(alloc, io, tree, group, before_seq, limit, filter, scope, cursor, output, .keep, cancel, null) catch |err| switch (err) {
+        error.CursorStale => unreachable,
+        else => |e| return e,
+    };
+}
+
+fn scanTreeOpts(
+    alloc: Allocator,
+    io: std.Io,
+    tree: *const Tree,
+    group: []const u8,
+    before_seq: u64,
+    limit: usize,
+    filter: Filter,
+    scope: Chat.Scope,
+    cursor: ?ScanCursor,
+    output: ?OutputBudget,
+    unsequenced: Unsequenced,
+    cancel: ?Cancel,
+    verifier: ?*Range.Verifier,
+) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes })!ScanPage {
     // A budget that cannot describe a page is refused before anything is
     // read -- including the empty-request path below, whose envelope is
     // already assumed to fit.
@@ -1178,7 +2212,9 @@ pub fn scanTree(
     // Asked for nothing: nothing was read and there is no position to
     // report. `stop` says so rather than claiming the record ended.
     if (limit == 0) return .{
+        .scanned_seq_floor = null,
         .entries = &.{},
+        .cancelled = false,
         .next = cursor,
         .stop = .full,
         .restarted = false,
@@ -1194,6 +2230,14 @@ pub fn scanTree(
         .scope = scope,
         .want = @min(limit, max_history_limit),
         .cursor = cursor,
+        .unsequenced = unsequenced,
+        .cancel = cancel,
+        .verifier = verifier,
+        .cancelled = false,
+        // Filled in as each day file is opened; zero here is never read.
+        .cur_day = 0,
+        .cur_part = 0,
+        .cur_inode = 0,
         // Written out rather than defaulted: "not restarted, no gap, and
         // no stop recorded yet" is a state this walk has to say, not one
         // it can be assumed to be in.
@@ -1217,7 +2261,7 @@ pub fn scanTree(
         w.found.deinit(alloc);
     }
 
-    var days = try tree.days(alloc, group);
+    var days = if (verifier) |v| try v.capture.days(alloc) else try tree.days(alloc, group);
     defer days.deinit(alloc);
 
     // A cursor names the file the last call stopped in. Everything newer
@@ -1268,6 +2312,12 @@ pub fn scanTree(
             continue;
         };
 
+        // The file this window belongs to, so a line read out of it can be
+        // named by place. Set before `generation` reads anything.
+        w.cur_day = d.day;
+        w.cur_part = d.part;
+        w.cur_inode = @intCast(st.inode);
+
         switch (try w.generation(d.day, d.part, file, st.size, @intCast(st.inode))) {
             .enough => {
                 stop = w.stopped;
@@ -1292,7 +2342,9 @@ pub fn scanTree(
     // order `group_read` uses and the order a conversation is read in.
     std.mem.reverse(Entry, w.found.items);
     return .{
+        .scanned_seq_floor = w.scanned_seq_floor,
         .entries = try w.found.toOwnedSlice(alloc),
+        .cancelled = w.cancelled,
         .next = next,
         .stop = stop,
         .restarted = w.restarted,
@@ -1309,7 +2361,87 @@ pub fn scanTree(
 /// writer's, and a reader that ran it would be repairing the user's log
 /// before reading it. A missing group directory is an empty record, which
 /// the walk reports as `at_end` -- the honest answer, not an error.
+/// Builds only the requested bounded anchor index while capture bytes are already in
+/// memory. It never loops history pages or stores a second copy of conversation text.
+pub fn captureRange(alloc: Allocator, io: std.Io, tree: *const Tree, group: []const u8, wanted: []const u64, work: *Range.Work) Range.Error!*Range.Capture {
+    if (wanted.len > 1001) return error.TooLarge;
+    var index = CaptureIndex{ .alloc = alloc, .group = group, .wanted = wanted, .arena = .init(alloc), .carry = try alloc.alloc(u8, scan_chunk_bytes) };
+    defer index.arena.deinit();
+    defer alloc.free(index.carry);
+    defer index.locations.deinit(alloc);
+    work.observer = .{ .ctx = &index, .visit = CaptureIndex.visit };
+    defer work.observer = null;
+    const captured = try Range.Capture.create(alloc, io, tree, group, work);
+    errdefer captured.destroy();
+    captured.locations = try index.locations.toOwnedSlice(alloc);
+    return captured;
+}
+
+const CaptureIndex = struct {
+    ordinal: u64 = 0,
+    alloc: Allocator,
+    group: []const u8,
+    wanted: []const u64,
+    arena: std.heap.ArenaAllocator,
+    carry: []u8,
+    used: usize = 0,
+    start: u64 = 0,
+    dropping: bool = false,
+    locations: std.ArrayListUnmanaged(Range.Location) = .empty,
+
+    fn visit(ctx: *anyopaque, file: Range.File, offset: u64, bytes: []const u8) Allocator.Error!void {
+        const self: *CaptureIndex = @ptrCast(@alignCast(ctx));
+        if (offset == 0) {
+            self.used = 0;
+            self.dropping = false;
+        }
+        var at: usize = 0;
+        while (at < bytes.len) {
+            const newline = std.mem.indexOfScalarPos(u8, bytes, at, '\n');
+            const end = newline orelse bytes.len;
+            const segment = bytes[at..end];
+            if (self.used == 0 and !self.dropping) self.start = offset + at;
+            if (self.used + segment.len > self.carry.len) {
+                self.dropping = true;
+                self.used = 0;
+            }
+            if (!self.dropping) {
+                if (self.used == 0 and newline != null) {
+                    try self.line(file, segment, self.start);
+                } else {
+                    @memcpy(self.carry[self.used..][0..segment.len], segment);
+                    self.used += segment.len;
+                    if (newline != null) try self.line(file, self.carry[0..self.used], self.start);
+                }
+            }
+            if (newline != null) {
+                self.used = 0;
+                self.dropping = false;
+                at = end + 1;
+            } else break;
+        }
+    }
+    fn line(self: *CaptureIndex, file: Range.File, bytes: []const u8, start: u64) Allocator.Error!void {
+        if (bytes.len == 0) return;
+        _ = self.arena.reset(.retain_capacity);
+        const parsed = (try parseLineStrict(self.arena.allocator(), bytes)) orelse return;
+        if (!std.mem.eql(u8, parsed.group, self.group)) return;
+        self.ordinal += 1;
+        if (parsed.seq == 0) return;
+        for (self.wanted) |seq| if (seq == parsed.seq) {
+            // At most two locations per wanted identity: two already mean ambiguous.
+            var existing: usize = 0;
+            for (self.locations.items) |location| if (location.seq == seq) {
+                existing += 1;
+            };
+            if (existing < 2) try self.locations.append(self.alloc, .{ .seq = seq, .ordinal = self.ordinal, .day = file.day, .part = file.part, .inode = file.inode, .start = start, .end = start + bytes.len, .check = std.hash.Wyhash.hash(0, bytes) });
+            break;
+        };
+    }
+};
+
 pub const Reader = struct {
+    verifier: ?*Range.Verifier = null,
     alloc: Allocator,
     io: std.Io,
     dir: []u8,
@@ -1349,6 +2481,39 @@ pub const Reader = struct {
         output: ?OutputBudget,
     ) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
         return scanTree(alloc, self.io, &self.tree, group, before_seq, limit, filter, scope, cursor, output);
+    }
+
+    /// `scan`, with a flag checked between lines and windows.
+    pub fn scanCancel(
+        self: *Reader,
+        alloc: Allocator,
+        group: []const u8,
+        before_seq: u64,
+        limit: usize,
+        filter: Filter,
+        scope: Chat.Scope,
+        cursor: ?ScanCursor,
+        output: ?OutputBudget,
+        cancel: ?Cancel,
+    ) (Allocator.Error || error{ CursorMismatch, CursorStale, ShellExceedsBytes })!ScanPage {
+        return scanTreeOpts(alloc, self.io, &self.tree, group, before_seq, limit, filter, scope, cursor, output, .keep, cancel, self.verifier);
+    }
+
+    /// `scan`, with the lines written before the log numbered its lines.
+    /// See `scanTreeUnsequenced`: not wired to a reply until the serializer
+    /// can name such a line by its place.
+    pub fn scanUnsequenced(
+        self: *Reader,
+        alloc: Allocator,
+        group: []const u8,
+        before_seq: u64,
+        limit: usize,
+        filter: Filter,
+        scope: Chat.Scope,
+        cursor: ?ScanCursor,
+        output: ?OutputBudget,
+    ) (Allocator.Error || error{ CursorMismatch, ShellExceedsBytes })!ScanPage {
+        return scanTreeUnsequenced(alloc, self.io, &self.tree, group, before_seq, limit, filter, scope, cursor, output);
     }
 };
 
@@ -1653,6 +2818,10 @@ pub const Tail = struct {
                         .covers_from_log = parsed.covers_from_log,
                         .mentions = mentions,
                         .role = role,
+                        // A line read out of the **stream**, which is one
+                        // flat file followed by offset and not the record
+                        // the anchor's place describes.
+                        .pos = null,
                     });
                 }
 
@@ -1823,7 +2992,18 @@ const Stop = enum {
 
 /// What one `history` call carries from chunk to chunk and from one
 /// generation into the next.
+/// Whether a walk hands back lines that carry no `seq`.
+///
+/// **Two values, and a caller has to name one.** A `before_seq` page has
+/// no number to ask from for such a line, so handing it back there would
+/// make the next page start over -- the loop the scan cursor exists to
+/// stop. A caller that continues by physical position or by anchor can
+/// name one, and is the only caller for which `keep` is right.
+pub const Unsequenced = enum { skip, keep };
+
 const Walk = struct {
+    scanned_seq_floor: ?u64 = null,
+    verifier: ?*Range.Verifier,
     alloc: Allocator,
     io: std.Io,
     group: []const u8,
@@ -1841,6 +3021,26 @@ const Walk = struct {
     /// silently read the newest bytes again instead of continuing, which
     /// is the whole thing this is here to stop.
     cursor: ?ScanCursor,
+
+    /// Checked between lines and between windows; null for a caller that
+    /// cannot be interrupted.
+    cancel: ?Cancel,
+
+    /// Set when `cancel` was what stopped the walk.
+    cancelled: bool,
+
+    /// Whether a line written before the log numbered its lines is handed
+    /// back. **No default**: a walk that forgot to say would either keep
+    /// out records a caller needs to show or hand one back without an
+    /// identity it can be named by, and both are wrong in a way nobody
+    /// reading the code would notice.
+    unsequenced: Unsequenced,
+
+    /// The day file the window being walked belongs to, and its identity,
+    /// so every line read out of it can be described by `Pos`.
+    cur_day: u32,
+    cur_part: u32,
+    cur_inode: u64,
 
     /// The upper bound of the round the file being read belongs to: fixed
     /// when that file was first reached, so messages appended between
@@ -1895,18 +3095,24 @@ const Walk = struct {
     /// (`size >= c.end`): growth is newer traffic this round does not
     /// look at, while a truncation or a replacement makes the offset name
     /// a different line, which is the one thing a cursor must never do.
-    fn generation(w: *Walk, day: u32, part: u32, file: std.Io.File, size: u64, inode: u64) Allocator.Error!Stop {
-        var end = size;
-        var round_end = size;
+    fn generation(w: *Walk, day: u32, part: u32, file: std.Io.File, size: u64, inode: u64) (Allocator.Error || error{CursorStale})!Stop {
+        const bound = if (w.verifier) |v| blk: {
+            const captured = v.capture.find(day, part) orelse return error.CursorStale;
+            if (inode == 0 or inode != captured.inode or size < captured.end) return error.CursorStale;
+            break :blk captured.end;
+        } else size;
+        var end = bound;
+        var round_end = bound;
         if (w.cursor) |c| {
             if (c.day == day and c.part == part) {
-                if (c.inode == inode and size >= c.end and c.offset <= c.end) {
+                if (c.inode == inode and size >= c.end and c.offset <= c.end and (w.verifier == null or c.end == bound)) {
                     end = c.offset;
                     round_end = c.end;
                 } else {
                     // Truncated or replaced under the same name. The old
                     // offset may now sit in a different message, so it is
                     // refused; the file is read again from its own end.
+                    if (w.verifier != null) return error.CursorStale;
                     w.restarted = true;
                 }
             }
@@ -1914,13 +3120,30 @@ const Walk = struct {
         w.round_end = round_end;
 
         while (end > 0) {
+            if (w.cancel) |c| if (c.asked()) {
+                w.stopped = .budget;
+                w.cancelled = true;
+                w.resume_at = end;
+                return .enough;
+            };
             const start = end -| scan_chunk_bytes;
             const len: usize = @intCast(end - start);
 
-            const n = file.readPositionalAll(w.io, w.scratch[0..len], start) catch |err| {
-                w.warnOnce(err);
-                return .gave_up;
-            };
+            const n = if (w.verifier) |v|
+                v.read(file, day, part, w.scratch[0..len], start) catch |err| switch (err) {
+                    error.CursorStale => return error.CursorStale,
+                    error.Cancelled => {
+                        w.cancelled = true;
+                        w.stopped = .budget;
+                        w.resume_at = end;
+                        return .enough;
+                    },
+                }
+            else
+                file.readPositionalAll(w.io, w.scratch[0..len], start) catch |err| {
+                    w.warnOnce(err);
+                    return .gave_up;
+                };
             // Short of what was asked for leaves a hole in the middle of
             // the range rather than at the end of it, and a hole is the one
             // thing a cursor cannot be walked across.
@@ -1978,16 +3201,30 @@ const Walk = struct {
             const line_end = base + @as(u64, @intCast(rest.len));
             rest = if (nl) |i| rest[0..i] else rest[0..0];
 
+            // **Between lines, so a cancel arrives while there is still
+            // work to save.** The record below `line_end` is not consumed:
+            // the cursor names it and the next call reads it whole.
+            if (w.cancel) |c| if (c.asked()) {
+                w.stopped = .budget;
+                w.cancelled = true;
+                w.resume_at = line_end;
+                return true;
+            };
+
             _ = w.arena.reset(.retain_capacity);
-            const parsed = parseLine(w.arena.allocator(), line) orelse continue;
+            const parsed = parseLine(w.arena.allocator(), line) orelse {
+                if (line.len > 0) w.gap = true;
+                continue;
+            };
 
             // No seq is no cursor. An older Polter wrote lines without one
-            // and they are still worth keeping on disk, but handing one
-            // back would break the rule the caller pages by -- ask again
-            // from the oldest seq you were given -- because it has no seq
-            // to be asked from.
-            if (parsed.seq == 0) continue;
-            if (w.before_seq != 0 and parsed.seq >= w.before_seq) continue;
+            // and they are still worth keeping on disk; handing one back to
+            // a caller that pages by `before_seq` would break the rule it
+            // pages by, because there is no number to ask from. A caller
+            // that pages by the physical cursor or by an anchor says so,
+            // and those lines go back with the `Pos` that names them.
+            if (parsed.seq == 0 and w.unsequenced == .skip) continue;
+            if (parsed.seq != 0 and w.before_seq != 0 and parsed.seq >= w.before_seq) continue;
 
             // Not redundant, even though the file being walked is one
             // group's own directory. A directory name is a filing decision
@@ -1996,6 +3233,7 @@ const Walk = struct {
             // hashes collide, and a file put there by hand can say
             // anything at all. The line is what is believed.
             if (!std.mem.eql(u8, parsed.group, w.group)) continue;
+            w.scanned_seq_floor = if (w.scanned_seq_floor) |floor| @min(floor, parsed.seq) else parsed.seq;
 
             // What this reader may not see is not in the page at all, and
             // not in `exhausted`'s way either: skipping it is the same as
@@ -2007,7 +3245,10 @@ const Walk = struct {
             // comparison, not an allocation.
             if (!w.filter.admits(parsed.at_ms, parsed.text)) continue;
 
-            const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch continue;
+            const from = std.fmt.parseUnsigned(Bus.Id, parsed.from, 0) catch {
+                w.gap = true;
+                continue;
+            };
 
             const group = try w.alloc.dupe(u8, parsed.group);
             errdefer w.alloc.free(group);
@@ -2019,6 +3260,19 @@ const Walk = struct {
             errdefer freeMentions(w.alloc, mentions);
             const role = try copyRole(w.alloc, parsed.role);
             errdefer if (role) |r| w.alloc.free(r);
+
+            // The place the line occupies, for the anchor that will name
+            // it later. `line` is the line without its newline, so the
+            // start is the end less its length -- true both for a line in
+            // the middle of a window and for the last one in it.
+            const pos: Pos = .{
+                .day = w.cur_day,
+                .part = w.cur_part,
+                .inode = w.cur_inode,
+                .start = line_end - @as(u64, @intCast(line.len)),
+                .end = line_end,
+                .check = std.hash.Wyhash.hash(0, line),
+            };
 
             const entry: Entry = .{
                 .seq = parsed.seq,
@@ -2032,6 +3286,7 @@ const Walk = struct {
                 .covers_from_log = parsed.covers_from_log,
                 .mentions = mentions,
                 .role = role,
+                .pos = pos,
             };
 
             // **Before this record joins the page, not after.** A record
@@ -2799,6 +4054,497 @@ test "a line with no seq is not a line a cursor can point at" {
     try testing.expectEqualStrings("one", page.entries[0].text);
     try testing.expectEqualStrings("three", page.entries[1].text);
     try testing.expect(page.exhausted);
+}
+
+test "a line with no seq is named by its place, and the place is checked" {
+    // **The identity a line without a number has.** An older Polter wrote
+    // real messages with no `seq`; a page that invents one puts two
+    // different messages at the same number across a restart. What such a
+    // line does have is a place -- file, generation, bytes -- and this is
+    // that place being taken, read back, and refused when the file is no
+    // longer the file it was taken from.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    _ = l.append("build", 1, "worker", 1000, false, "one", 0);
+
+    const legacy = "{\"at_ms\":1001,\"group\":\"build\",\"from\":\"0x0000000000000001\"," ++
+        "\"author\":\"worker\",\"text\":\"legacy\"}\n";
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    try testGraft(&l, io, day, legacy);
+
+    _ = l.append("build", 1, "worker", 1002, false, "three", 0);
+
+    // The page an agent asks for by `before_seq` keeps its old answer:
+    // there is no number for that line to be asked from.
+    {
+        const page = try l.history(testing.allocator, "build", 0, 10, .{}, .everything);
+        defer ChatLog.freePage(testing.allocator, page);
+        try testing.expectEqual(@as(usize, 2), page.entries.len);
+    }
+
+    // The scan that continues by physical position hands it back, with the
+    // place that names it.
+    var reader = try ChatLog.Reader.open(alloc, io, dir);
+    defer reader.deinit();
+
+    const pos: Pos = blk: {
+        const page = try reader.scanUnsequenced(alloc, "build", 0, 10, .{}, .everything, null, null);
+        defer ChatLog.freeScanPage(alloc, page);
+        try testing.expectEqual(@as(usize, 3), page.entries.len);
+
+        const e = page.entries[1];
+        try testing.expectEqual(@as(u64, 0), e.seq);
+        try testing.expectEqualStrings("legacy", e.text);
+        const p = e.pos orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(dayOf(1001), p.day);
+        try testing.expectEqual(@as(u32, 1), p.part);
+        try testing.expect(p.inode != 0);
+        // The line without its newline; `end` is the byte after it.
+        try testing.expectEqual(@as(u64, legacy.len - 1), p.end - p.start);
+        break :blk p;
+    };
+
+    // Read back by the place: one exact record, not a scan that hopes.
+    {
+        const back = try ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything);
+        defer ChatLog.freeEntry(alloc, back);
+        try testing.expectEqual(@as(u64, 0), back.seq);
+        try testing.expectEqualStrings("legacy", back.text);
+        try testing.expectEqual(pos, back.pos.?);
+    }
+
+    // **Growth is not a reason to stop trusting the place.** The record is
+    // append-only in normal use, so a later message does not move this one.
+    _ = l.append("build", 1, "worker", 1003, false, "four", 0);
+    {
+        const back = try ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything);
+        defer ChatLog.freeEntry(alloc, back);
+        try testing.expectEqualStrings("legacy", back.text);
+    }
+
+    // A line rewritten in place at the same length, **still valid JSON**:
+    // `legacy` becomes `Legacy`. The inode and the size are unchanged and
+    // the line parses, so without the checksum the read would hand back a
+    // different message while looking entirely legal.
+    l.tree.close();
+    const text_at = pos.start + std.mem.indexOf(u8, legacy, "legacy").?;
+    {
+        const f = try std.Io.Dir.openFileAbsolute(io, day, .{ .mode = .read_write });
+        defer f.close(io);
+        try f.writePositionalAll(io, "L", text_at);
+    }
+    try testing.expectError(error.Stale, ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything));
+
+    // Put the byte back, so the next case starts from a real record.
+    {
+        const f = try std.Io.Dir.openFileAbsolute(io, day, .{ .mode = .read_write });
+        defer f.close(io);
+        try f.writePositionalAll(io, "l", text_at);
+    }
+    {
+        const back = try ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything);
+        defer ChatLog.freeEntry(alloc, back);
+        try testing.expectEqualStrings("legacy", back.text);
+    }
+
+    // **An unknown inode is not a matching one.** A position whose file
+    // identity was never pinned cannot be verified against a file that was
+    // replaced under the same name -- even one replaced with the same
+    // bytes, which the checksum would agree with.
+    var blind = pos;
+    blind.inode = 0;
+    try testing.expectError(error.Stale, ChatLog.readPos(alloc, io, &reader.tree, "build", blind, .everything));
+
+    // Replaced under the same name with the same bytes: a different file,
+    // and the inode is what says so.
+    const whole = try std.Io.Dir.cwd().readFileAlloc(io, day, alloc, .limited(1 << 20));
+    defer alloc.free(whole);
+    const copy = try std.fmt.allocPrint(alloc, "{s}.copy", .{day});
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, copy, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, whole);
+    }
+    try std.Io.Dir.renameAbsolute(copy, day, io);
+    try testing.expectError(error.Stale, ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything));
+
+    // A place in a file this group does not have is not found, rather than
+    // read out of some other group's directory.
+    var elsewhere = pos;
+    // A day the record has no file for. The premise is asserted, not
+    // assumed: `dayOf` takes milliseconds, and a value next to this test's
+    // own 1970 clock would name the same day file the line is in.
+    elsewhere.day = dayOf(1_800_000_000_000);
+    try testing.expect(elsewhere.day != pos.day);
+    try testing.expectError(error.NotFound, ChatLog.readPos(alloc, io, &reader.tree, "build", elsewhere, .everything));
+}
+
+test "a target and its neighbours are read around the place the anchor named" {
+    // **What a search hit's click needs.** The target is read by its own
+    // bytes, not found by paging the log until it turns up; the neighbours
+    // walk outward from it, and each side reports where it can continue.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    const words = [_][]const u8{ "one", "two", "three", "four", "five" };
+    for (words, 0..) |w, k| {
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(k)), false, w, 0);
+    }
+
+    var reader = try ChatLog.Reader.open(alloc, io, dir);
+    defer reader.deinit();
+
+    const pos: Pos = blk: {
+        const page = try reader.scan(alloc, "build", 0, 10, .{}, .everything, null, null);
+        defer ChatLog.freeScanPage(alloc, page);
+        for (page.entries) |e| {
+            if (e.seq == 3) break :blk e.pos.?;
+        }
+        return error.TestUnexpectedResult;
+    };
+
+    const page = try ChatLog.around(alloc, io, &reader.tree, "build", .everything, pos, 3, 2, 1, 5, null);
+    defer {
+        for (page.entries) |e| ChatLog.freeEntry(alloc, e);
+        alloc.free(page.entries);
+    }
+
+    try testing.expectEqual(@as(usize, 4), page.entries.len);
+    try testing.expectEqual(@as(usize, 2), page.target_index);
+    try testing.expectEqualStrings("one", page.entries[0].text);
+    try testing.expectEqualStrings("two", page.entries[1].text);
+    try testing.expectEqualStrings("three", page.entries[2].text);
+    try testing.expectEqualStrings("four", page.entries[3].text);
+    // Both sides continue from where the window stopped; the older one
+    // reaches the beginning on the next page.
+    try testing.expect(!page.older_at_end);
+    try testing.expect(page.older != null);
+    try testing.expect(!page.newer_at_end);
+    {
+        const rest = try reader.scan(alloc, "build", 0, 5, .{}, .everything, page.older, null);
+        defer ChatLog.freeScanPage(alloc, rest);
+        try testing.expectEqual(@as(usize, 0), rest.entries.len);
+        try testing.expect(rest.exhausted());
+    }
+
+    // Towards newer, from the cursor the page handed back.
+    const next = page.newer.?;
+    const more = try ChatLog.forwardScan(alloc, io, &reader.tree, "build", 5, .everything, 5, next, next.question, null);
+    defer {
+        for (more.entries) |e| ChatLog.freeEntry(alloc, e);
+        alloc.free(more.entries);
+    }
+    try testing.expectEqual(@as(usize, 1), more.entries.len);
+    try testing.expectEqualStrings("five", more.entries[0].text);
+    try testing.expectEqual(ScanStop.at_end, more.stop);
+
+    // A message written after the question was asked is the next question's,
+    // not this walk's.
+    _ = l.append("build", 1, "worker", 1006, false, "six", 0);
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    const size: u64 = blk: {
+        const f = try std.Io.Dir.openFileAbsolute(io, day, .{});
+        defer f.close(io);
+        break :blk (try f.stat(io)).size;
+    };
+    const fresh: ForwardCursor = .{
+        .day = pos.day,
+        .part = pos.part,
+        .offset = pos.end + 1,
+        .end = size,
+        .inode = pos.inode,
+        .question = ChatLog.questionFor("build", .{}, .everything),
+    };
+    const bounded = try ChatLog.forwardScan(alloc, io, &reader.tree, "build", 10, .everything, 5, fresh, fresh.question, null);
+    defer {
+        for (bounded.entries) |e| ChatLog.freeEntry(alloc, e);
+        alloc.free(bounded.entries);
+    }
+    try testing.expectEqual(@as(usize, 2), bounded.entries.len);
+    try testing.expectEqualStrings("four", bounded.entries[0].text);
+    try testing.expectEqualStrings("five", bounded.entries[1].text);
+    try testing.expectEqual(ScanStop.at_end, bounded.stop);
+
+    // A place that holds another number is stale, not a different message.
+    try testing.expectError(
+        error.Stale,
+        ChatLog.around(alloc, io, &reader.tree, "build", .everything, pos, 4, 1, 1, 5, null),
+    );
+
+    // And a file replaced under the same name cannot be verified at all.
+    const whole = try std.Io.Dir.cwd().readFileAlloc(io, day, alloc, .limited(1 << 20));
+    defer alloc.free(whole);
+    const copy = try std.fmt.allocPrint(alloc, "{s}.copy", .{day});
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, copy, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, whole);
+    }
+    try std.Io.Dir.renameAbsolute(copy, day, io);
+    try testing.expectError(
+        error.Stale,
+        ChatLog.around(alloc, io, &reader.tree, "build", .everything, pos, 3, 1, 1, 5, null),
+    );
+}
+
+test "page edges keep the captured end, and an empty page keeps its other boundary" {
+    // **A boundary is a fact, not an absence.** A null cursor and "the
+    // record ended" are two answers; the second is a flag. The end a page
+    // was captured with is what its edges continue under -- a fresh stat
+    // after an append would quietly widen the round.
+    const q: u64 = 0x2793;
+    const pos: Pos = .{ .day = 20261105, .part = 2, .inode = 77, .start = 100, .end = 150, .check = 9 };
+    const cap: u64 = 4096;
+
+    const one = [_]Entry{
+        .{ .seq = 1, .at_ms = 0, .group = "g", .from = 1, .author = "", .summary = false, .text = "", .channel = 0, .covers_from_log = 0, .mentions = null, .role = null, .pos = pos },
+    };
+    const incoming_older: ScanCursor = .{ .day = 20261105, .part = 2, .offset = 40, .end = cap, .inode = 77, .question = q };
+
+    // A page walked towards newer records: its older edge is the newest
+    // returned record's own place, under the **captured** end.
+    const edges = edgesWalkedNewer(&one, null, incoming_older, false, cap, q, .{ .stop = .at_end, .gap = false, .restarted = false, .cancelled = false });
+    try testing.expect(edges.older != null);
+    try testing.expectEqual(@as(u64, pos.start), edges.older.?.offset);
+    try testing.expectEqual(cap, edges.older.?.end);
+    try testing.expectEqual(@as(u64, 77), edges.older.?.inode);
+    try testing.expect(edges.newer == null);
+    try testing.expect(edges.newer_at_end);
+    try testing.expect(!edges.older_at_end);
+
+    // An empty page keeps the boundary on the side it did not walk, with
+    // that side's own fact -- not "the end" by default.
+    const incoming_newer: ForwardCursor = .{ .day = 20261105, .part = 2, .offset = 300, .end = cap, .inode = 77, .question = q };
+    const empty = edgesWalkedOlder(&.{}, null, incoming_newer, false, cap, q, .{ .stop = .gap, .gap = true, .restarted = false, .cancelled = false });
+    try testing.expect(empty.older == null);
+    try testing.expect(!empty.older_at_end);
+    try testing.expectEqual(incoming_newer, empty.newer.?);
+    try testing.expect(!empty.newer_at_end);
+}
+
+test "a forward walk across a window boundary loses nothing and every place reads back" {
+    // **The seam that a half-line makes.** A window ends in the middle of
+    // a record; consuming the whole window would step over that record's
+    // start, and computing a line's offset from the window's length would
+    // shift every line by the half-line's size. Both are one counter.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+
+    // Four hundred bytes a line: the 128 KiB window ends inside one of
+    // them, not between two.
+    const text = "x" ** 360;
+    const lines: usize = 600;
+    for (0..lines) |i| {
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(i)), false, text, 0);
+    }
+    l.tree.close();
+
+    var reader = try ChatLog.Reader.open(alloc, io, dir);
+    defer reader.deinit();
+
+    const day = try testDayPath(alloc, &l, "build", 1000);
+    const size, const inode = blk: {
+        const f = try std.Io.Dir.openFileAbsolute(io, day, .{});
+        defer f.close(io);
+        const st = try f.stat(io);
+        break :blk .{ st.size, @as(u64, @intCast(st.inode)) };
+    };
+    try testing.expect(size > scan_chunk_bytes);
+
+    const question = questionFor("build", .{}, .everything);
+    var cursor = try forwardAtFileStart(alloc, io, &reader.tree, "build", dayOf(1000), 1, 0, question);
+    // "Capture now" is the file's own size and its own identity.
+    try testing.expectEqual(size, cursor.end);
+    try testing.expectEqual(inode, cursor.inode);
+    try testing.expectEqual(@as(u64, 0), cursor.offset);
+
+    // Page by page, in a size that does not divide the record count.
+    var seen: std.ArrayListUnmanaged(u64) = .empty;
+    defer seen.deinit(alloc);
+    var rounds: usize = 0;
+    while (true) : (rounds += 1) {
+        try testing.expect(rounds < 100);
+        const page = try forwardScan(alloc, io, &reader.tree, "build", 137, .everything, 0, cursor, question, null);
+        defer {
+            for (page.entries) |e| freeEntry(alloc, e);
+            alloc.free(page.entries);
+        }
+        for (page.entries) |e| try seen.append(alloc, e.seq);
+        if (page.next) |c| {
+            cursor = c;
+        } else {
+            try testing.expectEqual(ScanStop.at_end, page.stop);
+            break;
+        }
+    }
+    try testing.expectEqual(@as(usize, lines), seen.items.len);
+    for (seen.items, 0..) |seq, i| try testing.expectEqual(@as(u64, i + 1), seq);
+
+    // Every place names its own record when read back, and the offsets
+    // are strictly increasing: a shifted start would fail both.
+    const all = try forwardScan(alloc, io, &reader.tree, "build", 1000, .everything, 0, .{
+        .day = dayOf(1000),
+        .part = 1,
+        .offset = 0,
+        .end = size,
+        .inode = inode,
+        .question = question,
+    }, question, null);
+    defer {
+        for (all.entries) |e| freeEntry(alloc, e);
+        alloc.free(all.entries);
+    }
+    try testing.expectEqual(@as(usize, lines), all.entries.len);
+
+    var previous: u64 = 0;
+    for (all.entries, 0..) |e, i| {
+        const pos = e.pos.?;
+        try testing.expect(pos.start >= previous);
+        try testing.expect(pos.start < pos.end);
+        previous = pos.end;
+        // Every record, not a sample: the read-back is what proves the
+        // place is the place.
+        if (i == 0 or i + 1 == lines or (i > 400 and i < 420)) {
+            const back = try ChatLog.readPos(alloc, io, &reader.tree, "build", pos, .everything);
+            defer ChatLog.freeEntry(alloc, back);
+            try testing.expectEqual(e.seq, back.seq);
+            try testing.expectEqualStrings(e.text, back.text);
+        }
+    }
+}
+
+test "a cancelled walk stops before consuming and resumes where it stood" {
+    // **Cancellation is a flag checked between lines, not a kill.** A read
+    // that is told to stop must not have consumed the record it was about
+    // to hand over: the cursor it leaves names that record, and clearing
+    // the flag continues from there with nothing lost or returned twice.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try testDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var l = try ChatLog.open(testing.allocator, io, dir);
+    defer l.deinit();
+    const words = [_][]const u8{ "one", "two", "three", "four", "five" };
+    for (words, 0..) |w, k| {
+        _ = l.append("build", 1, "worker", 1000 + @as(i64, @intCast(k)), false, w, 0);
+    }
+
+    var reader = try ChatLog.Reader.open(alloc, io, dir);
+    defer reader.deinit();
+
+    var flag: std.atomic.Value(bool) = .init(true);
+    const cancel: Cancel = .{ .flag = &flag };
+
+    const stopped = try scanTreeCancel(
+        alloc,
+        io,
+        &reader.tree,
+        "build",
+        0,
+        10,
+        .{},
+        .everything,
+        null,
+        null,
+        cancel,
+    );
+    defer freeScanPage(alloc, stopped);
+    try testing.expect(stopped.cancelled);
+    try testing.expectEqual(@as(usize, 0), stopped.entries.len);
+    try testing.expectEqual(ScanStop.budget, stopped.stop);
+    const next = stopped.next orelse return error.TestUnexpectedResult;
+
+    // Towards newer, the same rule on the other walk.
+    var fwd_flag: std.atomic.Value(bool) = .init(true);
+    const fwd_cancel: Cancel = .{ .flag = &fwd_flag };
+    const fresh: ForwardCursor = .{
+        .day = next.day,
+        .part = next.part,
+        .offset = 0,
+        .end = next.end,
+        .inode = next.inode,
+        .question = questionFor("build", .{}, .everything),
+    };
+    const fwd_stopped = try forwardScanCancel(
+        alloc,
+        io,
+        &reader.tree,
+        "build",
+        10,
+        .everything,
+        0,
+        fresh,
+        fresh.question,
+        null,
+        fwd_cancel,
+    );
+    defer {
+        for (fwd_stopped.entries) |e| freeEntry(alloc, e);
+        alloc.free(fwd_stopped.entries);
+    }
+    try testing.expect(fwd_stopped.cancelled);
+    try testing.expectEqual(@as(usize, 0), fwd_stopped.entries.len);
+    try testing.expect(fwd_stopped.next != null);
+
+    // Clearing the flag continues from where it stood: every message.
+    flag.store(false, .release);
+    const rest = try scanTreeCancel(
+        alloc,
+        io,
+        &reader.tree,
+        "build",
+        0,
+        10,
+        .{},
+        .everything,
+        next,
+        null,
+        cancel,
+    );
+    defer freeScanPage(alloc, rest);
+    try testing.expect(!rest.cancelled);
+    try testing.expectEqual(@as(usize, 5), rest.entries.len);
 }
 
 test "a scan cursor walks past bytes it has already read" {
@@ -4607,7 +6353,7 @@ test "channel: group_history 压缩后，不带历史的成员读不到摘要，
 
     // A summary line from before this field existed does not say where it
     // starts: kept from a barred member, as the bar cannot be proved.
-    const legacy: Entry = .{ .seq = fl.log_seq + 5, .at_ms = 0, .group = "g", .from = boss, .author = "", .summary = true, .text = "", .channel = 0, .covers_from_log = 0 };
+    const legacy: Entry = .{ .seq = fl.log_seq + 5, .at_ms = 0, .group = "g", .from = boss, .author = "", .summary = true, .text = "", .channel = 0, .covers_from_log = 0, .pos = null };
     try testing.expect(hiddenFrom(legacy, fl.log_seq, true));
     try testing.expect(!hiddenFrom(legacy, 0, false));
 }
@@ -5074,4 +6820,85 @@ test "output budget: maxInt, an over-large shell and a zero-space page are told 
         try testing.expectEqual(@as(usize, 0), page.entries.len);
         try testing.expectEqual(ScanStop.too_large, page.stop);
     }
+}
+
+test "2976 clean EOF is explicit and an oversized neighbor never discards a fitting target" {
+    const t = std.testing;
+    const incoming: ForwardCursor = .{ .day = 1, .part = 1, .offset = 10, .end = 20, .inode = 3, .question = 4 };
+    inline for (.{
+        WalkFacts{ .stop = .gap, .gap = true, .restarted = false, .cancelled = false },
+        WalkFacts{ .stop = .budget, .gap = false, .restarted = false, .cancelled = false },
+        WalkFacts{ .stop = .at_end, .gap = false, .restarted = true, .cancelled = false },
+        WalkFacts{ .stop = .at_end, .gap = false, .restarted = false, .cancelled = true },
+    }) |facts| {
+        const edges = edgesWalkedOlder(&.{}, null, incoming, false, 20, 4, facts);
+        try t.expect(!edges.older_at_end);
+        try t.expect(!edges.newer_at_end);
+        try t.expectEqual(incoming, edges.newer.?);
+    }
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var log_file = try ChatLog.open(t.allocator, t.io, root);
+    defer log_file.deinit();
+    _ = log_file.append("build", 1, "author", 1, false, "x" ** 100, 0);
+    _ = log_file.append("build", 1, "author", 2, false, "T", 0);
+    var reader = try Reader.open(t.allocator, t.io, root);
+    defer reader.deinit();
+    const page = try reader.scan(t.allocator, "build", 0, 2, .{}, .everything, null, null);
+    defer freeScanPage(t.allocator, page);
+    const measure = struct {
+        fn cost(_: ?*const anyopaque, entry: *const Entry) usize {
+            return entry.text.len;
+        }
+    }.cost;
+    const window = try around(t.allocator, t.io, &reader.tree, "build", .everything, page.entries[1].pos.?, 2, 1, 0, 2, .{ .bytes = 16, .shell = 4, .measure = measure, .context = null });
+    defer {
+        for (window.entries) |entry| freeEntry(t.allocator, entry);
+        t.allocator.free(window.entries);
+    }
+    try t.expectEqual(ScanStop.full, window.stop);
+    try t.expectEqual(@as(usize, 1), window.entries.len);
+    try t.expectEqualStrings("T", window.entries[window.target_index].text);
+    try t.expect(window.older != null);
+    try t.expect(!window.older_at_end);
+}
+
+test "2976 verified forward captured half line is gap rather than clean EOF" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var log_file = try ChatLog.open(t.allocator, t.io, root);
+    defer log_file.deinit();
+    _ = log_file.append("build", 1, "author", 1, false, "whole", 0);
+    var reader = try Reader.open(t.allocator, t.io, root);
+    defer reader.deinit();
+    var days = try reader.tree.days(t.allocator, "build");
+    defer days.deinit(t.allocator);
+    const day = days.items[0];
+    const path = try reader.tree.partPath(t.allocator, "build", day.day, day.part);
+    defer t.allocator.free(path);
+    const file = try std.Io.Dir.openFileAbsolute(t.io, path, .{ .mode = .read_write });
+    defer file.close(t.io);
+    const size = (try file.stat(t.io)).size;
+    try file.writePositionalAll(t.io, "{\"group\":\"build\",\"text\":\"half", size);
+    var work: Range.Work = .{ .cancel = null };
+    const capture = try Range.Capture.create(t.allocator, t.io, &reader.tree, "build", &work);
+    defer capture.destroy();
+    var verifier = try Range.Verifier.init(t.allocator, t.io, capture, null);
+    defer verifier.deinit();
+    const question = questionFor("build", .{}, .everything);
+    const from = try forwardAtFileStart(t.allocator, t.io, &reader.tree, "build", day.day, day.part, 0, question);
+    const page = try forwardScanVerified(t.allocator, t.io, &reader.tree, "build", 10, .everything, 1, from, question, null, null, &verifier);
+    defer {
+        for (page.entries) |entry| freeEntry(t.allocator, entry);
+        t.allocator.free(page.entries);
+    }
+    try t.expectEqual(ScanStop.gap, page.stop);
+    try t.expect(page.gap);
+    try t.expectEqual(@as(usize, 1), page.entries.len);
+    try t.expectEqualStrings("whole", page.entries[0].text);
 }

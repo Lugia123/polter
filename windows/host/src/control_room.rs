@@ -4180,6 +4180,71 @@ pub(crate) fn rgb(c: Rgba) -> COLORREF {
     COLORREF((c.r as u32) | ((c.g as u32) << 8) | ((c.b as u32) << 16))
 }
 
+/// Fill `rect` with `colour`, **compositing it over the ground when it is
+/// translucent**.
+///
+/// `rgb` drops alpha, and a solid brush made from a translucent colour paints
+/// its RGB as though it were opaque: a located message row would come out
+/// solid blue and a found word solid yellow (task 2978 M1). `AlphaBlend` is
+/// source-over, so whatever is already drawn underneath survives. A colour
+/// with no alpha takes the ordinary path and costs nothing.
+pub(crate) unsafe fn fill_rgba(dc: HDC, rect: &RECT, colour: Rgba) {
+    let w = (rect.right - rect.left).max(0);
+    let h = (rect.bottom - rect.top).max(0);
+    if w == 0 || h == 0 {
+        return;
+    }
+    if colour.a >= 1.0 {
+        let brush = CreateSolidBrush(rgb(colour));
+        let _ = FillRect(dc, rect, brush);
+        let _ = DeleteObject(brush.into());
+        return;
+    }
+    unsafe {
+        // One premultiplied pixel, stretched over the rectangle.
+        let Some((bmp, bits)) = dib(1, 1) else { return };
+        let a8 = (colour.a.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let pre = |c: u8| (c as u32 * a8 + 127) / 255;
+        std::slice::from_raw_parts_mut(bits, 1)[0] =
+            (a8 << 24) | (pre(colour.r) << 16) | (pre(colour.g) << 8) | pre(colour.b);
+        // **The pixel was written through the DIB's bits, not through GDI**:
+        // flush before the blend reads it (the same step `blend` takes).
+        let _ = GdiFlush();
+        let src = CreateCompatibleDC(Some(dc));
+        let old = SelectObject(src, bmp.into());
+        let how = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let drawn = AlphaBlend(dc, rect.left, rect.top, w, h, src, 0, 0, 1, 1, how);
+        if !drawn.as_bool() {
+            // **A highlight that silently vanished is a defect nobody can
+            // report**: say it once, with the colour and the rectangle
+            // (task 2978).
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static SAID: AtomicBool = AtomicBool::new(false);
+            if !SAID.swap(true, Ordering::Relaxed) {
+                plogf!(
+                    "[paint] fill_rgba: AlphaBlend refused rgba({},{},{},{}) at ({},{}-{},{}) -- the highlight is not drawn (said once)",
+                    colour.r,
+                    colour.g,
+                    colour.b,
+                    colour.a,
+                    rect.left,
+                    rect.top,
+                    rect.right,
+                    rect.bottom
+                );
+            }
+        }
+        SelectObject(src, old);
+        let _ = DeleteDC(src);
+        let _ = DeleteObject(bmp.into());
+    }
+}
+
 /// Points to device pixels, from an origin in pixels.
 #[derive(Clone, Copy)]
 struct Px {

@@ -1465,3 +1465,78 @@
 /* The native chat's message row (task 2800 C2b-1 v2): the parse budget
    cannot admit this row while the ones on screen are pinned. */
 "Showing the original text" = "Showing the original text";
+
+/* The native chat's reading state and message metadata (task 2969 B): a
+   released run in the window, the channel and handover words, the days, a
+   cancelled load, and the recovery the list offers for a released run. */
+"Earlier records were released." = "Earlier records were released.";
+"Group chat" = "Group chat";
+"Handover summary" = "Handover summary";
+"Loading was cancelled." = "Loading was cancelled.";
+"Reload from newest" = "Reload from newest";
+"Some chat records could not be read." = "Some chat records could not be read.";
+"Some records were released here." = "Some records were released here.";
+"Task #%@" = "Task #%@";
+"Today" = "Today";
+"Yesterday" = "Yesterday";
+
+/* The native chat's later B increment (task 2969): the header's group facts,
+   the earlier-page boundary, and the jump-to-latest pill. */
+"Collapse" = "Collapse";
+"Continue" = "Continue";
+"Could not load earlier messages (%@)." = "Could not load earlier messages (%@).";
+"Expand" = "Expand";
+"Group info is unavailable." = "Group info is unavailable.";
+"Jump to latest" = "Jump to latest";
+"Load earlier messages" = "Load earlier messages";
+"Loading chat history…" = "Loading chat history…";
+"Loading earlier messages was cancelled." = "Loading earlier messages was cancelled.";
+"Loading earlier messages…" = "Loading earlier messages…";
+"New messages · jump to latest" = "New messages · jump to latest";
+"Read-only: viewing members sends nothing." = "Read-only: viewing members sends nothing.";
+"Reading group info…" = "Reading group info…";
+"Showing the first %d members." = "Showing the first %d members.";
+"Some earlier records could not be read." = "Some earlier records could not be read.";
+"You" = "You";
+"You have reached the earliest message." = "You have reached the earliest message.";
+
+/* The chat's search panel (task 2969 C1/C2): the slot, the field, every
+   state of a scan, and the bound on retained results. */
+"Find in this group" = "Find in this group";
+"Search this group…" = "Search this group…";
+"Search messages" = "Search messages";
+"Search this group" = "Search this group";
+"Searching…" = "Searching…";
+"Found %@ · still searching" = "Found %@ · still searching";
+"%@ results" = "%@ results";
+"No matches" = "No matches";
+"Found %@ · some records could not be read" = "Found %@ · some records could not be read";
+"Search failed (%@)." = "Search failed (%@).";
+"Search cancelled" = "Search cancelled";
+"Type something to search" = "Type something to search";
+"Showing the matches around this point; search again for the newest." = "Showing the matches around this point; search again for the newest.";
+"Load more" = "Load more";
+"Close search" = "Close search";
+
+"Paused" = "Paused";
+"Found %@ · not complete" = "Found %@ · not complete";
+
+"This direction's edge was released." = "This direction's edge was released.";
+"Re-anchor here" = "Re-anchor here";
+"Earlier context" = "Earlier context";
+"Later context" = "Later context";
+"Return to latest" = "Return to latest";
+
+"Back to search" = "Back to search";
+
+/* The chat's search locate and its preview shell (task 2982): the left
+   side's two states said above the results, the preview's loading and
+   failure, and the shell's own title and source line. */
+"Locating…" = "Locating…";
+"Could not locate that message." = "Could not locate that message.";
+"Loading preview…" = "Loading preview…";
+"Could not open this file." = "Could not open this file.";
+"No file is open." = "No file is open.";
+"Close preview" = "Close preview";
+"File" = "File";
+"From %@ · %@" = "From %@ · %@";

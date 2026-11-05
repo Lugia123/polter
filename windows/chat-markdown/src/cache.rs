@@ -176,10 +176,11 @@ fn block_cost(block: &crate::Block) -> usize {
         crate::Block::ListItem(item) => {
             std::mem::size_of::<crate::ListItem>() + runs_cost(&item.runs)
         }
-        crate::Block::Code { language, text } => {
+        crate::Block::Code { language, text, spans } => {
             std::mem::size_of::<Option<String>>()
                 + text.capacity()
                 + language.as_ref().map_or(0, |l| l.capacity())
+                + spans.capacity() * std::mem::size_of::<crate::Span>()
         }
         crate::Block::Table(table) => {
             let mut n = std::mem::size_of::<crate::Table>();
@@ -209,7 +210,11 @@ fn runs_cost(runs: &Vec<crate::Run>) -> usize {
         + runs.capacity() * std::mem::size_of::<crate::Run>();
     for run in runs {
         n += run.text.capacity();
+        n += run.spans.capacity() * std::mem::size_of::<crate::Span>();
         if let Some(link) = &run.style.link {
+            n += link.len();
+        }
+        if let Some(link) = &run.style.link_raw {
             n += link.len();
         }
     }

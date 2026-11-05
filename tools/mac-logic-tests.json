@@ -88,6 +88,19 @@
       "macos/Sources/Features/ControlRoom/ControlRoomChatRules.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatData.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatHistory.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatMetadata.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatAnchor.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatPresentation.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatSearch.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatSearchFeed.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatContext.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatReference.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatReferenceDesk.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatRawReference.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatDisplayHighlight.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatSidebar.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatSidebarPanel.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatHeader.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatTransport.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift",
       {
@@ -209,6 +222,10 @@
     ],
     "out": [
       {
+        "path": "macos/Sources/Features/Preview/PreviewBrowserView.swift",
+        "why": "the matched render=browser web view: WebKit plus PreviewBridge (which reaches the app's core); no logic test can start it"
+      },
+      {
         "path": "macos/Sources/Features/Splits/SplitView.swift",
         "why": "draws the split view: its `body` builds `GeometryReader`+`ZStack` and its initialiser takes two `@ViewBuilder` closures, so a package would have to compile SwiftUI views whose leaves are real terminals in the app; the arithmetic and the constants it reads are `SplitViewLayout.swift`, which is in and is held by `SplitViewDragTests`. Listed here rather than left unplaced because `macos/Sources/Features/Splits` is a watched directory as of task 2646, and being watched is what makes an omission a failure"
       },
@@ -319,6 +336,14 @@
       "macos/Tests/ControlRoom/ControlRoomSupervisorTitleTests.swift",
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatRulesTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatPresentationTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatSearchTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatSearchFeedTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatContextTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatReferenceTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatReferenceDeskTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatDisplayHighlightTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatSidebarTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatHistoryTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatTransportTests.swift",

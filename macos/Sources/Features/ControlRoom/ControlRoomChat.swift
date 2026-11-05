@@ -50,6 +50,9 @@ final class ControlRoomChatContainer: NSView {
         /// The model behind a native chat, which is where its polling lives;
         /// nil for a terminal.
         let feed: ControlRoomChatFeed?
+        /// The group search driven through the same door (task 2969 C1).
+        /// Nil for a terminal chat, which has no search of its own.
+        let search: ControlRoomChatSearchFeed?
     }
 
     /// The one looked at longest ago first (`ControlRoomChatRules.lookedAt`).
@@ -98,6 +101,15 @@ final class ControlRoomChatContainer: NSView {
     /// that this file decides nothing about the core, and so that the page
     /// keeps working in a build whose core has no such door.
     var askCore: ControlRoomChatFeed.Ask?
+
+    /// The chat page asked for the group's search (the header's button):
+    /// which group, so the page can open the group's own sidebar.
+    var onSearch: ((String) -> Void)?
+
+    /// A link in a message's Markdown: the group, the message it came from
+    /// (identity and location hint), and the URL. The page decides whether it
+    /// is a file reference for the core or an external link.
+    var onReference: ((String, ControlRoomChatData.Message, String?) -> Void)?
 
     init(_ ghostty: Ghostty.App) {
         self.ghostty = ghostty
@@ -168,6 +180,9 @@ final class ControlRoomChatContainer: NSView {
             )
             if let feed = chat.feed {
                 if shown && seen { feed.start(group: chat.group) } else { feed.stop() }
+            }
+            if let search = chat.search {
+                if shown && seen { search.start(group: chat.group) } else { search.stop() }
             }
         }
     }
@@ -261,7 +276,17 @@ final class ControlRoomChatContainer: NSView {
         guard let ghostty, let app = ghostty.app else { return nil }
         if let askCore {
             let feed = ControlRoomChatFeed(ask: askCore)
-            let host = NSHostingView(rootView: ControlRoomNativeChatPane(group: group, feed: feed))
+            let search = ControlRoomChatSearchFeed(ask: askCore)
+            let pane = ControlRoomNativeChatPane(
+                group: group,
+                feed: feed,
+                search: search,
+                onSearch: { [weak self] in self?.onSearch?(group) },
+                onReference: { [weak self] message, reference in
+                    self?.onReference?(group, message, reference)
+                }
+            )
+            let host = NSHostingView(rootView: pane)
             host.translatesAutoresizingMaskIntoConstraints = false
             addSubview(host)
             NSLayoutConstraint.activate([
@@ -271,7 +296,7 @@ final class ControlRoomChatContainer: NSView {
                 host.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
             Ghostty.logger.notice("control room: chat for \(group, privacy: .public): native, out of the core's own messages")
-            return Chat(group: group, view: nil, host: host, feed: feed)
+            return Chat(group: group, view: nil, host: host, feed: feed, search: search)
         }
         var config = Ghostty.SurfaceConfiguration()
         config.command = ControlRoomChatRules.command(group: group)
@@ -290,7 +315,20 @@ final class ControlRoomChatContainer: NSView {
             host.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         Ghostty.logger.notice("control room: chat for \(group, privacy: .public): \(config.command ?? "", privacy: .public) (poltergeistChat)")
-        return Chat(group: group, view: view, host: host, feed: nil)
+        return Chat(group: group, view: view, host: host, feed: nil, search: nil)
+    }
+
+    /// The search feed for `group`, when this build has the core's door.
+    func search(for group: String) -> ControlRoomChatSearchFeed? {
+        chats.first { $0.group == group }?.search
+    }
+
+    /// The **message** feed for `group`, when this build has the core's door.
+    /// A search result is located in the group's own chat, so the page asks
+    /// for the same feed the container already made -- it never makes a
+    /// second one.
+    func feed(for group: String) -> ControlRoomChatFeed? {
+        chats.first { $0.group == group }?.feed
     }
 
     private func close(at i: Int, why: String) {
@@ -308,6 +346,7 @@ final class ControlRoomChatContainer: NSView {
         // A native chat's polling stops with it (task 2791): a chat that is
         // gone must not go on asking the core.
         chat.feed?.stop()
+        chat.search?.stop()
         chat.host.removeFromSuperview()
         Ghostty.logger.notice("control room: chat for \(chat.group, privacy: .public) closed: \(why, privacy: .public)")
     }
@@ -399,41 +438,114 @@ struct ControlRoomChatPage: View {
     /// asks otherwise.
     @State private var side: ControlRoomSidebar.Side = .chat
 
+    /// The store was opened by the search button (not by ⌘\), so the slot
+    /// change must not close the search that asked for it.
+    @State private var openingSearch = false
+    /// The slot is being opened **by this page's own adoption**. The store's
+    /// open transition must not then be read as the person closing the slot
+    /// and release the ticket we just adopted.
+    @State private var openingPreview = false
+
+    /// The reference job and ticket ledger for this page's slot.
+    @State private var referenceDesk: ControlRoomChatReferenceDesk?
+    /// The slot cell the desk's ticket belongs to, so a group change can
+    /// close the old one before the cell changes.
+    @State private var referenceCell: String?
+    /// The message/reference that opened the preview, for the slot's source.
+    @State private var previewSource: ControlRoomChatSidebarState.PreviewSource?
+
     /// The cell this page's sidebar lives in: **the chat's own, for this
     /// group** (task 2775). Named through `ControlRoomSidebar` so that the
     /// key has one spelling for the whole application, and named with the
     /// group so that switching groups does not carry a preview across.
     private var cell: String { ControlRoomSidebar.key(group: group) }
 
+    /// The group's search, once the container has made it. Nil before then
+    /// and in a build without the core's door.
+    private var searchFeed: ControlRoomChatSearchFeed? {
+        model.chatContainer?.search(for: group)
+    }
+
     var body: some View {
         let theme = Look.theme(scheme)
-        ZStack {
-            theme.terminalBackground.color
-            if let container = model.chatContainer {
-                ChatHost(container: container)
-            }
-            if model.chatEnded.contains(group) {
-                Button { model.chatContainer?.reopen(group) } label: {
-                    Text(String(localized: "The chat has ended. Click here to open it again.",
-                                comment: "总控台：群聊页，聊天程序结束以后"))
-                        .foregroundStyle(theme.textSecondary.color)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
+        // **The page's own split** (task 2982): the chat's slot is 330 and
+        // the threshold is the preview rule's 800, but there is no terminal
+        // to hold, no left expose and no drag band -- see
+        // `ControlRoomChatSidebarLayout` for why this is the chat's rule and
+        // not a second `PreviewLayout`.
+        GeometryReader { geometry in
+            let open = ghostty.previewStore.state(cell).open
+            let split = ControlRoomChatSidebarLayout.split(
+                pageW: geometry.size.width, open: open)
+            ZStack(alignment: .topLeading) {
+                ZStack {
+                    theme.terminalBackground.color
+                    if let container = model.chatContainer {
+                        ChatHost(container: container)
+                    }
+                    if model.chatEnded.contains(group) {
+                        Button { model.chatContainer?.reopen(group) } label: {
+                            Text(String(localized: "The chat has ended. Click here to open it again.",
+                                        comment: "总控台：群聊页，聊天程序结束以后"))
+                                .foregroundStyle(theme.textSecondary.color)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
+                // **One view, one place, whatever the slot is doing**: the
+                // chat is not chosen between two branches, only framed
+                // (task 1461's rule; the same shape `PaneFramePreview` has).
+                .frame(width: split.messageWidth, height: geometry.size.height,
+                       alignment: .topLeading)
+                if split.sidebarWidth > 0, let messageFeed = model.chatContainer?.feed(for: group) {
+                    ControlRoomChatSlotPanel(
+                        cell: cell,
+                        split: split,
+                        store: $ghostty.previewStore,
+                        search: searchFeed,
+                        message: messageFeed,
+                        onCloseSearch: closeSearch,
+                        onLocate: { hit in locate(hit) },
+                        onBackToSearch: { releaseReference(); searchFeed?.backToSearch() }
+                    )
+                    .frame(width: split.sidebarWidth, height: geometry.size.height,
+                           alignment: .topLeading)
+                    .offset(x: split.sidebarX)
+                    // Where ⌘⌥→ puts the keyboard: a view with nothing in it
+                    // that the chat stops receiving keys into. Everything it
+                    // does not use goes on up the responder chain
+                    // (`SidebarFocusSink`), so nothing is swallowed.
+                    .background(SidebarFocusSink(wanted: side == .preview))
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height,
+                   alignment: .topLeading)
+        }
+        .onAppear {
+            model.chatContainer?.show(group)
+            model.chatContainer?.onSearch = { requested in openSearch(requested) }
+            model.chatContainer?.onReference = { requested, message, reference in
+                resolveReference(group: requested, message: message, reference: reference)
             }
         }
-        .panePreview(cell: cell, store: $ghostty.previewStore) { split in
-            PanePreviewPanel(cell: cell, split: split, store: $ghostty.previewStore)
-                // Where ⌘⌥→ puts the keyboard: a view with nothing in it that
-                // the chat stops receiving keys into. Everything it does not
-                // use goes on up the responder chain (`SidebarFocusSink`), so
-                // nothing is swallowed.
-                .background(SidebarFocusSink(wanted: side == .preview))
+        .onChange(of: group) { newGroup in
+            // **The handler must name the group the page is on now.** A
+            // closure left from A would reject B's button.
+            releaseReference()
+            model.chatContainer?.show(newGroup)
+            model.chatContainer?.onSearch = { requested in openSearch(requested) }
+            model.chatContainer?.onReference = { requested, message, reference in
+                resolveReference(group: requested, message: message, reference: reference)
+            }
         }
-        .onAppear { model.chatContainer?.show(group) }
-        .onChange(of: group) { model.chatContainer?.show($0) }
-        .onDisappear { model.chatContainer?.show(nil) }
+        .onDisappear {
+            releaseReference()
+            model.chatContainer?.show(nil)
+            model.chatContainer?.onSearch = nil
+            model.chatContainer?.onReference = nil
+        }
         // What the window's ⌘⌥←/→ asks for while this page is in front
         // (`ControlRoomController`). Set while the page is drawn and taken
         // away as it leaves, the way the task page's Return is
@@ -449,7 +561,26 @@ struct ControlRoomChatPage: View {
         // goes wrong silently: a window whose first responder is a view that
         // is no longer drawn is a window where typing goes nowhere.
         .onChange(of: ghostty.previewStore.state(cell).open) { open in
-            guard !open else { return }
+            if open {
+                // ⌘\ opening the slot is a preview: the search is replaced.
+                if openingSearch {
+                    openingSearch = false
+                    return
+                }
+                if openingPreview {
+                    // **Our own adoption opened it.** The ticket is live;
+                    // treating this as an external open would close it.
+                    openingPreview = false
+                    return
+                }
+                // A real replacement: the old owner goes, together with the
+                // store's token, before anything new is shown.
+                releaseReference()
+                searchFeed?.close()
+                return
+            }
+            releaseReference()
+            searchFeed?.close()
             move(to: ControlRoomSidebar.side(opened: false))
         }
     }
@@ -476,6 +607,158 @@ struct ControlRoomChatPage: View {
         model.sidebarFocus = { move(to: $0) }
     }
 
+    // MARK: - Message file references
+
+    /// A link in a message. External URLs open normally; anything else is a
+    /// file reference and is resolved **by the core**, never by a host path
+    /// guess. The source's location hint travels with it.
+    private func resolveReference(
+        group requested: String,
+        message: ControlRoomChatData.Message,
+        reference: String?
+    ) {
+        guard requested == group else { return }
+        guard let reference else {
+            // The exact raw destination could not be identified (none, or
+            // several spellings): say so, do not guess a URL.
+            releaseReference()
+            previewSource = ControlRoomChatSidebarState.PreviewSource(
+                group: group, anchor: message.anchor, reference: "",
+                location: message.location,
+                author: message.author, atMs: message.atMs
+            )
+            referenceCell = cell
+            searchFeed?.openPreview(previewSource!)
+            openingPreview = true
+            ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
+            ghostty.previewStore.set(cell, open: true)
+            searchFeed?.previewFailed("ReferenceUnavailable")
+            return
+        }
+        if reference.hasPrefix("http://") || reference.hasPrefix("https://")
+            || reference.hasPrefix("mailto:"),
+           let url = URL(string: reference) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        // **The old owner goes before the new one starts**: store and ledger
+        // change together, and the slot shows an empty body while the core
+        // is asked.
+        releaseReference()
+        previewSource = ControlRoomChatSidebarState.PreviewSource(
+            group: group,
+            anchor: message.anchor,
+            reference: reference,
+            location: message.location,
+            author: message.author,
+            atMs: message.atMs
+        )
+        referenceCell = cell
+        searchFeed?.openPreview(previewSource!)
+        openingPreview = true
+        ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
+        ghostty.previewStore.set(cell, open: true)
+        referenceDeskForThePage().resolve(
+            cell: cell, group: group, anchor: message.anchor,
+            location: message.location, reference: reference
+        )
+    }
+
+    private func referenceDeskForThePage() -> ControlRoomChatReferenceDesk {
+        if let referenceDesk { return referenceDesk }
+        let desk = ControlRoomChatReferenceDesk(
+            ask: ControlRoomChatCoreAdapter.ask(ghostty)
+        )
+        desk.onEffect = { effect in applyReferenceEffect(effect) }
+        referenceDesk = desk
+        return desk
+    }
+
+    /// The desk's two effects, applied to the one slot. **The Store and the
+    /// ledger change together here**; no second owner.
+    private func applyReferenceEffect(_ effect: ControlRoomChatReferenceDesk.Effect) {
+        switch effect {
+        case let .adopt(cell, token, presentation, closeOld, anchor, location):
+            if let closeOld { closeTicket(closeOld) }
+            // The core's accepted identity replaces the requested one for a
+            // later re-open; the raw reference is kept as it was.
+            if var source = previewSource {
+                source.anchor = anchor
+                source.location = location
+                previewSource = source
+            }
+            if let previewSource {
+                searchFeed?.openPreview(previewSource)
+            }
+            ghostty.previewStore.setFile(
+                cell, rel: "", token: token, presentation: presentation
+            )
+            openingPreview = true
+            ghostty.previewStore.set(cell, open: true)
+            searchFeed?.previewReady()
+        case let .close(cell, token, code):
+            if let token { closeTicket(token) }
+            // A refusal for **this** slot also takes the old owner out of
+            // both the ledger and the store; a late reply for another slot
+            // only gives its own token back.
+            guard !cell.isEmpty, cell == referenceCell else { return }
+            if let old = referenceDesk?.close(cell: cell), old != token {
+                closeTicket(old)
+            }
+            ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
+            ghostty.previewStore.set(cell, open: true)
+            searchFeed?.previewFailed(code)
+        }
+    }
+
+    private func closeTicket(_ token: String) {
+        guard !token.isEmpty else { return }
+        _ = PreviewTicket.close(.core(ghostty), token: token)
+    }
+
+    private func releaseReference() {
+        guard let desk = referenceDesk else { return }
+        let slot = referenceCell ?? cell
+        if let token = desk.close(cell: slot) { closeTicket(token) }
+        // **The store is cleared with the ledger.** Otherwise the cell keeps
+        // a token whose ticket is closed, and opening it again revives a dead
+        // ticket.
+        ghostty.previewStore.setFile(slot, rel: "", token: "", presentation: .file)
+        referenceCell = nil
+        previewSource = nil
+    }
+
+    /// The header's search button: the group's own slot shows the search.
+    /// **There is no ⌘F here** -- the page has no key equivalent of its own,
+    /// and a chord that stole F from the field was the bug.
+    private func openSearch(_ requested: String) {
+        guard requested == group,
+              let feed = model.chatContainer?.search(for: requested)
+        else { return }
+        // A reference still in flight must not later replace the search.
+        releaseReference()
+        model.chatContainer?.feed(for: requested)?.clearLocateNotice()
+        feed.openSearch()
+        openingSearch = true
+        ghostty.previewStore.set(cell, open: true)
+    }
+
+    /// A search result was picked: the left side shows its **original
+    /// conversation** around the exact anchor, with both context cursors.
+    /// The right side keeps the query and the selected result.
+    private func locate(_ hit: ControlRoomChatSearch.Hit) {
+        guard let feed = model.chatContainer?.feed(for: group) else { return }
+        feed.locate(anchor: hit.message.anchor, location: hit.message.location)
+    }
+
+    /// The search panel's close, or the slot closing: the search stops and
+    /// the slot goes, never leaving a spinner behind.
+    private func closeSearch() {
+        model.chatContainer?.feed(for: group)?.clearLocateNotice()
+        searchFeed?.close()
+        ghostty.previewStore.set(cell, open: false)
+    }
+
     /// Stand the keyboard on one side, for real: the chat's is a terminal
     /// and only the container can hand it the first responder, and the
     /// sidebar's is a view with nothing in it (`SidebarFocusSink`).
@@ -484,6 +767,264 @@ struct ControlRoomChatPage: View {
         switch wanted {
         case .chat: model.chatContainer?.focusChat()
         case .preview: model.chatContainer?.resignChat()
+        }
+    }
+
+    /// The right-hand slot: the group's search when it is showing search,
+    /// **the chat's own preview shell** otherwise. One slot, never two.
+    private struct ControlRoomChatSlotPanel: View {
+        var cell: String
+        var split: ControlRoomChatSidebarLayout.Split
+        @Binding var store: PreviewSlot.Store
+        var search: ControlRoomChatSearchFeed?
+        @ObservedObject var message: ControlRoomChatFeed
+        var onCloseSearch: () -> Void
+        var onLocate: ((ControlRoomChatSearch.Hit) -> Void)?
+        var onBackToSearch: (() -> Void)?
+
+        var body: some View {
+            if let search {
+                ControlRoomChatSlotObserved(
+                    search: search,
+                    message: message,
+                    cell: cell,
+                    store: $store,
+                    onClose: onCloseSearch,
+                    onLocate: onLocate,
+                    onBackToSearch: onBackToSearch
+                )
+            } else {
+                // **A terminal chat has no search of its own** and cannot
+                // resolve a message's file reference; this is the shell the
+                // page had before the native one, kept for that build. The
+                // split is framed by the page's own rule.
+                PanePreviewPanel(
+                    cell: cell,
+                    split: PreviewLayout.Split(
+                        terminalX: 0, terminalWidth: split.messageWidth,
+                        previewX: split.sidebarX, previewWidth: split.sidebarWidth,
+                        overlay: split.overlay),
+                    store: $store)
+            }
+        }
+    }
+
+    private struct ControlRoomChatSlotObserved: View {
+        @ObservedObject var search: ControlRoomChatSearchFeed
+        /// The left side's state: whether a locate is out and whether it
+        /// failed is drawn in the search panel, above the results.
+        @ObservedObject var message: ControlRoomChatFeed
+        var cell: String
+        @Binding var store: PreviewSlot.Store
+        var onClose: () -> Void
+        var onLocate: ((ControlRoomChatSearch.Hit) -> Void)?
+        var onBackToSearch: (() -> Void)?
+
+        var body: some View {
+            if search.state.mode == .search {
+                ControlRoomChatSidebarPanel(
+                    feed: search,
+                    locating: message.locating,
+                    locateFailed: message.locateTrouble,
+                    onClose: onClose,
+                    onLocate: onLocate
+                )
+            } else {
+                // **`state.preview` is what the shell draws** (review M3):
+                // loading, refused and ready are three different faces of
+                // one slot; the store's token is cleared on a refusal, so
+                // the previous file's body cannot survive it.
+                ControlRoomChatPreviewPanel(
+                    cell: cell,
+                    store: $store,
+                    preview: search.state.preview,
+                    onBackToSearch: search.state.saved != nil ? onBackToSearch : nil,
+                    onClose: onClose
+                )
+            }
+        }
+    }
+
+    /// The chat's own preview shell (review M4): **the file's name, the
+    /// message it came from, and the way out** -- not the working-directories
+    /// pane, whose header says `终端` and whose title is a working-directory
+    /// relative path the chat never has. Sizes come from the look's 13-point
+    /// floor; nothing here invents a smaller one.
+    private struct ControlRoomChatPreviewPanel: View {
+        typealias Look = ControlRoomLook
+        typealias Preview = ControlRoomChatSidebarState.Preview
+
+        var cell: String
+        @Binding var store: PreviewSlot.Store
+        var preview: Preview
+        var onBackToSearch: (() -> Void)?
+        var onClose: () -> Void
+
+        @Environment(\.colorScheme) private var scheme
+
+        private var source: ControlRoomChatSidebarState.PreviewSource? {
+            switch preview {
+            case .none: return nil
+            case let .loading(source), let .ready(source), let .failed(source, _): return source
+            }
+        }
+
+        var body: some View {
+            let theme = Look.theme(scheme)
+            let state = store.state(cell)
+            VStack(spacing: 0) {
+                header(theme)
+                Rectangle()
+                    .fill(theme.line.color)
+                    .frame(height: CGFloat(Look.Line.hairline))
+                content(theme, state: state)
+            }
+            .background(theme.windowBase.color)
+        }
+
+        // MARK: - The shell
+
+        private func header(_ theme: Look.Theme) -> some View {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    if let onBackToSearch {
+                        Button(action: onBackToSearch) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "chevron.backward")
+                                Text(String(localized: "Back to search",
+                                            comment: "总控台：群聊页，从预览返回搜索"))
+                            }
+                            .font(.system(size: Look.Font.min))
+                            .foregroundStyle(theme.text.color)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Spacer(minLength: 0)
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: Look.Font.min))
+                            .foregroundStyle(theme.textSecondary.color)
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "Close preview",
+                                 comment: "总控台：群聊页，关闭预览"))
+                }
+                Text(fileName)
+                    .font(.system(size: Look.Font.min, weight: .semibold))
+                    .foregroundStyle(theme.text.color)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let source, !sourceLine(source).isEmpty {
+                    Text(sourceLine(source))
+                        .font(.system(size: Look.Font.min))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.windowBase.color)
+        }
+
+        /// The file's own name, from the raw reference the core was given.
+        /// **Not a path the host guessed**: the name is the reference's last
+        /// component and nothing more.
+        private var fileName: String {
+            guard let reference = source?.reference, !reference.isEmpty else {
+                return String(localized: "File", comment: "总控台：群聊页，预览的通用标题")
+            }
+            let name = URL(fileURLWithPath: reference).lastPathComponent
+            return name.isEmpty
+                ? String(localized: "File", comment: "总控台：群聊页，预览的通用标题")
+                : name
+        }
+
+        /// Who said it and when. Empty when the source has neither, so the
+        /// shell says nothing rather than an empty line.
+        private func sourceLine(_ source: ControlRoomChatSidebarState.PreviewSource) -> String {
+            let time = source.atMs > 0
+                ? ControlRoomChatPresentation.timeText(atMs: source.atMs) : ""
+            if !source.author.isEmpty, !time.isEmpty {
+                return String(
+                    format: String(localized: "From %@ · %@",
+                                   comment: "总控台：群聊页，预览的来源消息作者与时间"),
+                    source.author, time)
+            }
+            return source.author.isEmpty ? time : source.author
+        }
+
+        // MARK: - The body
+
+        @ViewBuilder
+        private func content(_ theme: Look.Theme, state: PreviewSlot.State) -> some View {
+            switch preview {
+            case .none:
+                empty(theme)
+            case .loading:
+                centered(theme) {
+                    ProgressView().controlSize(.small)
+                    Text(String(localized: "Loading preview…",
+                                comment: "总控台：群聊页，预览正在加载"))
+                }
+            case let .failed(_, code):
+                // **The core's code is not the sentence**: `access`,
+                // `SourceUnavailable` and the rest are for a log, and the
+                // person gets one line that says what happened to the file.
+                centered(theme) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: Look.Font.min))
+                    Text(String(localized: "Could not open this file.",
+                                comment: "总控台：群聊页，预览失败"))
+                        .multilineTextAlignment(.center)
+                        .help(code)
+                }
+            case .ready:
+                if state.token.isEmpty {
+                    // A ready without a ticket is the store having been
+                    // cleared: draw the refusal rather than an empty box.
+                    centered(theme) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: Look.Font.min))
+                        Text(String(localized: "Could not open this file.",
+                                    comment: "总控台：群聊页，预览失败"))
+                    }
+                } else {
+                    // **The ticket's body is shared with the working-
+                    // directories pane** (`PreviewBody`): one plugin, one
+                    // sentence about it on both pages.
+                    PreviewBody(token: state.token, presentation: state.presentation)
+                }
+            }
+        }
+
+        private func empty(_ theme: Look.Theme) -> some View {
+            VStack {
+                Spacer()
+                Text(String(localized: "No file is open.",
+                            comment: "总控台：群聊页，预览槽为空"))
+                    .font(.system(size: Look.Font.min))
+                    .foregroundStyle(theme.textSecondary.color)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.windowBase.color)
+        }
+
+        private func centered<C: View>(
+            _ theme: Look.Theme, @ViewBuilder _ content: () -> C
+        ) -> some View {
+            VStack(spacing: 8) {
+                Spacer()
+                content()
+                Spacer()
+            }
+            .font(.system(size: Look.Font.min))
+            .foregroundStyle(theme.textSecondary.color)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 16)
+            .background(theme.windowBase.color)
         }
     }
 

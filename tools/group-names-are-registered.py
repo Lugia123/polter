@@ -48,6 +48,7 @@ GROUP_NAME_FILES = {
     "src/cli/launch.zig": "`+launch --group=` (task 1844): says the name to the socket once, in a `launched_for_group` event, before the CLI starts; holds no storage. The host keeps it by terminal (App.launch_groups) only until that agent is heard, and a group renamed or deleted in between is judged as no group by that name and not joined",
     "src/poltergeist/Chat.zig": "the table of groups (group_stores.Table.chat_groups)",
     "src/poltergeist/ChatLog.zig": "the record and the stream (group_stores.Root.chat, Stream.*)",
+    "src/poltergeist/ChatRange.zig": "bounded proofs of a captured chat range (task 2976): names the group only to read its parts through the `daylog.GroupTree` the app hands in, and files nothing of its own under the name -- a rename has nothing here to re-key",
     "src/poltergeist/HistoryJobs.zig": "the core's bounded asynchronous history jobs (task 2835): a job holds the group only as the identity its reply is for, in memory, and files no path or store under it; the disk scan is a `Work` the app supplies from the already-registered ChatLog",
     "src/poltergeist/ControlAsk.zig": "the control room's last ask of each group's supervisor, keyed by the group's name (group_stores.Table.control_asks): dropped on delete, re-keyed on rename",
     "src/poltergeist/ControlAct.zig": "a request from the control room: carries a group's name to Chat and GroupLog; stores nothing",
@@ -91,6 +92,9 @@ TREE_FILES = {
     "src/poltergeist/group_stores.zig",
     "src/poltergeist/GroupRename.zig",
     "src/poltergeist/SessionLog.zig",
+    # Task 2976: borrows the type to read a group's parts; holds no tree of
+    # its own and files nothing, so a rename has nothing here to carry.
+    "src/poltergeist/ChatRange.zig",
 }
 
 # (file, field name) -> what it is

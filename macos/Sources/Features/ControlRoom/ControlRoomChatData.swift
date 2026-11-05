@@ -89,6 +89,13 @@ enum ControlRoomChatData {
         /// 0. A cache keyed by `anchor` must also key by this.
         var contentVersion: UInt64
 
+        /// **The core's optional position hint** (contract Root location
+        /// supplement). Kept exactly as written and never parsed or rebuilt
+        /// here; an around/reference request may pass it back, and history
+        /// and context must not. Nil is "the core did not send one", which is
+        /// not the same as an empty hint.
+        var location: String?
+
         /// The terminals this named, each with the title it had then.
         ///
         /// ⚠️ **Nil is "the line did not record them", not "it named
@@ -104,7 +111,8 @@ enum ControlRoomChatData {
         var role: String?
 
         private enum CodingKeys: String, CodingKey {
-            case seq, from, author, summary, channel, text, mentions, role, anchor
+            case seq, from, author, summary, channel, text, mentions, role, anchor,
+                 location
             case logSeq = "log_seq"
             case fromSelf = "from_self"
             case atMs = "at_ms"

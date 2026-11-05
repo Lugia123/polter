@@ -2551,7 +2551,7 @@ fn controlActDeleteGroup(ctx: *anyopaque, group: []const u8) anyerror!void {
     }
 
     inline for (comptime std.enums.values(stores.Table)) |table| switch (table) {
-        .chat_groups => try self.chat.destroy(group),
+        .chat_groups => try self.destroyChatState(group),
         .task_group_field => self.tasks.forgetGroup(group),
         .stats_last => if (self.stats_log) |*l| l.dropGroup(group),
         .mention_retries => self.mention_retries.dropGroup(group),
@@ -4658,6 +4658,8 @@ const PageWorld = struct {
         app.poltergeist = .init(alloc, .{});
         app.file_tickets = .init(alloc, std.testing.io);
         app.chat = .init(alloc, .{});
+        app.history_clock = .init(std.testing.io);
+        app.history_jobs = .init(alloc, std.testing.io, app.history_clock.clock());
         app.tasks = .init(alloc, .{});
         app.task_log = null;
         app.chat_log = null;
@@ -4701,6 +4703,7 @@ const PageWorld = struct {
         if (app.resource_overall) |o| o.destroy();
         app.resource_overall = null;
         app.poltergeist.deinit();
+        app.history_jobs.deinit();
         app.file_tickets.deinit();
         app.chat.deinit();
         app.tasks.deinit();
@@ -14777,6 +14780,11 @@ fn chatGroupActive(self: *App, group: []const u8) bool {
     return self.chat.isActive(group, live);
 }
 
+fn destroyChatState(self: *App, group: []const u8) poltergeistpkg.Chat.Error!void {
+    try self.chat.destroy(group);
+    self.history_jobs.invalidateGroup(group);
+}
+
 fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
 
@@ -14800,7 +14808,7 @@ fn chatDestroy(ctx: *anyopaque, group: []const u8) anyerror!void {
     if (!self.chat.exists(group)) return error.NoSuchGroup;
     if (self.chatGroupActive(group)) return error.GroupActive;
 
-    try self.chat.destroy(group);
+    try self.destroyChatState(group);
 
     // The panel goes with the group. A task belongs to a group, so tasks
     // outliving it would be work in a place nobody can look at -- and the
@@ -17239,8 +17247,10 @@ fn chatMemberTitle(
     const surface = self.findSurfaceByID(id) orelse
         return std.fmt.allocPrint(alloc, "0x{x:0>16}", .{id});
 
-    if (surface.rt_surface.getTitle()) |title| {
-        if (title.len > 0) return alloc.dupe(u8, title);
+    if (comptime @hasDecl(apprt.Surface, "getTitle")) {
+        if (surface.rt_surface.getTitle()) |title| {
+            if (title.len > 0) return alloc.dupe(u8, title);
+        }
     }
 
     if (surface.pwd(alloc) catch null) |dir| {
@@ -17319,6 +17329,38 @@ fn chatRead(
 /// `Chat.readAfter`'s note asks of a control-room pane. The reply carries
 /// `cursor` (what was read), `since` (what was passed in), `next` (what to
 /// pass next time) and `more`.
+/// The native read door is always Chat.user_id. Agent readers keep Host.scopeFor.
+fn chatUserScope(reader: poltergeistpkg.Bus.Id) poltergeistpkg.Chat.Scope {
+    assert(reader == poltergeistpkg.Chat.user_id);
+    return .everything;
+}
+
+pub fn chatReadAnswerForBuffer(self: *App, arena: Allocator, req: []const u8, capacity: usize) Allocator.Error![]const u8 {
+    if (capacity < poltergeistpkg.rpc.history_reply_bytes + 1) {
+        const value = std.json.parseFromSliceLeaky(std.json.Value, arena, req, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return readDoorError("BadRequest", true),
+        };
+        const obj = switch (value) {
+            .object => |o| o,
+            else => return self.chatReadAnswer(arena, req),
+        };
+        const method = switch (obj.get("method") orelse .null) {
+            .string => |m| m,
+            else => return self.chatReadAnswer(arena, req),
+        };
+        if (std.mem.eql(u8, method, "chat_metadata") or std.mem.eql(u8, method, "chat_search_begin") or
+            std.mem.eql(u8, method, "chat_search_poll") or std.mem.eql(u8, method, "chat_search_cancel")) return readDoorError("BadParams", true);
+        if (std.mem.eql(u8, method, "chat_history_begin")) {
+            if (parseHistoryBegin(obj.get("params"))) |p| if (p.mode != .history) return readDoorError("BadParams", true);
+        }
+        if (std.mem.eql(u8, method, "chat_history_poll") or std.mem.eql(u8, method, "chat_history_cancel")) {
+            if (parseHistoryJob(obj.get("params"))) |id| if (self.history_jobs.peek(id)) |job| if (job.mode != .history) return readDoorError("BadParams", true);
+        }
+    }
+    return self.chatReadAnswer(arena, req);
+}
+
 pub fn chatReadAnswer(
     self: *App,
     arena: Allocator,
@@ -17326,8 +17368,9 @@ pub fn chatReadAnswer(
 ) Allocator.Error![]const u8 {
     const reader = poltergeistpkg.Chat.user_id;
 
-    // **The three history methods, by name and no others** (task 2835,
-    // contract §2). They are read here rather than through `wire` because
+    // **The three history methods and `chat_metadata`, by name and no
+    // others** (task 2835 / task 2793, contract §2). They are read here
+    // rather than through `wire` because
     // `wire` is the socket's protocol: an agent that could name them would
     // be reaching a host door with no caller field to claim otherwise.
     // Anything not named here falls through to the one method this door
@@ -17345,11 +17388,23 @@ pub fn chatReadAnswer(
         else => return "{\"error\":\"BadRequest\"}",
     };
     if (std.mem.eql(u8, method, "chat_history_begin"))
-        return self.chatHistoryBegin(arena, obj.get("params"));
+        return self.chatHistoryBegin(arena, obj.get("params"), req.len);
     if (std.mem.eql(u8, method, "chat_history_poll"))
-        return self.chatHistoryPoll(arena, obj.get("params"));
+        return self.chatHistoryPoll(arena, obj.get("params"), false, req.len);
     if (std.mem.eql(u8, method, "chat_history_cancel"))
-        return self.chatHistoryCancel(arena, obj.get("params"));
+        return self.chatHistoryCancel(arena, obj.get("params"), false, req.len);
+    if ((std.mem.eql(u8, method, "chat_search_begin") or std.mem.eql(u8, method, "chat_search_poll") or std.mem.eql(u8, method, "chat_search_cancel")) and req.len > request_max_bytes)
+        return "{\"ok\":false,\"error\":\"BadParams\"}";
+    if (std.mem.eql(u8, method, "chat_search_begin"))
+        return self.chatSearchBegin(arena, obj.get("params"));
+    if (std.mem.eql(u8, method, "chat_search_poll"))
+        return self.chatHistoryPoll(arena, obj.get("params"), true, req.len);
+    if (std.mem.eql(u8, method, "chat_search_cancel"))
+        return self.chatHistoryCancel(arena, obj.get("params"), true, req.len);
+    if (std.mem.eql(u8, method, "chat_metadata"))
+        return self.chatMetadata(arena, obj.get("params"), req.len);
+
+    if (!std.mem.eql(u8, method, "group_read")) return "{\"error\":\"NotARead\"}";
 
     const parsed = poltergeistpkg.wire.parseRequestLeaky(arena, req) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -17365,7 +17420,7 @@ pub fn chatReadAnswer(
 
     if (!self.chat.exists(p.group)) return "{\"error\":\"NoSuchGroup\"}";
 
-    const scope = poltergeistHost(self).scopeFor(arena, &self.poltergeist, reader, p.group);
+    const scope = chatUserScope(reader);
 
     const cursor = self.chat.cursorFor(p.group, reader) catch |err| switch (err) {
         error.NotAMember => return "{\"error\":\"NotAMember\"}",
@@ -17420,12 +17475,41 @@ pub fn chatReadAnswer(
 const history_default_limit: usize = 50;
 const history_max_limit: usize = 200;
 
+/// The most bytes a request to a method added by #2793 may be, compared
+/// **before** its JSON is parsed. `group_read` and the history calls are
+/// older than the rule and are not held to it backwards.
+const request_max_bytes: usize = 16 * 1024;
+
 const HistoryBegin = struct {
     group: []const u8,
     request_id: []const u8,
     limit: usize,
     resume_token: ?[poltergeistpkg.HistoryJobs.id_len]u8,
+
+    /// Which read this is. The history call a host already makes is the
+    /// default; `around` and `context` are the two directions a located
+    /// message needs (contract, "History and direct around").
+    mode: poltergeistpkg.HistoryJobs.JobMode,
+
+    /// Only for `around`: the message's opaque anchor, and the place hint
+    /// the reply carried beside it. Both are host-opaque strings; the core
+    /// is the only side that reads them.
+    anchor: []const u8,
+    location: []const u8,
+
+    /// Only for `around`: how many visible neighbours on each side.
+    before: usize,
+    after: usize,
+    original_reference: []const u8,
 };
+
+/// The most bytes an anchor or a location hint may be (contract).
+const anchor_max_bytes: usize = 512;
+
+/// The most neighbours one `around` call may ask for on either side, and
+/// the most the window may hold together.
+const around_max_side: usize = 99;
+const around_max_total: usize = 200;
 
 /// **The id travels as the 32 ASCII hex characters that were generated.**
 /// `HistoryJobs.newOpaqueId` renders 128 random bits that way, and the
@@ -17458,7 +17542,31 @@ fn parseHistoryBegin(value: ?std.json.Value) ?HistoryBegin {
         if (!std.mem.eql(u8, key, "group") and
             !std.mem.eql(u8, key, "request_id") and
             !std.mem.eql(u8, key, "limit") and
-            !std.mem.eql(u8, key, "resume_token")) return null;
+            !std.mem.eql(u8, key, "resume_token") and
+            !std.mem.eql(u8, key, "mode") and
+            !std.mem.eql(u8, key, "anchor") and
+            !std.mem.eql(u8, key, "location") and
+            !std.mem.eql(u8, key, "before") and
+            !std.mem.eql(u8, key, "after") and
+            !std.mem.eql(u8, key, "original_reference")) return null;
+    }
+
+    var mode: poltergeistpkg.HistoryJobs.JobMode = .history;
+    if (obj.get("mode")) |v| {
+        const text = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        mode = if (std.mem.eql(u8, text, "history"))
+            .history
+        else if (std.mem.eql(u8, text, "around"))
+            .around
+        else if (std.mem.eql(u8, text, "reference"))
+            .reference
+        else if (std.mem.eql(u8, text, "context"))
+            .context
+        else
+            return null;
     }
 
     const group = switch (obj.get("group") orelse return null) {
@@ -17493,12 +17601,117 @@ fn parseHistoryBegin(value: ?std.json.Value) ?HistoryBegin {
         resume_token = historyJobId(text) orelse return null;
     }
 
+    var anchor: []const u8 = "";
+    if (obj.get("anchor")) |v| {
+        anchor = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        if (!validOpaque(anchor)) return null;
+    }
+
+    var location: []const u8 = "";
+    if (obj.get("location")) |v| {
+        location = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        if (!validOpaque(location)) return null;
+    }
+
+    var before: usize = 10;
+    var after: usize = 10;
+    if (obj.get("before")) |v| {
+        const n = switch (v) {
+            .integer => |i| i,
+            else => return null,
+        };
+        if (n < 0 or n > around_max_side) return null;
+        before = @intCast(n);
+    }
+    if (obj.get("after")) |v| {
+        const n = switch (v) {
+            .integer => |i| i,
+            else => return null,
+        };
+        if (n < 0 or n > around_max_side) return null;
+        after = @intCast(n);
+    }
+
+    var original_reference: []const u8 = "";
+    if (obj.get("original_reference")) |v| {
+        original_reference = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        if (original_reference.len == 0 or original_reference.len > 4096 or !std.unicode.utf8ValidateSlice(original_reference)) return null;
+    }
+    if (mode != .history and !validMetadataGroup(group)) return null;
+    if (mode != .reference and original_reference.len != 0) return null;
+
+    // **Each mode rejects what it does not take**, rather than ignoring a
+    // field that was meant for another one (contract).
+    switch (mode) {
+        .history => {
+            if (obj.get("anchor") != null or obj.get("location") != null or
+                obj.get("before") != null or obj.get("after") != null) return null;
+        },
+        .around => {
+            if (obj.get("limit") != null or obj.get("resume_token") != null) return null;
+            if (anchor.len == 0) return null;
+            if (before + after + 1 > around_max_total) return null;
+        },
+        .search => return null,
+        .reference => {
+            if (anchor.len == 0 or original_reference.len == 0 or obj.get("limit") != null or
+                obj.get("resume_token") != null or obj.get("before") != null or obj.get("after") != null) return null;
+        },
+        .context => {
+            if (obj.get("anchor") != null or obj.get("location") != null or
+                obj.get("before") != null or obj.get("after") != null) return null;
+            if (resume_token == null) return null;
+        },
+    }
+
     return .{
         .group = group,
         .request_id = request_id,
         .limit = limit,
         .resume_token = resume_token,
+        .mode = mode,
+        .anchor = anchor,
+        .location = location,
+        .before = before,
+        .after = after,
+        .original_reference = original_reference,
     };
+}
+
+/// A fingerprint of an around question: the group, the two opaque strings
+/// and the two counts. Two calls that differ in any of them are different
+/// requests, even under one `request_id`.
+fn aroundQuestion(
+    group: []const u8,
+    anchor: []const u8,
+    location: []const u8,
+    before: usize,
+    after: usize,
+) u64 {
+    var h = std.hash.Wyhash.init(0x2793);
+    h.update(group);
+    h.update(anchor);
+    h.update(location);
+    var nums: [16]u8 = undefined;
+    std.mem.writeInt(u64, nums[0..8], before, .little);
+    std.mem.writeInt(u64, nums[8..16], after, .little);
+    h.update(&nums);
+    return h.final();
+}
+
+/// An anchor or a place hint: 1..512 UTF-8 bytes, never empty.
+fn validOpaque(text: []const u8) bool {
+    if (text.len == 0 or text.len > anchor_max_bytes) return false;
+    return std.unicode.utf8ValidateSlice(text);
 }
 
 fn parseHistoryJob(value: ?std.json.Value) ?[poltergeistpkg.HistoryJobs.id_len]u8 {
@@ -17521,12 +17734,29 @@ fn parseHistoryJob(value: ?std.json.Value) ?[poltergeistpkg.HistoryJobs.id_len]u
 /// nothing that points into this App (contract §7). Freed on whichever
 /// thread drops the job, after the worker has been joined.
 const HistoryWork = struct {
+    io: std.Io,
     state_dir: []u8,
     group: []u8,
     scope: poltergeistpkg.Chat.Scope,
     session: [poltergeistpkg.HistoryJobs.id_len]u8,
     reader: poltergeistpkg.Bus.Id,
     limit: usize,
+
+    /// Which read this worker is doing, and the fields only that read has.
+    mode: poltergeistpkg.HistoryJobs.JobMode,
+    query: []const u8 = "",
+    original_reference: []const u8 = "",
+    frozen: ?SearchFrozen = null,
+    verified_path: ?[]const u8 = null,
+    verified_record: ?poltergeistpkg.rpc.HistoryRecord = null,
+    issued_ticket: ?[]const u8 = null,
+    ticket_manager: ?*poltergeistpkg.files.Tickets = null,
+    reference_minted: bool = false,
+    ticket_handed_out: bool = false,
+    anchor: []u8,
+    location: []u8,
+    before: usize,
+    after: usize,
 };
 
 fn dupeHistoryScope(alloc: Allocator, scope: poltergeistpkg.Chat.Scope) Allocator.Error!poltergeistpkg.Chat.Scope {
@@ -17549,6 +17779,11 @@ fn makeHistoryWork(
     state_dir: []const u8,
     scope: poltergeistpkg.Chat.Scope,
     limit: usize,
+    mode: poltergeistpkg.HistoryJobs.JobMode,
+    anchor: []const u8,
+    location: []const u8,
+    before: usize,
+    after: usize,
 ) Allocator.Error!*HistoryWork {
     const work = try self.alloc.create(HistoryWork);
     errdefer self.alloc.destroy(work);
@@ -17559,14 +17794,24 @@ fn makeHistoryWork(
     errdefer self.alloc.free(work_dir);
     const work_scope = try dupeHistoryScope(self.alloc, scope);
     errdefer freeHistoryScope(self.alloc, work_scope);
+    const work_anchor = try self.alloc.dupe(u8, anchor);
+    errdefer self.alloc.free(work_anchor);
+    const work_location = try self.alloc.dupe(u8, location);
+    errdefer self.alloc.free(work_location);
 
     work.* = .{
+        .io = global.io(),
         .state_dir = work_dir,
         .group = work_group,
         .scope = work_scope,
         .session = self.chat_session,
         .reader = poltergeistpkg.Chat.user_id,
         .limit = limit,
+        .mode = mode,
+        .anchor = work_anchor,
+        .location = work_location,
+        .before = before,
+        .after = after,
     };
     return work;
 }
@@ -17575,8 +17820,28 @@ fn releaseHistoryWork(alloc: Allocator, ctx: ?*anyopaque) void {
     const w: *HistoryWork = @ptrCast(@alignCast(ctx orelse return));
     alloc.free(w.state_dir);
     alloc.free(w.group);
+    alloc.free(w.anchor);
+    alloc.free(w.location);
+    if (w.query.len > 0) alloc.free(w.query);
     freeHistoryScope(alloc, w.scope);
+    if (w.original_reference.len > 0) alloc.free(w.original_reference);
+    discardHistoryTicket(alloc, ctx);
+    if (w.issued_ticket) |ticket| alloc.free(ticket);
     alloc.destroy(w);
+}
+
+fn discardHistoryTicket(alloc: Allocator, ctx: ?*anyopaque) void {
+    const w: *HistoryWork = @ptrCast(@alignCast(ctx orelse return));
+    if (w.ticket_handed_out) return;
+    if (w.issued_ticket) |ticket| {
+        if (w.ticket_manager) |manager| {
+            var arena: std.heap.ArenaAllocator = .init(alloc);
+            defer arena.deinit();
+            _ = manager.close(arena.allocator(), ticket) catch {};
+        }
+        alloc.free(ticket);
+        w.issued_ticket = null;
+    }
 }
 
 fn historyCursorValue(c: ?poltergeistpkg.HistoryJobs.Cursor) ?poltergeistpkg.ChatLog.ScanCursor {
@@ -17619,8 +17884,13 @@ fn buildHistoryBegin(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) (Al
     var out: std.Io.Writer.Allocating = .init(job.alloc);
     errdefer out.deinit();
     const w = &out.writer;
+    if (job.mode != .history) {
+        w.print("{{\"ok\":true,\"state\":\"pending\",\"mode\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{ historyModeName(job.mode), job.id, std.json.fmt(b.group, .{}), b.session }) catch return error.OutOfMemory;
+        return out.toOwnedSlice();
+    }
 
-    w.print("{{\"ok\":true,\"state\":\"pending\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"live_since\":{d},\"history_upper\":{d},\"live_snapshot\":[", .{
+    w.print("{{\"ok\":true,\"state\":\"pending\",\"mode\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"live_since\":{d},\"history_upper\":{d},\"live_snapshot\":[", .{
+        historyModeName(job.mode),
         job.id[0..],
         std.json.fmt(b.group, .{}),
         b.session[0..],
@@ -17697,7 +17967,7 @@ fn buildHistoryReady(
     } else {
         writer.writeAll("null") catch return error.OutOfMemory;
     }
-    writer.print(",\"restarted\":{},\"gap\":{}}}", .{ page.restarted, page.gap }) catch return error.OutOfMemory;
+    writer.print(",\"restarted\":{},\"gap\":{}}}", .{ job.inherited_restarted or page.restarted, job.inherited_gap or page.gap }) catch return error.OutOfMemory;
 
     const bytes = try out.toOwnedSlice();
     if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
@@ -17707,19 +17977,21 @@ fn buildHistoryReady(
     return bytes;
 }
 
-fn buildHistoryTooLarge(
-    job: *poltergeistpkg.HistoryJobs.Job,
-    w: *const HistoryWork,
-) Allocator.Error![]const u8 {
-    var out: std.Io.Writer.Allocating = .init(job.alloc);
-    errdefer out.deinit();
-    out.writer.print("{{\"ok\":false,\"error\":\"TooLarge\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"next_token\":\"{s}\"}}", .{
-        job.id[0..],
-        std.json.fmt(w.group, .{}),
-        w.session[0..],
-        job.token[0..],
-    }) catch return error.OutOfMemory;
-    return out.toOwnedSlice();
+fn buildHistoryTooLarge(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork) Allocator.Error![]const u8 {
+    if (job.mode == .history) return std.fmt.allocPrint(job.alloc, "{{\"ok\":false,\"error\":\"TooLarge\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"next_token\":\"{s}\"}}", .{
+        job.id, std.json.fmt(w.group, .{}), w.session, job.token,
+    });
+    const retry: ?[]const u8 = if (job.resume_id != null) job.resume_id.?[0..] else null;
+    const continuation = if (job.mode == .context)
+        if (job.direction == .older)
+            try std.fmt.allocPrint(job.arena.allocator(), "\"direction\":\"older\",\"older_token\":{f},\"newer_token\":null", .{std.json.fmt(retry, .{})})
+        else
+            try std.fmt.allocPrint(job.arena.allocator(), "\"direction\":\"newer\",\"older_token\":null,\"newer_token\":{f}", .{std.json.fmt(retry, .{})})
+    else
+        try std.fmt.allocPrint(job.arena.allocator(), "\"query\":{f},\"next_token\":\"{s}\"", .{ std.json.fmt(w.query, .{}), job.token });
+    return std.fmt.allocPrint(job.alloc, "{{\"ok\":false,\"state\":\"failed\",\"mode\":\"{s}\",\"error\":\"TooLarge\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",{s}}}", .{
+        historyModeName(job.mode), job.id, std.json.fmt(w.group, .{}), w.session, continuation,
+    });
 }
 
 fn buildHistoryFailure(
@@ -17729,18 +18001,54 @@ fn buildHistoryFailure(
 ) Allocator.Error![]const u8 {
     var out: std.Io.Writer.Allocating = .init(job.alloc);
     errdefer out.deinit();
-    out.writer.print("{{\"ok\":false,\"error\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{
-        code,
-        job.id[0..],
-        std.json.fmt(w.group, .{}),
-        w.session[0..],
-    }) catch return error.OutOfMemory;
+    if (job.mode == .history) {
+        out.writer.print("{{\"ok\":false,\"error\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{ code, job.id, std.json.fmt(w.group, .{}), w.session }) catch return error.OutOfMemory;
+    } else {
+        out.writer.print("{{\"ok\":false,\"state\":\"failed\",\"mode\":\"{s}\",\"error\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"", .{
+            historyModeName(job.mode), code, job.id, std.json.fmt(w.group, .{}), w.session,
+        }) catch return error.OutOfMemory;
+        if (job.mode == .search) out.writer.print(",\"query\":{f}", .{std.json.fmt(w.query, .{})}) catch return error.OutOfMemory;
+        if (job.mode == .context) out.writer.print(",\"direction\":\"{s}\"", .{historyDirectionName(job.direction)}) catch return error.OutOfMemory;
+        out.writer.writeAll("}") catch return error.OutOfMemory;
+    }
     return out.toOwnedSlice();
 }
 
 fn publishHistoryFailure(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, code: []const u8) void {
-    const bytes = buildHistoryFailure(job, w, code) catch return;
+    const bytes = buildHistoryFailure(job, w, code) catch {
+        job.completeFailed(.scan_failed, &.{}, null, false);
+        return;
+    };
     job.completeFailed(.scan_failed, bytes, null, false);
+}
+
+/// The job's thread. It touches only the work it was handed and the job
+/// itself: **never this App, `self.chat`, `self.chat_log` or the bus**
+/// (contract §7). Its own read-only `Reader` opens what it needs and is
+/// closed before the thread ends.
+fn historyModeName(mode: poltergeistpkg.HistoryJobs.JobMode) []const u8 {
+    return switch (mode) {
+        .history => "history",
+        .around => "around",
+        .context => "context",
+        .search => "search",
+        .reference => "reference",
+    };
+}
+
+fn historyDirectionName(direction: poltergeistpkg.HistoryJobs.Direction) []const u8 {
+    return switch (direction) {
+        .older => "older",
+        .newer => "newer",
+    };
+}
+
+/// `p:<digits>` from a persisted anchor, or null.
+fn anchorSeq(text: []const u8) ?u64 {
+    if (!std.mem.startsWith(u8, text, "p:")) return null;
+    if (text.len == 2 or (text.len > 3 and text[2] == '0')) return null;
+    for (text[2..]) |c| if (c < '0' or c > '9') return null;
+    return std.fmt.parseUnsigned(u64, text[2..], 10) catch null;
 }
 
 /// The job's thread. It touches only the work it was handed and the job
@@ -17756,7 +18064,7 @@ fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
         return;
     }
 
-    var reader = poltergeistpkg.ChatLog.Reader.open(alloc, global.io(), w.state_dir) catch {
+    var reader = poltergeistpkg.ChatLog.Reader.open(alloc, w.io, w.state_dir) catch {
         publishHistoryFailure(job, w, "LogsClosed");
         return;
     };
@@ -17766,6 +18074,65 @@ fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
         job.completeCancelled();
         return;
     }
+
+    w.frozen = std.json.parseFromSliceLeaky(SearchFrozen, alloc, job.snapshot(), .{}) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    var wanted: [1001]u64 = undefined;
+    var wanted_len: usize = 0;
+    for (w.frozen.?.records) |record| if (record.log_seq != 0) {
+        if (wanted_len == wanted.len) {
+            publishHistoryFailure(job, w, "TooLarge");
+            return;
+        }
+        wanted[wanted_len] = record.log_seq;
+        wanted_len += 1;
+    };
+    if (anchorSeq(w.anchor)) |seq| {
+        if (wanted_len < wanted.len) {
+            wanted[wanted_len] = seq;
+            wanted_len += 1;
+        }
+    }
+    var proof_work: poltergeistpkg.ChatLog.Range.Work = .{ .cancel = &job.cancelled };
+    const capture: *const poltergeistpkg.ChatLog.Range.Capture = if (job.shared()) |shared|
+        @ptrCast(@alignCast(shared.ctx))
+    else blk: {
+        const created = poltergeistpkg.ChatLog.captureRange(job.alloc, w.io, &reader.tree, w.group, wanted[0..wanted_len], &proof_work) catch |err| {
+            if (err == error.Cancelled or job.cancelledByOwner()) job.completeCancelled() else publishHistoryFailure(job, w, @errorName(err));
+            return;
+        };
+        job.setShared(.{ .ctx = created, .release = releaseChatRange });
+        break :blk created;
+    };
+    var verifier = poltergeistpkg.ChatLog.Range.Verifier.init(job.alloc, w.io, capture, &job.cancelled) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    defer verifier.deinit();
+    reader.verifier = &verifier;
+
+    switch (w.mode) {
+        .history => runHistoryPage(job, w, &reader),
+        .around => runAroundPage(job, w, &reader),
+        .context => runContextPage(job, w, &reader),
+        .search => runSearchPage(job, w, &reader),
+        .reference => runReferencePage(job, w, &reader),
+    }
+}
+
+fn releaseChatRange(_: Allocator, ctx: *anyopaque) void {
+    const capture: *poltergeistpkg.ChatLog.Range.Capture = @ptrCast(@alignCast(ctx));
+    capture.destroy();
+}
+
+fn runHistoryPage(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    reader: *poltergeistpkg.ChatLog.Reader,
+) void {
+    const alloc = job.arena.allocator();
 
     const measure_ctx: poltergeistpkg.rpc.HistoryMeasure = .{
         .reader = w.reader,
@@ -17778,7 +18145,7 @@ fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
         .context = &measure_ctx,
     };
 
-    const page = reader.scan(
+    const page = reader.scanCancel(
         alloc,
         w.group,
         job.before_seq,
@@ -17787,21 +18154,25 @@ fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
         w.scope,
         historyCursorValue(job.cursor),
         budget,
+        .{ .flag = &job.cancelled },
     ) catch |err| {
         switch (err) {
             error.OutOfMemory => publishHistoryFailure(job, w, "OutOfMemory"),
             error.CursorMismatch => publishHistoryFailure(job, w, "CursorMismatch"),
+            error.CursorStale => publishHistoryFailure(job, w, "CursorStale"),
             error.ShellExceedsBytes => publishHistoryFailure(job, w, "TooLarge"),
         }
         return;
     };
     defer poltergeistpkg.ChatLog.freeScanPage(alloc, page);
 
-    if (job.cancelledByOwner()) {
+    if (page.cancelled or job.cancelledByOwner()) {
         job.completeCancelled();
         return;
     }
 
+    job.result_gap = page.gap;
+    job.result_restarted = page.restarted;
     const next: ?poltergeistpkg.HistoryJobs.Cursor = if (page.next) |c| historyCursorJob(c) else null;
 
     if (page.stop == .too_large) {
@@ -17823,12 +18194,439 @@ fn runHistoryWork(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) void {
     job.completeReady(bytes, next, next != null);
 }
 
+/// `mode:"around"`: the target by its place, then its neighbours.
+///
+/// **The anchor is read here, not in `begin`.** `begin` runs on the app
+/// thread and must do no I/O; the opaque strings travel with the work and
+/// the worker is the one that turns them into a place.
+fn runAroundPage(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    reader: *poltergeistpkg.ChatLog.Reader,
+) void {
+    const alloc = job.arena.allocator();
+    const io = w.io;
+
+    const source = resolveWorkSource(job, w, reader) catch |err| {
+        publishHistoryFailure(job, w, @errorName(err));
+        return;
+    };
+    const pos = source.record.pos orelse {
+        runLiveWindow(job, w, source.record.seq) catch {
+            publishHistoryFailure(job, w, "OutOfMemory");
+        };
+        return;
+    };
+    const seq = source.record.log_seq;
+
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+
+    const measure_ctx: poltergeistpkg.rpc.HistoryMeasure = .{
+        .reader = w.reader,
+        .session = w.session[0..],
+    };
+    const budget: poltergeistpkg.ChatLog.OutputBudget = .{
+        .bytes = poltergeistpkg.rpc.history_reply_bytes,
+        .shell = poltergeistpkg.rpc.history_reply_shell_bytes,
+        .measure = poltergeistpkg.rpc.measureHistory,
+        .context = &measure_ctx,
+    };
+
+    const page = poltergeistpkg.ChatLog.aroundVerified(
+        alloc,
+        io,
+        &reader.tree,
+        w.group,
+        w.scope,
+        pos,
+        seq,
+        w.before,
+        w.after,
+        job.history_upper,
+        budget,
+        .{ .flag = &job.cancelled },
+        reader.verifier,
+    ) catch |err| {
+        switch (err) {
+            error.OutOfMemory => publishHistoryFailure(job, w, "OutOfMemory"),
+            error.Stale, error.CursorStale => publishHistoryFailure(job, w, "AnchorStale"),
+            error.NotFound => publishHistoryFailure(job, w, "AnchorNotFound"),
+            error.NotVisible => publishHistoryFailure(job, w, "AnchorNotVisible"),
+            error.TooLarge, error.ShellExceedsBytes => publishHistoryFailure(job, w, "TooLarge"),
+            error.CursorMismatch => publishHistoryFailure(job, w, "CursorMismatch"),
+        }
+        return;
+    };
+    defer {
+        for (page.entries) |e| poltergeistpkg.ChatLog.freeEntry(alloc, e);
+        alloc.free(page.entries);
+    }
+
+    if (page.cancelled or job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+
+    job.older_at_end = page.older_at_end;
+    job.newer_at_end = page.newer_at_end;
+    job.result_gap = page.gap;
+    job.result_restarted = page.restarted;
+    const older: ?poltergeistpkg.HistoryJobs.Cursor = if (page.older) |c| historyCursorJob(c) else null;
+    const newer: ?poltergeistpkg.HistoryJobs.Cursor = if (page.newer) |c| historyCursorForwardJob(c) else null;
+
+    const bytes = buildAroundReady(job, w, page) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    job.completeAround(bytes, older, newer, older != null or newer != null);
+}
+
+/// `mode:"context"`: the next page in the direction the token named.
+fn runContextPage(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    reader: *poltergeistpkg.ChatLog.Reader,
+) void {
+    const alloc = job.arena.allocator();
+    const io = w.io;
+    const cursor = job.cursor orelse {
+        publishHistoryFailure(job, w, "CursorExpired");
+        return;
+    };
+    const question = poltergeistpkg.ChatLog.questionFor(w.group, .{}, w.scope);
+    if (cursor.question != question) {
+        publishHistoryFailure(job, w, "CursorMismatch");
+        return;
+    }
+    if (cursor.day == 0 and cursor.part == 1) {
+        // Virtual boundaries exist only inside a verified contiguous live run.
+        // A missing original segment is a gap, never a jump into an unrelated
+        // retained snapshot or a guessed join to disk.
+        if (job.direction == .older and cursor.offset == 0) {
+            publishSourceUnavailable(job, w);
+        } else {
+            runLiveWindow(job, w, null) catch {
+                publishHistoryFailure(job, w, "OutOfMemory");
+            };
+        }
+        return;
+    }
+
+    const measure_ctx: poltergeistpkg.rpc.HistoryMeasure = .{
+        .reader = w.reader,
+        .session = w.session[0..],
+    };
+    const budget: poltergeistpkg.ChatLog.OutputBudget = .{
+        .bytes = poltergeistpkg.rpc.history_reply_bytes,
+        .shell = poltergeistpkg.rpc.history_reply_shell_bytes,
+        .measure = poltergeistpkg.rpc.measureHistory,
+        .context = &measure_ctx,
+    };
+
+    if (job.direction == .older) {
+        const page = reader.scanCancel(
+            alloc,
+            w.group,
+            0,
+            w.limit,
+            .{},
+            w.scope,
+            historyCursorValue(job.cursor),
+            budget,
+            .{ .flag = &job.cancelled },
+        ) catch |err| {
+            switch (err) {
+                error.OutOfMemory => publishHistoryFailure(job, w, "OutOfMemory"),
+                error.CursorMismatch => publishHistoryFailure(job, w, "CursorMismatch"),
+                error.CursorStale => publishHistoryFailure(job, w, "CursorStale"),
+                error.ShellExceedsBytes => publishHistoryFailure(job, w, "TooLarge"),
+            }
+            return;
+        };
+        defer poltergeistpkg.ChatLog.freeScanPage(alloc, page);
+        if (page.cancelled or job.cancelledByOwner()) {
+            job.completeCancelled();
+            return;
+        }
+        const next: ?poltergeistpkg.HistoryJobs.Cursor = if (page.next) |c| historyCursorJob(c) else null;
+        if (page.stop == .too_large) {
+            const bytes = buildHistoryTooLarge(job, w) catch {
+                publishHistoryFailure(job, w, "TooLarge");
+                return;
+            };
+            job.completeDirectionalFailure(bytes, next);
+            return;
+        }
+        const captured_end = if (page.entries.len > 0)
+            capturedEndFor(alloc, w, reader, page.entries[page.entries.len - 1].pos.?, cursor) catch |err| {
+                publishHistoryFailure(job, w, @errorName(err));
+                return;
+            }
+        else
+            cursor.end;
+        const edges = poltergeistpkg.ChatLog.edgesWalkedOlder(page.entries, page.next, historyForwardValue(job.opposite), job.opposite_at_end, captured_end, cursor.question, .{ .stop = page.stop, .gap = job.inherited_gap or page.gap, .restarted = job.inherited_restarted, .cancelled = page.cancelled });
+        const above: ?poltergeistpkg.HistoryJobs.Cursor = if (edges.newer) |c| historyCursorForwardJob(c) else null;
+        job.older_at_end = edges.older_at_end;
+        job.newer_at_end = edges.newer_at_end;
+        job.result_gap = page.gap;
+        job.result_restarted = page.restarted;
+        const bytes = buildContextReady(
+            job,
+            w,
+            page.entries,
+            .older,
+            next,
+            above,
+            historyStopName(page.stop),
+            page.restarted,
+            page.gap,
+        ) catch {
+            publishHistoryFailure(job, w, "OutOfMemory");
+            return;
+        };
+        job.completeAround(bytes, next, above, next != null or above != null);
+        return;
+    }
+
+    const page = poltergeistpkg.ChatLog.forwardScanVerified(
+        alloc,
+        io,
+        &reader.tree,
+        w.group,
+        w.limit,
+        w.scope,
+        job.history_upper,
+        .{
+            .day = cursor.day,
+            .part = cursor.part,
+            .offset = cursor.offset,
+            .end = cursor.end,
+            .inode = cursor.inode,
+            .question = cursor.question,
+        },
+        cursor.question,
+        budget,
+        .{ .flag = &job.cancelled },
+        reader.verifier,
+    ) catch |err| {
+        switch (err) {
+            error.OutOfMemory => publishHistoryFailure(job, w, "OutOfMemory"),
+            error.CursorMismatch => publishHistoryFailure(job, w, "CursorMismatch"),
+            error.CursorStale => publishHistoryFailure(job, w, "CursorStale"),
+            error.ShellExceedsBytes => publishHistoryFailure(job, w, "TooLarge"),
+        }
+        return;
+    };
+    defer {
+        for (page.entries) |e| poltergeistpkg.ChatLog.freeEntry(alloc, e);
+        alloc.free(page.entries);
+    }
+    if (page.cancelled or job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+    const next: ?poltergeistpkg.HistoryJobs.Cursor = if (page.next) |c| historyCursorForwardJob(c) else null;
+    if (page.stop == .too_large) {
+        const bytes = buildHistoryTooLarge(job, w) catch {
+            publishHistoryFailure(job, w, "TooLarge");
+            return;
+        };
+        job.completeDirectionalFailure(bytes, next);
+        return;
+    }
+    const captured_end = if (page.entries.len > 0)
+        capturedEndFor(alloc, w, reader, page.entries[0].pos.?, cursor) catch |err| {
+            publishHistoryFailure(job, w, @errorName(err));
+            return;
+        }
+    else
+        cursor.end;
+    const edges = poltergeistpkg.ChatLog.edgesWalkedNewer(page.entries, page.next, historyCursorValue(job.opposite), job.opposite_at_end, captured_end, cursor.question, .{ .stop = page.stop, .gap = job.inherited_gap or page.gap, .restarted = job.inherited_restarted, .cancelled = page.cancelled });
+    const below: ?poltergeistpkg.HistoryJobs.Cursor = if (edges.older) |c| historyCursorJob(c) else null;
+    job.older_at_end = edges.older_at_end;
+    job.newer_at_end = edges.newer_at_end;
+    job.result_gap = page.gap;
+    const bytes = buildContextReady(
+        job,
+        w,
+        page.entries,
+        .newer,
+        below,
+        next,
+        historyStopName(page.stop),
+        false,
+        page.gap,
+    ) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    job.completeAround(bytes, below, next, below != null or next != null);
+}
+
+fn historyCursorForwardJob(c: poltergeistpkg.ChatLog.ForwardCursor) poltergeistpkg.HistoryJobs.Cursor {
+    return .{
+        .day = c.day,
+        .part = c.part,
+        .offset = c.offset,
+        .end = c.end,
+        .inode = c.inode,
+        .question = c.question,
+    };
+}
+
+fn buildAroundReady(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    page: poltergeistpkg.ChatLog.AroundPage,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    const writer = &out.writer;
+
+    writer.print("{{\"ok\":true,\"state\":\"ready\",\"mode\":\"around\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"target_index\":{d},\"messages\":[", .{
+        job.id[0..],
+        std.json.fmt(w.group, .{}),
+        w.session[0..],
+        page.target_index,
+    }) catch return error.OutOfMemory;
+
+    for (page.entries, 0..) |e, i| {
+        if (i > 0) writer.writeAll(",") catch return error.OutOfMemory;
+        poltergeistpkg.rpc.writeHistoryRecord(
+            writer,
+            poltergeistpkg.rpc.historyRecordOf(e),
+            .persisted,
+            w.reader,
+            w.session[0..],
+        ) catch return error.OutOfMemory;
+    }
+
+    writer.writeAll("],\"older_token\":") catch return error.OutOfMemory;
+    if (page.older != null) {
+        writer.print("\"{s}\"", .{job.token[0..]}) catch return error.OutOfMemory;
+    } else writer.writeAll("null") catch return error.OutOfMemory;
+
+    writer.writeAll(",\"newer_token\":") catch return error.OutOfMemory;
+    if (page.newer != null) {
+        writer.print("\"{s}\"", .{job.token_newer[0..]}) catch return error.OutOfMemory;
+    } else writer.writeAll("null") catch return error.OutOfMemory;
+
+    writer.print(",\"older_at_end\":{},\"newer_at_end\":{},\"stop\":\"{s}\",\"restarted\":{},\"gap\":{}}}", .{
+        page.older_at_end,
+        page.newer_at_end,
+        // ChatLog's explicit scan stop is required; a missing field is an integration error.
+        historyStopName(page.stop),
+        job.inherited_restarted or page.restarted,
+        job.inherited_gap or page.gap,
+    }) catch return error.OutOfMemory;
+
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        return error.OutOfMemory;
+    }
+    return bytes;
+}
+
+fn buildContextReady(
+    job: *poltergeistpkg.HistoryJobs.Job,
+    w: *const HistoryWork,
+    entries: []const poltergeistpkg.ChatLog.Entry,
+    direction: poltergeistpkg.HistoryJobs.Direction,
+    older: ?poltergeistpkg.HistoryJobs.Cursor,
+    newer: ?poltergeistpkg.HistoryJobs.Cursor,
+    stop: []const u8,
+    restarted: bool,
+    gap: bool,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    const writer = &out.writer;
+
+    // **The frozen context shape**: both ends of the returned page, no
+    // generic `next_token` (root supplement, 2793). A host merges the page
+    // into its window and keeps the two boundary cursors, rather than
+    // inventing a second continuation rule of its own.
+    writer.print("{{\"ok\":true,\"state\":\"ready\",\"mode\":\"context\",\"direction\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"messages\":[", .{
+        historyDirectionName(direction),
+        job.id[0..],
+        std.json.fmt(w.group, .{}),
+        w.session[0..],
+    }) catch return error.OutOfMemory;
+
+    for (entries, 0..) |e, i| {
+        if (i > 0) writer.writeAll(",") catch return error.OutOfMemory;
+        poltergeistpkg.rpc.writeHistoryRecord(
+            writer,
+            poltergeistpkg.rpc.historyRecordOf(e),
+            .persisted,
+            w.reader,
+            w.session[0..],
+        ) catch return error.OutOfMemory;
+    }
+
+    writer.writeAll("],\"older_token\":") catch return error.OutOfMemory;
+    if (older != null) {
+        writer.print("\"{s}\"", .{job.token[0..]}) catch return error.OutOfMemory;
+    } else writer.writeAll("null") catch return error.OutOfMemory;
+
+    writer.writeAll(",\"newer_token\":") catch return error.OutOfMemory;
+    if (newer != null) {
+        writer.print("\"{s}\"", .{job.token_newer[0..]}) catch return error.OutOfMemory;
+    } else writer.writeAll("null") catch return error.OutOfMemory;
+
+    writer.print(",\"older_at_end\":{},\"newer_at_end\":{},\"stop\":\"{s}\",\"restarted\":{},\"gap\":{}}}", .{
+        job.older_at_end,
+        job.newer_at_end,
+        stop,
+        job.inherited_restarted or restarted,
+        job.inherited_gap or gap,
+    }) catch return error.OutOfMemory;
+
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        return error.OutOfMemory;
+    }
+    return bytes;
+}
+
+fn historyForwardValue(c: ?poltergeistpkg.HistoryJobs.Cursor) ?poltergeistpkg.ChatLog.ForwardCursor {
+    const v = c orelse return null;
+    return .{ .day = v.day, .part = v.part, .offset = v.offset, .end = v.end, .inode = v.inode, .question = v.question };
+}
+
+/// A file already captured keeps its bound. A newly reached file captures once.
+fn capturedEndFor(alloc: Allocator, w: *const HistoryWork, reader: *const poltergeistpkg.ChatLog.Reader, pos: poltergeistpkg.ChatLog.Pos, captured: poltergeistpkg.HistoryJobs.Cursor) poltergeistpkg.ChatLog.EdgeError!u64 {
+    if (reader.verifier) |verifier| {
+        const file = verifier.capture.find(pos.day, pos.part) orelse return error.CursorStale;
+        if (file.inode != pos.inode or pos.end > file.end) return error.CursorStale;
+        return file.end;
+    }
+    if (pos.day == captured.day and pos.part == captured.part) {
+        if (pos.inode != captured.inode or pos.end > captured.end) return error.CursorStale;
+        return captured.end;
+    }
+    const edge = try poltergeistpkg.ChatLog.forwardAtFileStart(alloc, w.io, &reader.tree, w.group, pos.day, pos.part, 0, captured.question);
+    if (edge.inode != pos.inode or pos.end > edge.end) return error.CursorStale;
+    return edge.end;
+}
+
 fn historyStateJson(
     self: *App,
     arena: Allocator,
     job: *const poltergeistpkg.HistoryJobs.Job,
     state: []const u8,
 ) Allocator.Error![]const u8 {
+    if (job.mode == .search) {
+        const work: *const HistoryWork = @ptrCast(@alignCast(job.work.ctx orelse return error.OutOfMemory));
+        return std.fmt.allocPrint(arena, "{{\"ok\":true,\"state\":\"{s}\",\"mode\":\"search\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"query\":{f}}}", .{
+            state, job.id, std.json.fmt(job.group, .{}), self.chat_session, std.json.fmt(work.query, .{}),
+        });
+    }
     var out: std.Io.Writer.Allocating = .init(arena);
     out.writer.print("{{\"ok\":true,\"state\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\"}}", .{
         state,
@@ -17839,12 +18637,701 @@ fn historyStateJson(
     return out.written();
 }
 
+fn liveEdge(w: *const HistoryWork, offset: usize, len: usize) poltergeistpkg.HistoryJobs.Cursor {
+    return .{ .day = 0, .part = 1, .offset = offset, .end = len, .inode = 0, .question = poltergeistpkg.ChatLog.questionFor(w.group, .{}, w.scope) };
+}
+
+/// A live target and aliases use only the immutable conversation captured at begin.
+fn runLiveWindow(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, target_seq: ?u64) Allocator.Error!void {
+    const frozen = w.frozen orelse {
+        publishHistoryFailure(job, w, "CursorStale");
+        return;
+    };
+    const records = frozen.records;
+    var target: usize = 0;
+    var start: usize = 0;
+    var end: usize = 0;
+    const cursor = job.cursor;
+    if (target_seq) |seq| {
+        var found = false;
+        for (records, 0..) |r, i| if (r.seq == seq) {
+            target = i;
+            found = true;
+            break;
+        };
+        if (!found) {
+            publishHistoryFailure(job, w, "AnchorNotFound");
+            return;
+        }
+        start = target -| w.before;
+        end = @min(records.len, target + 1 + w.after);
+    } else {
+        const c = cursor orelse {
+            publishHistoryFailure(job, w, "CursorExpired");
+            return;
+        };
+        if (c.offset > records.len or c.end != records.len) {
+            publishHistoryFailure(job, w, "CursorStale");
+            return;
+        }
+        const edge: usize = @intCast(c.offset);
+        start = if (job.direction == .older) edge -| w.limit else edge;
+        end = if (job.direction == .older) edge else @min(records.len, edge + w.limit);
+    }
+    var clipped = false;
+    if (target_seq != null) {
+        var left = target;
+        while (left > start and records[left - 1].seq +| 1 == records[left].seq) left -= 1;
+        var right = target + 1;
+        while (right < end and records[right - 1].seq +| 1 == records[right].seq) right += 1;
+        clipped = left != start or right != end;
+        start = left;
+        end = right;
+    } else if (job.direction == .older) {
+        var left = end -| 1;
+        while (left > start and records[left - 1].seq +| 1 == records[left].seq) left -= 1;
+        clipped = left != start;
+        start = left;
+    } else {
+        var right = start + 1;
+        while (right < end and records[right - 1].seq +| 1 == records[right].seq) right += 1;
+        clipped = right != end;
+        end = right;
+    }
+    const available = poltergeistpkg.rpc.history_reply_bytes - poltergeistpkg.rpc.history_reply_shell_bytes;
+    var used: usize = 0;
+    var budget_hit = false;
+    if (target_seq != null) {
+        used = poltergeistpkg.rpc.measureRecord(records[target], .live, w.reader, &w.session);
+        if (used > available) {
+            publishHistoryFailure(job, w, "TooLarge");
+            return;
+        }
+        var kept_start = target;
+        var kept_end = target + 1;
+        while (kept_start > start) {
+            const cost = poltergeistpkg.rpc.measureRecord(records[kept_start - 1], .live, w.reader, &w.session) +| 1;
+            if (cost > available -| used) {
+                budget_hit = true;
+                break;
+            }
+            used += cost;
+            kept_start -= 1;
+        }
+        while (kept_end < end) {
+            const cost = poltergeistpkg.rpc.measureRecord(records[kept_end], .live, w.reader, &w.session) +| 1;
+            if (cost > available -| used) {
+                budget_hit = true;
+                break;
+            }
+            used += cost;
+            kept_end += 1;
+        }
+        start = kept_start;
+        end = kept_end;
+    } else if (job.direction == .older) {
+        var kept = end;
+        while (kept > start) {
+            const cost = poltergeistpkg.rpc.measureRecord(records[kept - 1], .live, w.reader, &w.session) +| @as(usize, if (kept == end) 0 else 1);
+            if (cost > available -| used) {
+                budget_hit = true;
+                break;
+            }
+            used += cost;
+            kept -= 1;
+        }
+        start = kept;
+    } else {
+        var kept = start;
+        while (kept < end) {
+            const cost = poltergeistpkg.rpc.measureRecord(records[kept], .live, w.reader, &w.session) +| @as(usize, if (kept == start) 0 else 1);
+            if (cost > available -| used) {
+                budget_hit = true;
+                break;
+            }
+            used += cost;
+            kept += 1;
+        }
+        end = kept;
+    }
+    if (start == end and budget_hit) {
+        publishHistoryFailure(job, w, "TooLarge");
+        return;
+    }
+    const capture: *const poltergeistpkg.ChatLog.Range.Capture = if (job.shared()) |shared| @ptrCast(@alignCast(shared.ctx)) else {
+        publishHistoryFailure(job, w, "CursorStale");
+        return;
+    };
+    const can_older = start > 0 and records[start - 1].seq +| 1 == records[start].seq;
+    const can_newer = end < records.len and records[end - 1].seq +| 1 == records[end].seq;
+    const older: ?poltergeistpkg.HistoryJobs.Cursor = if (can_older) liveEdge(w, start, records.len) else null;
+    const newer: ?poltergeistpkg.HistoryJobs.Cursor = if (can_newer) liveEdge(w, end, records.len) else null;
+    const known_beginning = start == 0 and records[0].seq == 1 and capture.files.len == 0;
+    const unknown_older = older == null and !known_beginning;
+    const unknown_newer = newer == null and end != records.len;
+    job.result_gap = clipped or unknown_older or unknown_newer;
+    job.older_at_end = known_beginning and !job.inherited_gap and !job.inherited_restarted;
+    job.newer_at_end = end == records.len and !job.inherited_gap and !job.inherited_restarted;
+    const stop = if (budget_hit) "budget" else if (job.result_gap) "gap" else if (target_seq == null and job.direction == .newer and newer == null) "at_end" else "full";
+    if (job.mode == .context and job.result_gap) {
+        publishSourceUnavailable(job, w);
+        return;
+    }
+    const bytes = try buildLiveWindow(job, w, records[start..end], if (target_seq != null) target - start else null, older, newer, stop);
+    job.completeAround(bytes, older, newer, older != null or newer != null);
+}
+
+fn buildLiveWindow(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, records: []const poltergeistpkg.rpc.HistoryRecord, target_index: ?usize, older: ?poltergeistpkg.HistoryJobs.Cursor, newer: ?poltergeistpkg.HistoryJobs.Cursor, stop: []const u8) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    writer.print("{{\"ok\":true,\"state\":\"ready\",\"mode\":\"{s}\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",", .{
+        historyModeName(job.mode), job.id, std.json.fmt(w.group, .{}), w.session,
+    }) catch return error.OutOfMemory;
+    if (target_index) |index| writer.print("\"target_index\":{d},", .{index}) catch return error.OutOfMemory else writer.print("\"direction\":\"{s}\",", .{historyDirectionName(job.direction)}) catch return error.OutOfMemory;
+    writer.writeAll("\"messages\":[") catch return error.OutOfMemory;
+    for (records, 0..) |r, i| {
+        if (i > 0) writer.writeAll(",") catch return error.OutOfMemory;
+        poltergeistpkg.rpc.writeHistoryRecord(writer, r, .live, w.reader, &w.session) catch return error.OutOfMemory;
+    }
+    writer.writeAll("],\"older_token\":") catch return error.OutOfMemory;
+    if (older != null) writer.print("\"{s}\"", .{job.token}) catch return error.OutOfMemory else writer.writeAll("null") catch return error.OutOfMemory;
+    writer.writeAll(",\"newer_token\":") catch return error.OutOfMemory;
+    if (newer != null) writer.print("\"{s}\"", .{job.token_newer}) catch return error.OutOfMemory else writer.writeAll("null") catch return error.OutOfMemory;
+    writer.print(",\"older_at_end\":{},\"newer_at_end\":{},\"stop\":\"{s}\",\"restarted\":{},\"gap\":{}}}", .{
+        job.older_at_end, job.newer_at_end, stop, job.inherited_restarted or job.result_restarted, job.inherited_gap or job.result_gap,
+    }) catch return error.OutOfMemory;
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        return error.OutOfMemory;
+    }
+    return bytes;
+}
+
+const ChatReference = @import("poltergeist/ChatReference.zig");
+const SourceRecord = struct { record: poltergeistpkg.rpc.HistoryRecord, origin: poltergeistpkg.rpc.MessageOrigin };
+const SourceError = Allocator.Error || error{ AnchorNotFound, AnchorExpired, AnchorStale, AnchorNotVisible };
+
+/// Resolve only the exact anchor/hint or an alias in the captured authorized live range.
+fn resolveWorkSource(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, reader: *poltergeistpkg.ChatLog.Reader) SourceError!SourceRecord {
+    const alloc = job.arena.allocator();
+    const frozen = w.frozen orelse return error.AnchorStale;
+    var live: ?poltergeistpkg.rpc.HistoryRecord = null;
+    var expected: ?u64 = null;
+    var legacy = false;
+    var pos: ?poltergeistpkg.ChatLog.Pos = null;
+    if (poltergeistpkg.rpc.parsePosition(w.anchor)) |p| {
+        legacy = true;
+        expected = 0;
+        pos = p;
+        if (w.location.len > 0 and !std.mem.eql(u8, w.anchor, w.location)) return error.AnchorStale;
+    } else if (anchorSeq(w.anchor)) |n| {
+        if (n == 0) return error.AnchorNotFound;
+        expected = n;
+        for (frozen.records) |r| if (r.log_seq == n) {
+            live = r;
+            break;
+        };
+    } else if (std.mem.startsWith(u8, w.anchor, "l:")) {
+        const rest = w.anchor[2..];
+        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse return error.AnchorNotFound;
+        if (!std.mem.eql(u8, rest[0..colon], &w.session)) return error.AnchorExpired;
+        const seq = std.fmt.parseUnsigned(u64, rest[colon + 1 ..], 10) catch return error.AnchorNotFound;
+        for (frozen.records) |r| if (r.seq == seq) {
+            live = r;
+            break;
+        };
+        if (live == null) return error.AnchorNotFound;
+        if (live.?.log_seq != 0) expected = live.?.log_seq;
+    } else return error.AnchorNotFound;
+    if (w.location.len > 0) pos = poltergeistpkg.rpc.parsePosition(w.location) orelse return error.AnchorStale;
+    if (pos == null and expected != null and expected.? != 0) {
+        if (reader.verifier) |verifier| {
+            const location = verifier.capture.locate(expected.?) catch return error.AnchorStale;
+            if (location) |p| pos = .{ .day = p.day, .part = p.part, .inode = p.inode, .start = p.start, .end = p.end, .check = p.check };
+        }
+    }
+    if (pos) |p| {
+        const e = poltergeistpkg.ChatLog.readPosVerified(alloc, w.io, &reader.tree, w.group, p, frozen.scope, reader.verifier) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.NotVisible => error.AnchorNotVisible,
+            error.NotFound => error.AnchorNotFound,
+            error.Stale => error.AnchorStale,
+        };
+        // Including seq zero: a g identity is exclusively a genuine legacy row.
+        if (expected == null or e.seq != expected.? or (legacy and e.seq != 0)) return error.AnchorStale;
+        var r = poltergeistpkg.rpc.historyRecordOf(e);
+        if (live) |l| {
+            if (!sameLiveRecord(l, r)) return error.AnchorStale;
+            r.seq = l.seq;
+        }
+        return .{ .record = r, .origin = if (live != null) .live else .persisted };
+    }
+    if (live) |r| {
+        if (!frozen.scope.sees(r.channel, @intCast(@max(0, r.at_ms)))) return error.AnchorNotVisible;
+        return .{ .record = r, .origin = .live };
+    }
+    return error.AnchorNotFound;
+}
+
+fn sameLiveRecord(live: poltergeistpkg.rpc.HistoryRecord, disk: poltergeistpkg.rpc.HistoryRecord) bool {
+    return live.log_seq == disk.log_seq and live.from == disk.from and live.at_ms == disk.at_ms and
+        live.summary == disk.summary and live.channel == disk.channel and std.mem.eql(u8, live.text, disk.text);
+}
+
+fn runReferencePage(job: *poltergeistpkg.HistoryJobs.Job, w: *HistoryWork, reader: *poltergeistpkg.ChatLog.Reader) void {
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+    const source = resolveWorkSource(job, w, reader) catch |err| {
+        publishHistoryFailure(job, w, @errorName(err));
+        return;
+    };
+    const path = ChatReference.path(job.arena.allocator(), source.record.text, w.original_reference) catch |err| {
+        publishHistoryFailure(job, w, @errorName(err));
+        return;
+    };
+    // No historical cwd was recorded. Current sender cwd is never evidence.
+    if (!ChatReference.isAbsolute(path)) {
+        publishHistoryFailure(job, w, "SourceUnavailable");
+        return;
+    }
+    if (job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+    w.verified_record = source.record;
+    w.verified_path = path;
+    const candidate = job.alloc.dupe(u8, "{\"candidate\":true}") catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    job.completeReady(candidate, null, false);
+}
+
+/// Core thread only. A verified path becomes one normal files_open response, cached once.
+fn mintReference(self: *App, arena: Allocator, job: *poltergeistpkg.HistoryJobs.Job, work: *HistoryWork) Allocator.Error!void {
+    if (work.reference_minted) return;
+    const path = work.verified_path orelse return;
+    const dirs = try self.workdirsOf(arena, job.group);
+    const normalized = try std.fs.path.resolve(arena, &.{path});
+    var selected: ?poltergeistpkg.files.Workdirs.Dir = null;
+    for (dirs) |dir| {
+        if (!dir.readable or !poltergeistpkg.files.Access.inside(dir.path, normalized)) continue;
+        if (selected == null or dir.path.len > selected.?.path.len) selected = dir;
+    }
+    const opened = if (selected) |dir| blk: {
+        const candidates = poltergeistPreviewCandidates(self, arena) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            break :blk "{\"refused\":\"HostRefused\",\"why\":\"preview plugins could not be read\"}";
+        };
+        break :blk try poltergeistpkg.rpc.openPreview(arena, &self.file_tickets, .{ .path = dir.path, .too_wide = !dir.readable }, normalized, .file, null, candidates);
+    } else "{\"refused\":\"access\",\"why\":\"no authorized working directory contains this file\"}";
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, opened, .{}) catch return error.OutOfMemory;
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return error.OutOfMemory,
+    };
+    if (obj.get("token")) |v| switch (v) {
+        .string => |ticket| {
+            work.ticket_manager = &self.file_tickets;
+            work.issued_ticket = self.alloc.dupe(u8, ticket) catch |err| {
+                _ = self.file_tickets.close(arena, ticket) catch {};
+                return err;
+            };
+        },
+        else => {},
+    };
+    errdefer discardHistoryTicket(self.alloc, work);
+    const record = work.verified_record orelse return error.OutOfMemory;
+    var abuf: [192]u8 = undefined;
+    var pbuf: [192]u8 = undefined;
+    var lbuf: [96]u8 = undefined;
+    const location: ?[]const u8 = if (record.pos) |pos| poltergeistpkg.rpc.positionText(&pbuf, pos) else null;
+    const live_alias: ?[]const u8 = if (record.seq != 0)
+        std.fmt.bufPrint(&lbuf, "l:{s}:{d}", .{ work.session, record.seq }) catch unreachable
+    else
+        null;
+    const canonical = if (record.log_seq != 0)
+        std.fmt.bufPrint(&abuf, "p:{d}", .{record.log_seq}) catch unreachable
+    else
+        location orelse live_alias orelse return error.OutOfMemory;
+    const bytes = try std.fmt.allocPrint(self.alloc, "{{\"ok\":true,\"state\":\"ready\",\"mode\":\"reference\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"source\":{{\"anchor\":{f},\"live_anchor\":{f},\"location\":{f},\"original_reference\":{f}}},\"file_open\":{s}}}", .{
+        job.id, std.json.fmt(work.group, .{}), work.session, std.json.fmt(canonical, .{}), std.json.fmt(live_alias, .{}), std.json.fmt(location, .{}), std.json.fmt(work.original_reference, .{}), opened,
+    });
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        self.alloc.free(bytes);
+        discardHistoryTicket(self.alloc, work);
+        const failure = try buildHistoryFailure(job, work, "TooLarge");
+        if (job.bytes) |old| self.alloc.free(old);
+        job.bytes = failure;
+        job.state.store(.failed, .release);
+    } else {
+        if (job.bytes) |old| self.alloc.free(old);
+        job.bytes = bytes;
+    }
+    work.reference_minted = true;
+}
+
+const SearchBegin = struct {
+    group: []const u8,
+    request_id: []const u8,
+    query: []const u8,
+    limit: usize,
+    resume_token: ?[poltergeistpkg.HistoryJobs.id_len]u8,
+};
+
+fn parseSearchBegin(value: ?std.json.Value) ?SearchBegin {
+    const obj = switch (value orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        const k = kv.key_ptr.*;
+        if (!std.mem.eql(u8, k, "group") and !std.mem.eql(u8, k, "request_id") and
+            !std.mem.eql(u8, k, "query") and !std.mem.eql(u8, k, "limit") and
+            !std.mem.eql(u8, k, "resume_token")) return null;
+    }
+    const group = switch (obj.get("group") orelse return null) {
+        .string => |t| t,
+        else => return null,
+    };
+    if (!validMetadataGroup(group)) return null;
+    const request_id = switch (obj.get("request_id") orelse return null) {
+        .string => |t| t,
+        else => return null,
+    };
+    if (request_id.len == 0 or request_id.len > 128 or !std.unicode.utf8ValidateSlice(request_id)) return null;
+    const raw = switch (obj.get("query") orelse return null) {
+        .string => |t| t,
+        else => return null,
+    };
+    const query = std.mem.trim(u8, raw, " \t\n\x0b\x0c\r");
+    if (query.len == 0 or query.len > poltergeistpkg.rpc.search_query_max_bytes or !std.unicode.utf8ValidateSlice(query)) return null;
+    var limit: usize = history_default_limit;
+    if (obj.get("limit")) |v| {
+        const n = switch (v) {
+            .integer => |i| i,
+            else => return null,
+        };
+        if (n < 1 or n > history_max_limit) return null;
+        limit = @intCast(n);
+    }
+    var token: ?[poltergeistpkg.HistoryJobs.id_len]u8 = null;
+    if (obj.get("resume_token")) |v| {
+        const t = switch (v) {
+            .string => |t| t,
+            else => return null,
+        };
+        token = historyJobId(t) orelse return null;
+    }
+    return .{ .group = group, .request_id = request_id, .query = query, .limit = limit, .resume_token = token };
+}
+
+const SearchFrozen = struct {
+    records: []const poltergeistpkg.rpc.HistoryRecord,
+    origin_anchor: []const u8 = "",
+    origin_location: []const u8 = "",
+    scope: poltergeistpkg.Chat.Scope,
+};
+
+fn chatSearchBegin(self: *App, arena: Allocator, value: ?std.json.Value) Allocator.Error![]const u8 {
+    const p = parseSearchBegin(value) orelse return "{\"ok\":false,\"error\":\"BadParams\"}";
+    const who = poltergeistpkg.Chat.user_id;
+    if (!self.chat.exists(p.group)) return "{\"ok\":false,\"error\":\"NoSuchGroup\"}";
+    if (!self.chat.isMember(p.group, who)) return "{\"ok\":false,\"error\":\"NotAMember\"}";
+    const scope = chatUserScope(who);
+    // Exact normalized query and authority, not a hash as authority.
+    const authority = try std.json.Stringify.valueAlloc(arena, scope, .{});
+    const binding = try std.json.Stringify.valueAlloc(arena, .{ p.query, scope }, .{});
+    var req: poltergeistpkg.HistoryJobs.Begin = .{
+        .request_id = p.request_id,
+        .group = p.group,
+        .limit = p.limit,
+        .mode = .search,
+        .question = 0,
+        .binding = binding,
+        .authority = authority,
+        .resume_token = p.resume_token,
+        .history_upper = 0,
+        .work = .{ .run = runHistoryWork, .release = releaseHistoryWork },
+        .build = .{ .build = buildSearchBegin },
+    };
+    switch (self.history_jobs.reuseBoundRequest(req)) {
+        .none => {},
+        .reused => |job| return arena.dupe(u8, job.begin_bytes),
+        .conflict => return "{\"ok\":false,\"error\":\"RequestIdConflict\"}",
+        .expired => return "{\"ok\":false,\"error\":\"Expired\"}",
+    }
+    const log_file = if (self.chat_log) |*l| l else return "{\"ok\":false,\"error\":\"LogsClosed\"}";
+    const state_dir = self.poltergeist_state_dir orelse return "{\"ok\":false,\"error\":\"LogsClosed\"}";
+    req.history_upper = log_file.head();
+    // Capture the complete retained live range, never just the first result page.
+    const live = self.chat.recentFor(arena, p.group, who, std.math.maxInt(usize), scope) catch return "{\"ok\":false,\"error\":\"NotAMember\"}";
+    const records = try arena.alloc(poltergeistpkg.rpc.HistoryRecord, live.len);
+    for (live, records) |m, *r| r.* = poltergeistpkg.rpc.liveRecordOf(m, try self.chatMemberTitle(arena, m.from));
+    req.snapshot = try std.json.Stringify.valueAlloc(arena, SearchFrozen{ .records = records, .scope = scope }, .{});
+    const work = try self.makeHistoryWork(p.group, state_dir, scope, p.limit, .search, "", "", 0, 0);
+    work.query = self.alloc.dupe(u8, p.query) catch |err| {
+        releaseHistoryWork(self.alloc, work);
+        return err;
+    };
+    req.work.ctx = work;
+    req.build.ctx = work;
+    const outcome = self.history_jobs.begin(req) catch |err| return jobBeginError(arena, err);
+    return arena.dupe(u8, outcome.job.begin_bytes);
+}
+
+fn jobBeginError(arena: Allocator, err: anyerror) Allocator.Error![]const u8 {
+    if (err == error.OutOfMemory) return error.OutOfMemory;
+    const code = if (err == error.ReplyExceedsBudget) "TooLarge" else @errorName(err);
+    return std.fmt.allocPrint(arena, "{{\"ok\":false,\"error\":{f}}}", .{std.json.fmt(code, .{})});
+}
+
+fn buildSearchBegin(ctx: ?*anyopaque, job: *poltergeistpkg.HistoryJobs.Job) (Allocator.Error || error{ReplyExceedsBudget})![]const u8 {
+    const work: *const HistoryWork = @ptrCast(@alignCast(ctx orelse return error.OutOfMemory));
+    return std.fmt.allocPrint(job.alloc, "{{\"ok\":true,\"state\":\"pending\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"query\":{f}}}", .{
+        job.id, std.json.fmt(work.group, .{}), work.session, std.json.fmt(work.query, .{}),
+    });
+}
+
+fn runSearchPage(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, reader: *poltergeistpkg.ChatLog.Reader) void {
+    searchPage(job, w, reader) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+    };
+}
+
+fn overlayRecord(capture: *const poltergeistpkg.ChatLog.Range.Capture, record: poltergeistpkg.rpc.HistoryRecord, query: []const u8) error{CursorStale}!bool {
+    if (record.log_seq != 0 and (try capture.locate(record.log_seq)) != null) return false;
+    return poltergeistpkg.rpc.nextMatch(record.text, query, 0) != null;
+}
+
+/// A nonpersisted row is ordered after its nearest known older persisted row.
+/// A missing persisted row keeps its own global log sequence. Numbered rows
+/// that exist on disk are returned exclusively by the physical stream.
+fn overlayKey(records: []const poltergeistpkg.rpc.HistoryRecord, index: usize, upper: u64) u64 {
+    if (records[index].log_seq != 0) return records[index].log_seq;
+    var newer = index + 1;
+    while (newer < records.len) : (newer += 1) if (records[newer].log_seq != 0) break;
+    if (newer == records.len) return upper +| 1;
+    var older = index;
+    while (older > 0) {
+        older -= 1;
+        if (records[older].log_seq != 0) return records[older].log_seq;
+    }
+    return 0;
+}
+
+fn diskRecordWithAlias(entry: poltergeistpkg.ChatLog.Entry, records: []const poltergeistpkg.rpc.HistoryRecord) poltergeistpkg.rpc.HistoryRecord {
+    var result = poltergeistpkg.rpc.historyRecordOf(entry);
+    if (entry.seq != 0) for (records) |record| if (record.log_seq == entry.seq and sameLiveRecord(record, result)) {
+        result.seq = record.seq;
+        break;
+    };
+    return result;
+}
+
+fn searchRewind(w: *const HistoryWork, capture: *const poltergeistpkg.ChatLog.Range.Capture, entry: poltergeistpkg.ChatLog.Entry) ?poltergeistpkg.HistoryJobs.Cursor {
+    const pos = entry.pos orelse return null;
+    const file = capture.find(pos.day, pos.part) orelse return null;
+    return .{ .day = pos.day, .part = pos.part, .offset = pos.end, .end = file.end, .inode = file.inode, .question = poltergeistpkg.ChatLog.questionFor(w.group, .{ .match = w.query }, w.scope) };
+}
+
+/// Returns a fence at the newer anchor only for an unpersisted middle row
+/// whose enclosing persisted interval contains unseen original disk rows.
+fn uncertainOverlayFence(capture: *const poltergeistpkg.ChatLog.Range.Capture, records: []const poltergeistpkg.rpc.HistoryRecord, index: usize) error{CursorStale}!?u64 {
+    if (records[index].log_seq != 0) return null;
+    var older = index;
+    var lower: ?poltergeistpkg.ChatLog.Range.Location = null;
+    while (older > 0) {
+        older -= 1;
+        if (records[older].log_seq == 0) continue;
+        lower = try capture.locate(records[older].log_seq);
+        if (lower != null) break;
+    }
+    var newer = index + 1;
+    var upper: ?poltergeistpkg.ChatLog.Range.Location = null;
+    while (newer < records.len) : (newer += 1) {
+        if (records[newer].log_seq == 0) continue;
+        upper = try capture.locate(records[newer].log_seq);
+        if (upper != null) break;
+    }
+    if (lower == null or upper == null) return null; // Normal continuous live tail stays supported.
+    var retained_between: u64 = 0;
+    for (records[older + 1 .. newer]) |record| {
+        if (record.log_seq != 0 and (try capture.locate(record.log_seq)) != null) retained_between += 1;
+    }
+    if (upper.?.ordinal <= lower.?.ordinal or upper.?.ordinal - lower.?.ordinal - 1 > retained_between)
+        return @max(lower.?.seq, upper.?.seq);
+    return null;
+}
+
+fn publishSourceUnavailable(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork) void {
+    const retry: ?[]const u8 = if (job.resume_id != null) job.resume_id.?[0..] else null;
+    const continuation = if (job.mode == .search)
+        std.fmt.allocPrint(job.arena.allocator(), "\"query\":{f},\"next_token\":\"{s}\"", .{ std.json.fmt(w.query, .{}), job.token })
+    else if (job.direction == .older)
+        std.fmt.allocPrint(job.arena.allocator(), "\"direction\":\"older\",\"older_token\":{f},\"newer_token\":null", .{std.json.fmt(retry, .{})})
+    else
+        std.fmt.allocPrint(job.arena.allocator(), "\"direction\":\"newer\",\"older_token\":null,\"newer_token\":{f}", .{std.json.fmt(retry, .{})});
+    const fields = continuation catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    const bytes = std.fmt.allocPrint(job.alloc, "{{\"ok\":false,\"state\":\"failed\",\"mode\":\"{s}\",\"error\":\"SourceUnavailable\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",{s}}}", .{
+        historyModeName(job.mode), job.id, std.json.fmt(w.group, .{}), w.session, fields,
+    }) catch {
+        publishHistoryFailure(job, w, "OutOfMemory");
+        return;
+    };
+    job.next_live_offset = job.live_offset;
+    const original = job.cursor orelse poltergeistpkg.HistoryJobs.Cursor{ .day = 0, .part = 0, .offset = 0, .end = 0, .inode = 0, .question = 0 };
+    job.completeFailed(.scan_failed, bytes, if (job.mode == .search) original else null, job.mode == .search);
+}
+
+const SearchOverlay = struct {
+    uncertain: bool,
+    index: usize,
+    key: u64,
+    seq: u64,
+    fn newest(_: void, a: SearchOverlay, b: SearchOverlay) bool {
+        if (a.key != b.key) return a.key > b.key;
+        return a.seq > b.seq;
+    }
+};
+
+fn searchPage(job: *poltergeistpkg.HistoryJobs.Job, w: *const HistoryWork, reader: *poltergeistpkg.ChatLog.Reader) Allocator.Error!void {
+    const alloc = job.arena.allocator();
+    const frozen = w.frozen orelse {
+        publishHistoryFailure(job, w, "CursorStale");
+        return;
+    };
+    const verifier = reader.verifier orelse {
+        publishHistoryFailure(job, w, "CursorStale");
+        return;
+    };
+    const capture = verifier.capture;
+    const c: poltergeistpkg.rpc.SearchMeasure = .{ .reader = w.reader, .session = &w.session, .query = w.query };
+    const shell = poltergeistpkg.rpc.history_reply_shell_bytes + w.query.len * 6 + w.group.len * 6;
+    const available = poltergeistpkg.rpc.history_reply_bytes -| shell;
+    var hits: std.Io.Writer.Allocating = .init(alloc);
+    var count: usize = 0;
+    var overlays: std.ArrayListUnmanaged(SearchOverlay) = .empty;
+    for (frozen.records, 0..) |record, index| {
+        const include = overlayRecord(capture, record, w.query) catch {
+            publishHistoryFailure(job, w, "CursorStale");
+            return;
+        };
+        if (include) {
+            const fence = uncertainOverlayFence(capture, frozen.records, index) catch {
+                publishHistoryFailure(job, w, "CursorStale");
+                return;
+            };
+            try overlays.append(alloc, .{ .index = index, .key = fence orelse overlayKey(frozen.records, index, job.history_upper), .seq = record.seq, .uncertain = fence != null });
+        }
+    }
+    std.mem.sort(SearchOverlay, overlays.items, {}, SearchOverlay.newest);
+    var offset = job.live_offset;
+    if (offset > overlays.items.len) {
+        publishHistoryFailure(job, w, "CursorMismatch");
+        return;
+    }
+    const disk_done = if (job.cursor) |cursor| cursor.day == 0 and cursor.part == 2 else false;
+    const disk_cursor = if (job.cursor) |cursor| if (cursor.day == 0) null else historyCursorValue(cursor) else null;
+    const page = if (!disk_done) reader.scanCancel(alloc, w.group, job.before_seq, w.limit, .{ .match = w.query }, frozen.scope, disk_cursor, .{
+        .bytes = poltergeistpkg.rpc.history_reply_bytes,
+        .shell = shell,
+        .measure = poltergeistpkg.rpc.measureSearch,
+        .context = &c,
+    }, .{ .flag = &job.cancelled }) catch |err| {
+        publishHistoryFailure(job, w, @errorName(err));
+        return;
+    } else poltergeistpkg.ChatLog.ScanPage{ .entries = &.{}, .scanned_seq_floor = null, .cancelled = false, .next = null, .stop = .at_end, .restarted = false, .gap = false };
+    defer poltergeistpkg.ChatLog.freeScanPage(alloc, page);
+    if (page.cancelled or job.cancelledByOwner()) {
+        job.completeCancelled();
+        return;
+    }
+    job.result_gap = page.gap;
+    job.result_restarted = page.restarted;
+    var stopped = page.stop;
+    var next: ?poltergeistpkg.HistoryJobs.Cursor = if (page.next) |cursor| historyCursorJob(cursor) else null;
+    var disk_index = page.entries.len;
+    var rejected_record = false;
+    while (true) {
+        if (job.cancelledByOwner()) {
+            job.completeCancelled();
+            return;
+        }
+        const overlay_index = if (offset < overlays.items.len) overlays.items[offset].index else null;
+        const key: u64 = if (offset < overlays.items.len) overlays.items[offset].key else 0;
+        const eligible = overlay_index != null and ((page.next == null and page.stop != .too_large) or
+            (if (page.scanned_seq_floor) |floor| key >= floor else false));
+        const use_overlay = eligible and (disk_index == 0 or key >= page.entries[disk_index - 1].seq);
+        if (use_overlay and overlays.items[offset].uncertain) {
+            publishSourceUnavailable(job, w);
+            return;
+        }
+        if (!use_overlay and disk_index == 0) break;
+        const record = if (use_overlay) frozen.records[overlay_index.?] else diskRecordWithAlias(page.entries[disk_index - 1], frozen.records);
+        const origin: poltergeistpkg.rpc.MessageOrigin = if (use_overlay or record.seq != 0) .live else .persisted;
+        const cost = poltergeistpkg.rpc.measureSearchRecord(record, origin, c);
+        if (count >= w.limit or cost +| @as(usize, if (count > 0) 1 else 0) > available -| hits.written().len) {
+            rejected_record = true;
+            stopped = if (count == 0) .too_large else .full;
+            break;
+        }
+        if (count > 0) hits.writer.writeAll(",") catch return error.OutOfMemory;
+        poltergeistpkg.rpc.writeSearchHit(&hits.writer, alloc, record, origin, c) catch return error.OutOfMemory;
+        count += 1;
+        if (use_overlay) {
+            offset += 1;
+        } else disk_index -= 1;
+    }
+    // A scan is allowed to inspect beyond the returned page, but its public
+    // cursor must stand before the first disk hit that was not delivered.
+    if (disk_index > 0) next = searchRewind(w, capture, page.entries[disk_index - 1]) orelse {
+        publishHistoryFailure(job, w, "CursorStale");
+        return;
+    };
+    if (page.stop == .too_large and count > 0) stopped = .full;
+    if (offset < overlays.items.len and next == null) next = .{ .day = 0, .part = 2, .offset = 0, .end = 0, .inode = 0, .question = 0 };
+    job.next_live_offset = offset;
+    if (stopped == .too_large and count == 0) {
+        // Keep the unreturned overlay and exact disk position for explicit retry.
+        if (next == null) next = .{ .day = 0, .part = 2, .offset = 0, .end = 0, .inode = 0, .question = 0 };
+        const bytes = try buildHistoryTooLarge(job, w);
+        job.completeFailed(.too_large, bytes, next, true);
+        return;
+    }
+    if (!rejected_record and stopped == .at_end and next != null) stopped = .full;
+    var out: std.Io.Writer.Allocating = .init(job.alloc);
+    errdefer out.deinit();
+    out.writer.print("{{\"ok\":true,\"state\":\"ready\",\"mode\":\"search\",\"job_id\":\"{s}\",\"group\":{f},\"session\":\"{s}\",\"query\":{f},\"results\":[{s}],\"stop\":\"{s}\",\"next_token\":", .{
+        job.id, std.json.fmt(w.group, .{}), w.session, std.json.fmt(w.query, .{}), hits.written(), historyStopName(stopped),
+    }) catch return error.OutOfMemory;
+    if (next != null) out.writer.print("\"{s}\"", .{job.token}) catch return error.OutOfMemory else out.writer.writeAll("null") catch return error.OutOfMemory;
+    out.writer.print(",\"restarted\":{},\"gap\":{}}}", .{ job.inherited_restarted or job.result_restarted, job.inherited_gap or job.result_gap }) catch return error.OutOfMemory;
+    const bytes = try out.toOwnedSlice();
+    if (bytes.len > poltergeistpkg.rpc.history_reply_bytes) {
+        job.alloc.free(bytes);
+        publishHistoryFailure(job, w, "TooLarge");
+        return;
+    }
+    job.completeReady(bytes, next, next != null);
+}
+
 /// `chat_history_begin`: validate on this thread, take an immutable live
 /// snapshot, register the job and start the scan (contract §7).
 fn chatHistoryBegin(
     self: *App,
     arena: Allocator,
     value: ?std.json.Value,
+    /// The whole request's length, for the new modes' 16 KiB ceiling.
+    req_len: usize,
 ) Allocator.Error![]const u8 {
     const p = parseHistoryBegin(value) orelse return "{\"error\":\"BadParams\"}";
     const reader = poltergeistpkg.Chat.user_id;
@@ -17860,7 +19347,36 @@ fn chatHistoryBegin(
     // even when the job has since finished (contract §7). Different
     // parameters under the same id are refused here, not after paying for
     // a snapshot.
-    switch (self.history_jobs.reuseRequest(p.request_id, p.group, p.limit, p.resume_token)) {
+    // **What makes this request itself**, for the managed retry: the mode
+    // and, where it has them, the anchor/hint/counts. The token is compared
+    // separately by the manager.
+    const question: u64 = switch (p.mode) {
+        .history => 0,
+        .around => aroundQuestion(p.group, p.anchor, p.location, p.before, p.after),
+        // A context call is identified by the token it carries, which the
+        // manager compares itself; the mode is all this side has to add.
+        .context => 1,
+        .reference => aroundQuestion(p.group, p.anchor, p.location, 0, 0),
+        .search => unreachable,
+    };
+    if (req_len > request_max_bytes and p.mode != .history) return "{\"error\":\"BadParams\"}";
+
+    const scope = chatUserScope(reader);
+    const authority = try std.json.Stringify.valueAlloc(arena, scope, .{});
+    const binding = try std.json.Stringify.valueAlloc(arena, .{ p.anchor, p.location, p.before, p.after, p.original_reference, scope }, .{});
+    switch (self.history_jobs.reuseBoundRequest(.{
+        .request_id = p.request_id,
+        .group = p.group,
+        .limit = p.limit,
+        .resume_token = p.resume_token,
+        .mode = p.mode,
+        .question = question,
+        .binding = binding,
+        .authority = authority,
+        .history_upper = 0,
+        .work = .{ .run = runHistoryWork, .release = releaseHistoryWork },
+        .build = .{ .build = buildHistoryBegin },
+    })) {
         .none => {},
         .reused => |job| return arena.dupe(u8, job.begin_bytes),
         .conflict => return "{\"error\":\"RequestIdConflict\"}",
@@ -17874,8 +19390,7 @@ fn chatHistoryBegin(
     const history_upper = chat_log.head();
     const live_since = self.chat.headOf(p.group) orelse 0;
 
-    const scope = poltergeistHost(self).scopeFor(arena, &self.poltergeist, reader, p.group);
-    const snapshot = self.chat.recentFor(arena, p.group, reader, history_default_limit, scope) catch |err| switch (err) {
+    const snapshot = self.chat.recentFor(arena, p.group, reader, if (p.mode == .history) history_default_limit else std.math.maxInt(usize), scope) catch |err| switch (err) {
         error.NotAMember => return "{\"error\":\"NotAMember\"}",
         else => return "{\"error\":\"NoSuchGroup\"}",
     };
@@ -17890,7 +19405,7 @@ fn chatHistoryBegin(
     var start = snapshot.len;
     var used: usize = 0;
     var i = snapshot.len;
-    while (i > 0) {
+    while (p.mode == .history and i > 0) {
         i -= 1;
         const title = try self.chatMemberTitle(arena, snapshot[i].from);
         const cost = poltergeistpkg.rpc.measureRecord(
@@ -17925,20 +19440,49 @@ fn chatHistoryBegin(
         .reader = reader,
     };
 
+    const records = try arena.alloc(poltergeistpkg.rpc.HistoryRecord, snapshot.len);
+    for (snapshot, records) |m, *r| r.* = poltergeistpkg.rpc.liveRecordOf(m, try self.chatMemberTitle(arena, m.from));
+    const frozen = try std.json.Stringify.valueAlloc(arena, SearchFrozen{
+        .records = records,
+        .scope = scope,
+        .origin_anchor = p.anchor,
+        .origin_location = p.location,
+    }, .{});
+
     // The scan's own copies. Made here, on this thread; the worker never
     // reads this App.
-    const work = try self.makeHistoryWork(p.group, state_dir, scope, p.limit);
+    const work = try self.makeHistoryWork(
+        p.group,
+        state_dir,
+        scope,
+        p.limit,
+        p.mode,
+        p.anchor,
+        p.location,
+        p.before,
+        p.after,
+    );
 
+    work.original_reference = self.alloc.dupe(u8, p.original_reference) catch |err| {
+        releaseHistoryWork(self.alloc, work);
+        return err;
+    };
     const outcome = self.history_jobs.begin(.{
+        .snapshot = frozen,
+        .binding = binding,
+        .authority = authority,
         .request_id = p.request_id,
         .group = p.group,
         .limit = p.limit,
         .resume_token = p.resume_token,
+        .mode = p.mode,
         .history_upper = history_upper,
+        .question = question,
         .work = .{
             .ctx = work,
             .run = runHistoryWork,
             .release = releaseHistoryWork,
+            .discard = discardHistoryTicket,
         },
         .build = .{ .ctx = &build, .build = buildHistoryBegin },
     }) catch |err| switch (err) {
@@ -17963,18 +19507,19 @@ fn chatHistoryPoll(
     self: *App,
     arena: Allocator,
     value: ?std.json.Value,
+    search: bool,
+    req_len: usize,
 ) Allocator.Error![]const u8 {
-    const id = parseHistoryJob(value) orelse return "{\"error\":\"BadParams\"}";
-    const outcome = self.history_jobs.poll(id) catch return "{\"error\":\"NoSuchJob\"}";
+    const id = parseHistoryJob(value) orelse return readDoorError("BadParams", search);
+    const existing = self.history_jobs.peek(id) orelse return readDoorError("NoSuchJob", search);
+    if (req_len > request_max_bytes and existing.mode != .history) return readDoorError("BadParams", true);
+    if ((existing.mode == .search) != search) return readDoorError("BadParams", search);
+    const outcome = self.history_jobs.poll(id) catch return readDoorError("NoSuchJob", search);
 
     const job = switch (outcome) {
-        .expired => return "{\"error\":\"Expired\"}",
-        .pending => |j| {
-            return self.historyStateJson(arena, j, "pending");
-        },
-        .cancelled => |j| {
-            return self.historyStateJson(arena, j, "cancelled");
-        },
+        .expired => return readDoorError("Expired", search or (existing.mode != .history)),
+        .pending => |j| j,
+        .cancelled => |j| j,
         .ready => |j| j,
         .failed => |j| j,
     };
@@ -17983,16 +19528,193 @@ fn chatHistoryPoll(
     // group deleted or a membership withdrawn in between must not receive
     // the page.
     if (!self.chat.exists(job.group)) {
+        if (job.loadState() != .pending) if (job.work.ctx) |ctx| {
+            discardHistoryTicket(self.alloc, ctx);
+        };
         if (self.history_jobs.cancel(job.id)) |_| {} else |_| {}
-        return "{\"error\":\"NoSuchGroup\"}";
+        return readDoorError("NoSuchGroup", search or (existing.mode != .history));
     }
     if (!self.chat.isMember(job.group, poltergeistpkg.Chat.user_id)) {
+        if (job.loadState() != .pending) if (job.work.ctx) |ctx| {
+            discardHistoryTicket(self.alloc, ctx);
+        };
         if (self.history_jobs.cancel(job.id)) |_| {} else |_| {}
-        return "{\"error\":\"NotAMember\"}";
+        return readDoorError("NotAMember", search or (existing.mode != .history));
     }
 
-    const bytes = job.bytes orelse return "{\"error\":\"Expired\"}";
-    return arena.dupe(u8, bytes);
+    switch (outcome) {
+        .pending => return self.historyStateJson(arena, job, "pending"),
+        .cancelled => return self.historyStateJson(arena, job, "cancelled"),
+        else => {},
+    }
+    const scope = chatUserScope(poltergeistpkg.Chat.user_id);
+    const work: *HistoryWork = @ptrCast(@alignCast(job.work.ctx orelse return readDoorError("Expired", search or (existing.mode != .history))));
+    const bytes = job.bytes orelse return readDoorError("Expired", search or (existing.mode != .history));
+    if (bytes.len == 0) return readDoorError("OutOfMemory", job.mode != .history);
+    if (!try historyReplyVisible(arena, bytes, scope) or (if (work.verified_record) |r| !scope.sees(r.channel, @intCast(@max(0, r.at_ms))) else false)) {
+        discardHistoryTicket(self.alloc, work);
+        _ = self.history_jobs.cancel(job.id) catch {};
+        return "{\"ok\":false,\"state\":\"failed\",\"error\":\"AnchorNotVisible\"}";
+    }
+    if (job.mode == .reference and job.loadState() == .ready) try self.mintReference(arena, job, work);
+    const answer = try arena.dupe(u8, job.bytes orelse return readDoorError("Expired", search or (existing.mode != .history)));
+    if (job.mode == .reference and job.loadState() == .ready) work.ticket_handed_out = true;
+    return answer;
+}
+
+fn readDoorError(comptime code: []const u8, rich: bool) []const u8 {
+    return if (rich) "{\"ok\":false,\"state\":\"failed\",\"error\":\"" ++ code ++ "\"}" else "{\"error\":\"" ++ code ++ "\"}";
+}
+
+/// Revalidate each record against current authority immediately before publication.
+fn historyReplyVisible(arena: Allocator, bytes: []const u8, scope: poltergeistpkg.Chat.Scope) Allocator.Error!bool {
+    const value = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{ .parse_numbers = false }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return false,
+    };
+    if (obj.get("messages")) |v| {
+        const messages = switch (v) {
+            .array => |a| a,
+            else => return false,
+        };
+        for (messages.items) |m| if (!recordVisible(m, scope)) return false;
+    }
+    if (obj.get("results")) |v| {
+        const results = switch (v) {
+            .array => |a| a,
+            else => return false,
+        };
+        for (results.items) |hit| {
+            const h = switch (hit) {
+                .object => |o| o,
+                else => return false,
+            };
+            if (!recordVisible(h.get("message") orelse return false, scope)) return false;
+        }
+    }
+    return true;
+}
+fn recordVisible(v: std.json.Value, scope: poltergeistpkg.Chat.Scope) bool {
+    const obj = switch (v) {
+        .object => |o| o,
+        else => return false,
+    };
+    const channel = switch (obj.get("channel") orelse return false) {
+        .integer => |i| if (i >= 0) @as(u64, @intCast(i)) else return false,
+        .number_string => |n| std.fmt.parseUnsigned(u64, n, 10) catch return false,
+        else => return false,
+    };
+    const at = switch (obj.get("at_ms") orelse return false) {
+        .integer => |i| @as(u64, @intCast(@max(0, i))),
+        .number_string => |n| @as(u64, @intCast(@max(0, std.fmt.parseInt(i64, n, 10) catch return false))),
+        else => return false,
+    };
+    return scope.sees(channel, at);
+}
+
+/// `chat_metadata`: the group's own name, brief and members, for a chat tab
+/// to draw its header with (contract, "Metadata (parallel B)").
+///
+/// **In memory and read-only.** It touches no file, starts no job and
+/// changes nothing -- not the person's cursor and not any agent's. The
+/// titles are the same ones `chatMemberTitle` gives every message, and the
+/// roles are the same reading the control room draws (`terminalRole`), so a
+/// header cannot disagree with the messages under it.
+///
+/// The member list is capped and the whole document is measured after
+/// escaping (`rpc.metadataJson`): a group that has grown past the ceiling
+/// gets a shorter list with a true `member_count` beside it, and a brief
+/// that cannot fit at all is `TooLarge` rather than half a sentence.
+fn chatMetadata(
+    self: *App,
+    arena: Allocator,
+    value: ?std.json.Value,
+    /// The whole request's length, handed over by the door untouched.
+    /// **The 16 KiB ceiling is checked here**, on the method it belongs
+    /// to: `group_read` and the `chat_history_*` calls are older than the
+    /// rule and keep their old acceptance.
+    req_len: usize,
+) Allocator.Error![]const u8 {
+    const group = metadataRequestAccepted(req_len, value) orelse return "{\"error\":\"BadParams\"}";
+    if (!self.chat.exists(group)) return "{\"error\":\"NoSuchGroup\"}";
+
+    // Who is asking is the person at the door, and a group they are not in
+    // is not theirs to describe -- the same rule every read here keeps.
+    const reader = poltergeistpkg.Chat.user_id;
+    if (!self.chat.isMember(group, reader)) return "{\"error\":\"NotAMember\"}";
+
+    const brief = self.chat.briefOf(group) catch "";
+    const ids = self.chat.membersOf(arena, group) catch return "{\"error\":\"NoSuchGroup\"}";
+
+    // **Only the members that can be listed are described.** A group
+    // larger than the cap is counted, not copied: an id past the cap has
+    // no entry anything will read, so it is not given a title or a row.
+    const listed = @min(ids.len, poltergeistpkg.rpc.metadata_max_members);
+    const members = try arena.alloc(poltergeistpkg.rpc.MetadataMember, listed);
+    for (ids[0..listed], 0..) |id, i| {
+        members[i] = .{
+            .id = id,
+            .title = try self.chatMemberTitle(arena, id),
+            // The person and Polter have no terminal of their own, so
+            // there is no role to have recorded: null, not "".
+            .role = if (id == poltergeistpkg.Chat.user_id or id == poltergeistpkg.Chat.polter_id)
+                null
+            else
+                self.terminalRole(id),
+        };
+    }
+
+    return poltergeistpkg.rpc.metadataJson(arena, group, brief, ids.len, members) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.TooLarge => return "{\"error\":\"TooLarge\"}",
+    };
+}
+
+/// The two checks a `chat_metadata` call has to pass before anything is
+/// read: the contract's 16 KiB request ceiling, then the method's own one
+/// name. **The length first**, so a document padded past the ceiling is
+/// refused before its fields are looked at.
+///
+/// Split out from the handler so the boundary is reachable from `test {`:
+/// the handler itself cannot be called in a test build, because the title
+/// lookup it uses needs an apprt method the `none` runtime does not have.
+fn metadataRequestAccepted(req_len: usize, value: ?std.json.Value) ?[]const u8 {
+    if (req_len > request_max_bytes) return null;
+    return parseMetadataAsk(value);
+}
+
+/// `chat_metadata`'s request fields: `group` and nothing else.
+///
+/// **Every name is checked**, like `chat_history_begin`'s: a call carrying
+/// a field this method does not take meant something else, and answering it
+/// as this one would be quiet and wrong.
+fn parseMetadataAsk(value: ?std.json.Value) ?[]const u8 {
+    const obj = switch (value orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    var it = obj.iterator();
+    while (it.next()) |kv| {
+        if (!std.mem.eql(u8, kv.key_ptr.*, "group")) return null;
+    }
+    const group = switch (obj.get("group") orelse return null) {
+        .string => |v| v,
+        else => return null,
+    };
+    if (!validMetadataGroup(group)) return null;
+    return group;
+}
+
+/// Whether a name is one `chat_metadata` may be asked about: 1..256 UTF-8
+/// bytes. Split out so the boundary is reachable from `test {` without
+/// building a JSON value that cannot hold invalid bytes anyway.
+fn validMetadataGroup(group: []const u8) bool {
+    if (group.len == 0 or group.len > poltergeistpkg.rpc.metadata_max_group) return false;
+    return std.unicode.utf8ValidateSlice(group);
 }
 
 /// `chat_history_cancel`: idempotent. The reply names what was cancelled so
@@ -18001,8 +19723,16 @@ fn chatHistoryCancel(
     self: *App,
     arena: Allocator,
     value: ?std.json.Value,
+    search: bool,
+    req_len: usize,
 ) Allocator.Error![]const u8 {
     const id = parseHistoryJob(value) orelse return "{\"error\":\"BadParams\"}";
+    const existing = self.history_jobs.peek(id) orelse return "{\"error\":\"NoSuchJob\"}";
+    if (req_len > request_max_bytes and existing.mode != .history) return readDoorError("BadParams", true);
+    if ((existing.mode == .search) != search) return "{\"ok\":false,\"error\":\"BadParams\"}";
+    if (existing.work.ctx) |ctx| {
+        discardHistoryTicket(self.alloc, ctx);
+    }
     const job = self.history_jobs.cancel(id) catch return "{\"error\":\"NoSuchJob\"}";
     return self.historyStateJson(arena, job, "cancelled");
 }
@@ -19696,6 +21426,126 @@ test "2156 v3: the person's own Agent CLIs are read once a round, so nothing a r
     try testing.expect(app.own_round == 2);
 }
 
+test "2793: chat_metadata takes one name and refuses every other shape" {
+    const alloc = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ok = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"group\":\"build\"}", .{});
+    try std.testing.expectEqualStrings("build", parseMetadataAsk(ok).?);
+
+    inline for (.{
+        // An unknown field is a call that meant something else.
+        "{\"group\":\"build\",\"limit\":5}",
+        // No group at all.
+        "{}",
+        // Not a string.
+        "{\"group\":5}",
+        // Empty is not a group.
+        "{\"group\":\"\"}",
+    }) |doc| {
+        const v = try std.json.parseFromSliceLeaky(std.json.Value, a, doc, .{});
+        try std.testing.expect(parseMetadataAsk(v) == null);
+    }
+
+    // Past the request ceiling.
+    const long = try std.fmt.allocPrint(a, "{{\"group\":\"{s}\"}}", .{"a" ** (poltergeistpkg.rpc.metadata_max_group + 1)});
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, long, .{});
+    try std.testing.expect(parseMetadataAsk(v) == null);
+
+    // Invalid UTF-8, asked of the boundary itself: a JSON string cannot
+    // carry these bytes, so the value path can never reach this.
+    try std.testing.expect(!validMetadataGroup("\xff"));
+    try std.testing.expect(validMetadataGroup("build"));
+}
+
+test "2793: chat_metadata holds the 16 KiB request ceiling at its entry checks" {
+    // The length the door hands over is the whole request's, and it is
+    // checked **before** the method's fields. Exactly the ceiling is
+    // allowed; one byte more is not, whatever the document says.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const doc = "{\"group\":\"build\"}";
+    const buf = try a.alloc(u8, request_max_bytes + 1);
+    @memcpy(buf[0..doc.len], doc);
+    @memset(buf[doc.len..], ' ');
+    const params = switch (try std.json.parseFromSliceLeaky(std.json.Value, a, buf, .{})) {
+        .object => |o| o.get("group").?,
+        else => return error.NotParsed,
+    };
+    // Wrap the bare name back into the shape the door parses.
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(a, "group", params);
+    const value: std.json.Value = .{ .object = obj };
+
+    try testing.expectEqualStrings("build", metadataRequestAccepted(request_max_bytes, value).?);
+    try testing.expect(metadataRequestAccepted(request_max_bytes + 1, value) == null);
+
+    // A short document does not get in by being short, and a long one is
+    // refused even when its fields are valid.
+    try testing.expect(metadataRequestAccepted(request_max_bytes, null) == null);
+}
+
+test "2793: chat_history_begin takes around and context modes strictly" {
+    const alloc = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ask = struct {
+        fn parse(alloc_: Allocator, doc: []const u8) ?HistoryBegin {
+            const value = std.json.parseFromSliceLeaky(std.json.Value, alloc_, doc, .{}) catch return null;
+            return parseHistoryBegin(value);
+        }
+    };
+
+    const around = ask.parse(a, "{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r1\"," ++
+        "\"anchor\":\"p:42\",\"location\":\"g:20261105:1:9:10:20:3\",\"before\":2,\"after\":3}").?;
+    try std.testing.expectEqual(poltergeistpkg.HistoryJobs.JobMode.around, around.mode);
+    try std.testing.expectEqualStrings("p:42", around.anchor);
+    try std.testing.expectEqualStrings("g:20261105:1:9:10:20:3", around.location);
+    try std.testing.expectEqual(@as(usize, 2), around.before);
+    try std.testing.expectEqual(@as(usize, 3), around.after);
+
+    // Each mode refuses what it does not take, rather than ignoring it.
+    inline for (.{
+        // around: no anchor
+        "{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r\"}",
+        // around: a page limit is history's
+        "{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r\",\"anchor\":\"p:1\",\"limit\":5}",
+        // around: a resume token belongs to context
+        "{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r\",\"anchor\":\"p:1\",\"resume_token\":\"00000000000000000000000000000000\"}",
+        // context: no token
+        "{\"mode\":\"context\",\"group\":\"build\",\"request_id\":\"r\"}",
+        // context: an anchor is around's
+        "{\"mode\":\"context\",\"group\":\"build\",\"request_id\":\"r\",\"resume_token\":\"00000000000000000000000000000000\",\"anchor\":\"p:1\"}",
+        // history: the new fields are not silently ignored
+        "{\"mode\":\"history\",\"group\":\"build\",\"request_id\":\"r\",\"anchor\":\"p:1\"}",
+        "{\"group\":\"build\",\"request_id\":\"r\",\"before\":1}",
+    }) |doc| {
+        try std.testing.expect(ask.parse(a, doc) == null);
+    }
+
+    // An anchor over the ceiling is refused, not truncated.
+    const long_anchor = try std.fmt.allocPrint(a, "{{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r\",\"anchor\":\"{s}\"}}", .{"p" ** (anchor_max_bytes + 1)});
+    try std.testing.expect(ask.parse(a, long_anchor) == null);
+
+    // The widest window the counts allow is still a request: 99+99+1 = 199.
+    const widest = ask.parse(a, "{\"mode\":\"around\",\"group\":\"build\",\"request_id\":\"r\",\"anchor\":\"p:1\",\"before\":99,\"after\":99}").?;
+    try std.testing.expectEqual(@as(usize, 99), widest.before);
+    try std.testing.expectEqual(@as(usize, 99), widest.after);
+
+    const context = ask.parse(a, "{\"mode\":\"context\",\"group\":\"build\",\"request_id\":\"r2\"," ++
+        "\"resume_token\":\"00000000000000000000000000000000\",\"limit\":10}").?;
+    try std.testing.expectEqual(poltergeistpkg.HistoryJobs.JobMode.context, context.mode);
+    try std.testing.expectEqual(@as(usize, 10), context.limit);
+}
+
 test "2835: a generated job id survives the host's JSON round trip and polls" {
     // **The id's whole journey**, not just its spelling: generated by the
     // manager (32 ASCII hex), written into a reply, read back out of a
@@ -19728,6 +21578,7 @@ test "2835: a generated job id survives the host's JSON round trip and polls" {
         .group = "build",
         .limit = 10,
         .history_upper = 7,
+        .question = 0,
         .work = .{ .run = T.run, .release = T.release },
         .build = .{ .build = T.build },
     });
@@ -19751,4 +21602,395 @@ test "2835: a generated job id survives the host's JSON round trip and polls" {
         .ready => {},
         else => return error.ExpectedReady,
     }
+}
+
+/// Production-door fixture: real App chat state, real ChatLog and the actual job runner.
+/// The synchronous manager makes assertions deterministic; no replacement reader/builder.
+const DoorClock2976 = struct {
+    value: u64 = 0,
+    fn clock(self: *DoorClock2976) poltergeistpkg.HistoryJobs.Clock {
+        return .{ .ctx = self, .now = read };
+    }
+    fn read(ctx: ?*const anyopaque) u64 {
+        const self: *const DoorClock2976 = @ptrCast(@alignCast(ctx.?));
+        return self.value;
+    }
+};
+
+const ChatDoorWorld2976 = struct {
+    app: App,
+    tmp: std.testing.TmpDir,
+    arena: std.heap.ArenaAllocator,
+
+    fn init(self: *ChatDoorWorld2976) !void {
+        const a = std.testing.allocator;
+        self.tmp = std.testing.tmpDir(.{});
+        self.arena = .init(a);
+        const path = try self.tmp.dir.realPathFileAlloc(std.testing.io, ".", self.arena.allocator());
+        self.app = undefined;
+        self.app.alloc = a;
+        self.app.surfaces = .empty;
+        self.app.chat = .init(a, .{});
+        try self.app.chat.create("build", poltergeistpkg.Chat.user_id);
+        self.app.chat_log = try poltergeistpkg.ChatLog.open(a, std.testing.io, path);
+        self.app.poltergeist_state_dir = path;
+        self.app.chat_session = "0123456789abcdef0123456789abcdef".*;
+        self.app.history_clock = .init(std.testing.io);
+        self.app.history_jobs = .init(a, std.testing.io, self.app.history_clock.clock());
+        self.app.history_jobs.mode = .immediate;
+        self.app.personas = .{ .alloc = a };
+        self.app.file_tickets = .init(a, std.testing.io);
+        self.app.control_room = .init(a);
+        self.app.poltergeist_worktrees = null;
+        self.app.control_home = "";
+        self.app.poltergeist_strays_said = false;
+    }
+    fn deinit(self: *ChatDoorWorld2976) void {
+        self.app.history_jobs.deinit();
+        self.app.chat_log.?.deinit();
+        self.app.chat.deinit();
+        self.app.personas.deinit();
+        self.app.file_tickets.deinit();
+        self.app.control_room.deinit();
+        self.arena.deinit();
+        self.tmp.cleanup();
+    }
+    fn ask(self: *ChatDoorWorld2976, method: []const u8, params: anytype) !std.json.ObjectMap {
+        const a = self.arena.allocator();
+        const request = try std.json.Stringify.valueAlloc(a, .{ .method = method, .params = params }, .{});
+        const answer = try self.app.chatReadAnswerForBuffer(a, request, poltergeistpkg.rpc.history_reply_bytes + 1);
+        try std.testing.expect(answer.len <= poltergeistpkg.rpc.history_reply_bytes);
+        return (try std.json.parseFromSliceLeaky(std.json.Value, a, answer, .{})).object;
+    }
+    fn poll(self: *ChatDoorWorld2976, begin: std.json.ObjectMap, search: bool) !std.json.ObjectMap {
+        return self.ask(if (search) "chat_search_poll" else "chat_history_poll", .{ .job_id = begin.get("job_id").?.string });
+    }
+};
+
+test "2976 production door search unions live and physical history and binds query" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    const app = &world.app;
+    const older = app.chat_log.?.append("build", 7, "stored author", 1, false, "old NEEDLE 中文", 0);
+    const persisted = app.chat_log.?.append("build", 7, "stored author", 2, false, "middle needle", 0);
+    const m = try app.chat.post("build", poltergeistpkg.Chat.user_id, "middle needle", 2);
+    app.chat.setLogSeq("build", m.seq, persisted);
+    _ = try app.chat.post("build", poltergeistpkg.Chat.user_id, "new needle", 3);
+    const before_cursor = try app.chat.cursorFor("build", poltergeistpkg.Chat.user_id);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "search-1", .query = " \tneedle\r\n", .limit = 2 });
+    try t.expectEqualStrings("needle", begin.get("query").?.string);
+    try t.expect(begin.get("live_snapshot") == null);
+    const page = try world.poll(begin, true);
+    const hits = page.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 2), hits.len);
+    try t.expectEqualStrings("new needle", hits[0].object.get("message").?.object.get("text").?.string);
+    try t.expectEqual(@as(i64, 4), hits[0].object.get("ranges").?.array.items[0].object.get("start").?.integer);
+    const token = page.get("next_token").?.string;
+    const mismatch = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "changed", .query = "other", .resume_token = token });
+    try t.expectEqualStrings("CursorMismatch", mismatch.get("error").?.string);
+    const second = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "search-2", .query = "needle", .resume_token = token });
+    const page2 = try world.poll(second, true);
+    const hits2 = page2.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 1), hits2.len);
+    try t.expectEqual(@as(i64, @intCast(older)), hits2[0].object.get("message").?.object.get("log_seq").?.integer);
+    try t.expectEqualStrings("stored author", hits2[0].object.get("message").?.object.get("author").?.string);
+    try t.expectEqualStrings("at_end", page2.get("stop").?.string);
+    try t.expectEqual(before_cursor, try app.chat.cursorFor("build", poltergeistpkg.Chat.user_id));
+    _ = try app.chat.post("build", poltergeistpkg.Chat.user_id, "late needle", 4);
+    const retry = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "search-1", .query = "needle", .limit = 2 });
+    try t.expectEqualStrings(begin.get("job_id").?.string, retry.get("job_id").?.string);
+    const wrong_family = try world.ask("chat_history_begin", .{ .group = "build", .request_id = "wrong-family", .resume_token = token });
+    try t.expectEqualStrings("CursorMismatch", wrong_family.get("error").?.string);
+}
+
+test "2976 production door around uses captured live aliases and exact request fields" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    const app = &world.app;
+    _ = try app.chat.post("build", poltergeistpkg.Chat.user_id, "before", 1);
+    const target = try app.chat.post("build", poltergeistpkg.Chat.user_id, "target", 2);
+    app.chat.setLogSeq("build", target.seq, 77); // Persisted identity even if missing on disk.
+    _ = try app.chat.post("build", poltergeistpkg.Chat.user_id, "after", 3);
+    const begin = try world.ask("chat_history_begin", .{ .mode = "around", .group = "build", .request_id = "around-live", .anchor = "p:77", .before = 1, .after = 1 });
+    const page = try world.poll(begin, false);
+    try t.expectEqualStrings("around", page.get("mode").?.string);
+    try t.expect(page.get("stop") != null);
+    try t.expectEqual(@as(i64, 1), page.get("target_index").?.integer);
+    const messages = page.get("messages").?.array.items;
+    try t.expectEqual(@as(usize, 3), messages.len);
+    try t.expectEqualStrings("p:77", messages[1].object.get("anchor").?.string);
+    try t.expectEqualStrings("before", messages[0].object.get("text").?.string);
+    const alias = messages[1].object.get("live_anchor").?.string;
+    const alias_begin = try world.ask("chat_history_begin", .{ .mode = "around", .group = "build", .request_id = "around-alias", .anchor = alias, .before = 0, .after = 0 });
+    const alias_page = try world.poll(alias_begin, false);
+    try t.expectEqualStrings("p:77", alias_page.get("messages").?.array.items[0].object.get("anchor").?.string);
+    const changed = try world.ask("chat_history_begin", .{ .mode = "around", .group = "build", .request_id = "around-live", .anchor = "p:77", .location = "g:20261105:1:9:10:20:3", .before = 1, .after = 1 });
+    try t.expectEqualStrings("RequestIdConflict", changed.get("error").?.string);
+    const bad = try world.ask("chat_history_begin", .{ .mode = "around", .group = "build", .request_id = "p-zero", .anchor = "p:0" });
+    try t.expectEqualStrings("AnchorNotFound", (try world.poll(bad, false)).get("error").?.string);
+    const cross = try world.ask("chat_history_begin", .{ .group = "build", .request_id = "no-around-in-history", .resume_token = alias_page.get("older_token").?.string });
+    try t.expectEqualStrings("CursorMismatch", cross.get("error").?.string);
+}
+
+test "2976 production door reference verifies source syntax and never guesses historical cwd" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    _ = try world.app.chat.post("build", poltergeistpkg.Chat.user_id, "[source](relative.zig) private/work/secret.zig.backup", 1);
+    const anchor = try std.fmt.allocPrint(world.arena.allocator(), "l:{s}:1", .{world.app.chat_session});
+    const missing = try world.ask("chat_history_begin", .{ .mode = "reference", .group = "build", .request_id = "not-reference", .anchor = anchor, .original_reference = "/work/secret.zig" });
+    try t.expectEqualStrings("ReferenceNotFound", (try world.poll(missing, false)).get("error").?.string);
+    const relative = try world.ask("chat_history_begin", .{ .mode = "reference", .group = "build", .request_id = "no-cwd", .anchor = anchor, .original_reference = "relative.zig" });
+    try t.expectEqualStrings("SourceUnavailable", (try world.poll(relative, false)).get("error").?.string);
+    try t.expectEqual(@as(usize, 0), world.app.file_tickets.entries.items.len);
+    const generic = try world.ask("files_open", .{ .workdir_id = "any", .path = "anything" });
+    try t.expectEqualStrings("NotARead", generic.get("error").?.string);
+}
+
+test "2976 production door poll rechecks membership and per-record visibility" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    _ = world.app.chat_log.?.append("build", 7, "author", 1, false, "needle", 0);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "revoke", .query = "needle" });
+    try world.app.chat.remove("build", poltergeistpkg.Chat.user_id);
+    try t.expectEqualStrings("NotAMember", (try world.poll(begin, true)).get("error").?.string);
+    try t.expect(!try historyReplyVisible(world.arena.allocator(), "{\"results\":[{\"message\":{\"channel\":42,\"at_ms\":9}}]}", .public));
+    try t.expect(try historyReplyVisible(world.arena.allocator(), "{\"messages\":[{\"channel\":0,\"at_ms\":9}]}", .public));
+}
+
+test "2976 production door reference mints once at poll and transfers preview ticket ownership" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    var clock: DoorClock2976 = .{};
+    world.app.history_jobs.clock = clock.clock();
+    const a = world.arena.allocator();
+    try world.tmp.dir.writeFile(t.io, .{ .sub_path = "source.txt", .data = "preview fixture" });
+    const root = try world.tmp.dir.realPathFileAlloc(t.io, ".", a);
+    const path = try world.tmp.dir.realPathFileAlloc(t.io, "source.txt", a);
+    world.app.control_room.route_rows = &.{.{
+        .group = "build",
+        .steward = null,
+        .members = &.{poltergeistpkg.Chat.user_id},
+        .titles = &.{"you"},
+        .own = &.{false},
+    }};
+    world.app.poltergeist_worktrees = .{ .alloc = t.allocator };
+    defer world.app.poltergeist_worktrees.?.entries.deinit(t.allocator);
+    try world.app.poltergeist_worktrees.?.entries.append(t.allocator, .{
+        .name = "preview-fixture",
+        .repo = "fixture",
+        .path = root,
+        .branch = "fixture",
+        .base = "fixture",
+        .by = poltergeistpkg.Chat.user_id,
+    });
+    const text = try std.fmt.allocPrint(a, "file `{s}`", .{path});
+    _ = try world.app.chat.post("build", poltergeistpkg.Chat.user_id, text, 1);
+    world.app.chat.setLogSeq("build", 1, 88);
+    const anchor = try std.fmt.allocPrint(a, "l:{s}:1", .{world.app.chat_session});
+    const params = .{ .mode = "reference", .group = "build", .request_id = "one-ticket", .anchor = anchor, .original_reference = path };
+    const begin = try world.ask("chat_history_begin", params);
+    _ = try world.ask("chat_history_begin", params);
+    try t.expectEqual(@as(usize, 0), world.app.file_tickets.entries.items.len);
+    const short_request = try std.json.Stringify.valueAlloc(a, .{ .method = "chat_history_poll", .params = .{ .job_id = begin.get("job_id").?.string } }, .{});
+    const short_reply = try world.app.chatReadAnswerForBuffer(a, short_request, 16);
+    const refused = (try std.json.parseFromSliceLeaky(std.json.Value, a, short_reply, .{})).object;
+    try t.expectEqualStrings("BadParams", refused.get("error").?.string);
+    try t.expectEqual(@as(usize, 0), world.app.file_tickets.entries.items.len);
+    const ready = try world.poll(begin, false);
+    const opened = ready.get("file_open").?.object;
+    const token = opened.get("token").?.string;
+    try t.expect(opened.get("info") != null);
+    try t.expect(opened.get("plugin").?.object.get("status") != null);
+    try t.expectEqual(@as(usize, 1), world.app.file_tickets.entries.items.len);
+    const again = try world.poll(begin, false);
+    try t.expectEqualStrings(token, again.get("file_open").?.object.get("token").?.string);
+    try t.expectEqual(@as(usize, 1), world.app.file_tickets.entries.items.len);
+    const source = ready.get("source").?.object;
+    try t.expectEqualStrings("p:88", source.get("anchor").?.string);
+    try t.expectEqualStrings(path, source.get("original_reference").?.string);
+    try t.expectEqualStrings(anchor, source.get("live_anchor").?.string);
+    try t.expect(source.get("location").? == .null);
+    clock.value = poltergeistpkg.HistoryJobs.result_ttl_ms + 1;
+    const expired = try world.poll(begin, false);
+    try t.expectEqualStrings("Expired", expired.get("error").?.string);
+    try t.expectEqual(@as(usize, 1), world.app.file_tickets.entries.items.len);
+    _ = try world.ask("chat_history_cancel", .{ .job_id = begin.get("job_id").?.string });
+    // A published ticket is host-owned. Job cancellation/expiry cannot revoke a visible slot.
+    try t.expectEqual(@as(usize, 1), world.app.file_tickets.entries.items.len);
+    _ = try world.app.file_tickets.close(a, token);
+    try t.expectEqual(@as(usize, 0), world.app.file_tickets.entries.items.len);
+}
+
+test "2976 production door continuation ignores append and rejects same inode legal JSON rewrites" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    const app = &world.app;
+    const log_file = &app.chat_log.?;
+    _ = log_file.append("build", 7, "author", 1, false, "old NEEDLE", 0);
+    _ = log_file.append("build", 7, "author", 2, false, "new NEEDLE", 0);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "proof-start", .query = "needle", .limit = 1 });
+    const first = try world.poll(begin, true);
+    const token = first.get("next_token").?.string;
+    _ = log_file.append("build", 7, "author", 3, false, "append NEEDLE", 0);
+    const resumed = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "proof-append", .query = "needle", .resume_token = token });
+    const after_append = try world.poll(resumed, true);
+    const results = after_append.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 1), results.len);
+    try t.expectEqualStrings("old NEEDLE", results[0].object.get("message").?.object.get("text").?.string);
+    try t.expect(!after_append.get("restarted").?.bool);
+
+    const a = world.arena.allocator();
+    var days = try log_file.tree.days(a, "build");
+    defer days.deinit(a);
+    const path = try log_file.tree.partPath(a, "build", days.items[0].day, days.items[0].part);
+    const file = try std.Io.Dir.openFileAbsolute(t.io, path, .{ .mode = .read_write });
+    defer file.close(t.io);
+    const stat = try file.stat(t.io);
+    const bytes = try a.alloc(u8, @intCast(stat.size));
+    try t.expectEqual(bytes.len, try file.readPositionalAll(t.io, bytes, 0));
+    const where = std.mem.indexOf(u8, bytes, "old NEEDLE").?;
+    // Same inode, length, newline boundaries and valid JSON: only proof detects this.
+    try file.writePositionalAll(t.io, "bad", where);
+    const changed = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "proof-rewrite", .query = "needle", .resume_token = token });
+    const failure = try world.poll(changed, true);
+    try t.expect(failure.get("error") != null);
+    try t.expectEqualStrings("CursorStale", failure.get("error").?.string);
+    try t.expect(failure.get("results") == null);
+}
+
+test "2976 production door remaining byte budget preserves a live hit and unconsumed disk hit" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    world.app.chat.deinit();
+    world.app.chat = .init(t.allocator, .{ .max_text_bytes = 128 * 1024 });
+    try world.app.chat.create("build", poltergeistpkg.Chat.user_id);
+    const a = world.arena.allocator();
+    const disk_text = try std.fmt.allocPrint(a, "disk needle{s}", .{"x" ** 60000});
+    const live_text = try std.fmt.allocPrint(a, "live needle{s}", .{"y" ** 60000});
+    const persisted = world.app.chat_log.?.append("build", 7, "author", 1, false, disk_text, 0);
+    try t.expect(persisted != 0);
+    _ = try world.app.chat.post("build", poltergeistpkg.Chat.user_id, live_text, 2);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "large-union", .query = "needle" });
+    const first = try world.poll(begin, true);
+    try t.expectEqualStrings("ready", first.get("state").?.string);
+    const first_hits = first.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 1), first_hits.len);
+    try t.expectEqualStrings(live_text, first_hits[0].object.get("message").?.object.get("text").?.string);
+    try t.expectEqualStrings("full", first.get("stop").?.string);
+    const continuation = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "large-disk", .query = "needle", .resume_token = first.get("next_token").?.string });
+    const second = try world.poll(continuation, true);
+    const second_hits = second.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 1), second_hits.len);
+    try t.expectEqualStrings(disk_text, second_hits[0].object.get("message").?.object.get("text").?.string);
+    try t.expectEqualStrings("at_end", second.get("stop").?.string);
+}
+
+test "2976 production door compaction holes retain disk order and original around neighbors" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    const who = poltergeistpkg.Chat.user_id;
+    const app = &world.app;
+    const one = try app.chat.post("build", who, "needle one", 1);
+    const p1 = app.chat_log.?.append("build", who, "you", 1, false, "needle one", 0);
+    app.chat.setLogSeq("build", one.seq, p1);
+    const two = try app.chat.postIn("build", who, "needle task", &.{}, 42, null, 2);
+    const p2 = app.chat_log.?.append("build", who, "you", 2, false, "needle task", 42);
+    app.chat.setLogSeq("build", two.seq, p2);
+    const three = try app.chat.post("build", who, "needle three", 3);
+    const p3 = app.chat_log.?.append("build", who, "you", 3, false, "needle three", 0);
+    app.chat.setLogSeq("build", three.seq, p3);
+    const summary = try app.chat.compact("build", three.seq, 0, "needle summary", who, 4);
+    const p4 = app.chat_log.?.append("build", who, "you", 4, true, "needle summary", 0);
+    app.chat.setLogSeq("build", summary.seq, p4);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "compact-order", .query = "needle" });
+    const ready = try world.poll(begin, true);
+    const results = ready.get("results").?.array.items;
+    try t.expectEqual(@as(usize, 4), results.len);
+    const expected = [_]u64{ p4, p3, p2, p1 };
+    for (results, expected) |result, seq| try t.expectEqual(@as(i64, @intCast(seq)), result.object.get("message").?.object.get("log_seq").?.integer);
+    try t.expect(results[0].object.get("message").?.object.get("summary").?.bool);
+    const anchor = try std.fmt.allocPrint(world.arena.allocator(), "p:{d}", .{p2});
+    const around = try world.ask("chat_history_begin", .{ .mode = "around", .group = "build", .request_id = "compact-neighbors", .anchor = anchor, .before = 1, .after = 1 });
+    const window = try world.poll(around, false);
+    const messages = window.get("messages").?.array.items;
+    try t.expectEqual(@as(usize, 3), messages.len);
+    try t.expectEqual(@as(i64, 1), window.get("target_index").?.integer);
+    try t.expectEqualStrings("needle one", messages[0].object.get("text").?.string);
+    try t.expectEqualStrings("needle task", messages[1].object.get("text").?.string);
+    try t.expectEqualStrings("needle three", messages[2].object.get("text").?.string);
+}
+
+test "2976 production group deletion invalidates old jobs tokens and source before same name reuse" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    _ = world.app.chat_log.?.append("build", 7, "author", 1, false, "needle old", 0);
+    _ = world.app.chat_log.?.append("build", 7, "author", 2, false, "needle new", 0);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "old-group", .query = "needle", .limit = 1 });
+    const page = try world.poll(begin, true);
+    const token = page.get("next_token").?.string;
+    try world.app.destroyChatState("build");
+    try world.app.chat.create("build", poltergeistpkg.Chat.user_id);
+    const old = try world.poll(begin, true);
+    try t.expectEqualStrings("Expired", old.get("error").?.string);
+    const resume_old = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "new-group-old-token", .query = "needle", .resume_token = token });
+    try t.expectEqualStrings("CursorExpired", resume_old.get("error").?.string);
+    try t.expectEqual(@as(usize, 0), world.app.file_tickets.entries.items.len);
+}
+
+test "2976 production door fails only the ambiguous unpersisted compaction interval without advancing it" {
+    const t = std.testing;
+    var world: ChatDoorWorld2976 = undefined;
+    try world.init();
+    defer world.deinit();
+    const who = poltergeistpkg.Chat.user_id;
+    const app = &world.app;
+    const one = try app.chat.postIn("build", who, "needle one", &.{}, 7, null, 1);
+    const p1 = app.chat_log.?.append("build", who, "you", 1, false, "needle one", 7);
+    app.chat.setLogSeq("build", one.seq, p1);
+    _ = try app.chat.postIn("build", who, "needle live", &.{}, 42, null, 2);
+    const lost = try app.chat.post("build", who, "needle lost", 3);
+    const p2 = app.chat_log.?.append("build", who, "you", 3, false, "needle lost", 0);
+    app.chat.setLogSeq("build", lost.seq, p2);
+    const four = try app.chat.postIn("build", who, "needle four", &.{}, 7, null, 4);
+    const p3 = app.chat_log.?.append("build", who, "you", 4, false, "needle four", 7);
+    app.chat.setLogSeq("build", four.seq, p3);
+    const summary = try app.chat.compact("build", lost.seq, 0, "needle summary", who, 5);
+    const p4 = app.chat_log.?.append("build", who, "you", 5, true, "needle summary", 0);
+    app.chat.setLogSeq("build", summary.seq, p4);
+    const begin = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "uncertain", .query = "needle" });
+    const failure = try world.poll(begin, true);
+    try t.expect(failure.get("error") != null);
+    try t.expectEqualStrings("SourceUnavailable", failure.get("error").?.string);
+    try t.expectEqualStrings("search", failure.get("mode").?.string);
+    try t.expectEqualStrings("needle", failure.get("query").?.string);
+    try t.expect(failure.get("results") == null);
+    const retry = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "uncertain-retry", .query = "needle", .resume_token = failure.get("next_token").?.string });
+    const retry_failure = try world.poll(retry, true);
+    try t.expectEqualStrings("SourceUnavailable", retry_failure.get("error").?.string);
+    const retry_id = historyJobId(retry.get("job_id").?.string).?;
+    try t.expectEqual(@as(usize, 0), app.history_jobs.peek(retry_id).?.live_offset);
+    // A query that does not need the ambiguous live overlay still scans the group.
+    const certain = try world.ask("chat_search_begin", .{ .group = "build", .request_id = "certain-subquery", .query = "four" });
+    const ready = try world.poll(certain, true);
+    try t.expectEqualStrings("ready", ready.get("state").?.string);
+    try t.expectEqual(@as(usize, 1), ready.get("results").?.array.items.len);
+    try t.expectEqualStrings("needle four", ready.get("results").?.array.items[0].object.get("message").?.object.get("text").?.string);
 }

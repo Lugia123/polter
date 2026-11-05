@@ -42,6 +42,7 @@ Finding no words at all is a failure, not a pass: a table that moved or was
 renamed would otherwise leave this green with nothing checked.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -64,10 +65,45 @@ def strings_table(path: Path) -> dict:
     return out
 
 
+def _po_unquote(fragments: list[str]) -> str:
+    """One po string from its fragments: `"a" "b"` is `ab`."""
+    return "".join(json.loads(f) for f in fragments)
+
+
 def po_table(path: Path) -> dict:
+    """Every `msgid` in a catalogue, with its `msgstr`.
+
+    ⚠️ `msgmerge` re-wraps anything long: the msgid becomes `msgid ""` and
+    each fragment sits on its own quoted line, and the msgstr does the same.
+    A pattern that expects exactly one line each reads those entries as
+    absent and reports every re-wrapped string as untranslated. Measured on
+    the 2793 merge (2026-11-06): nine plugin notes turned red with their
+    `msgstr` still in the file, one line below a `msgid` now in two
+    fragments. `translations-still-attach.py` carries the same warning.
+    """
     out = {}
-    for m in re.finditer(r'^msgid "((?:[^"\\]|\\.)*)"\nmsgstr "((?:[^"\\]|\\.)*)"$', path.read_text(), re.M):
-        out[m.group(1)] = m.group(2)
+    lines = path.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("msgid "):
+            i += 1
+            continue
+        ids = [line[len("msgid ") :]]
+        i += 1
+        while i < len(lines) and lines[i].strip().startswith('"'):
+            ids.append(lines[i].strip())
+            i += 1
+        if i >= len(lines) or not lines[i].strip().startswith("msgstr "):
+            continue
+        strs = [lines[i].strip()[len("msgstr ") :]]
+        i += 1
+        while i < len(lines) and lines[i].strip().startswith('"'):
+            strs.append(lines[i].strip())
+            i += 1
+        mid, mstr = _po_unquote(ids), _po_unquote(strs)
+        if mid and mstr:
+            out[mid] = mstr
     return out
 
 

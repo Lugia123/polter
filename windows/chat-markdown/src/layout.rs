@@ -495,7 +495,7 @@ pub fn layout(doc: &Document, input: &Inputs<'_>) -> Plan {
                 });
                 y = y.saturating_add(h);
             }
-            Block::Code { language, text } => {
+            Block::Code { language, text, .. } => {
                 let mut line_count = 0usize;
                 let line_h = input.fonts.code.height();
                 let mut content = 0;
@@ -999,6 +999,7 @@ mod tests {
         Run {
             text: text.to_owned(),
             style,
+            spans: Vec::new(),
         }
     }
 
@@ -1086,6 +1087,7 @@ mod tests {
                 text: "one\n
 long line here"
                     .replace("\n", "\n"),
+                spans: Vec::new(),
             }],
         };
         // Two logical lines, the second far wider than the viewport.
@@ -1093,6 +1095,7 @@ long line here"
             blocks: vec![Block::Code {
                 language: Some("rust".to_owned()),
                 text: "one\nlong line here".to_owned(),
+                spans: Vec::new(),
             }],
         };
         let plan = layout(&doc, &inputs(40, &fonts, &measure));
@@ -1367,6 +1370,7 @@ long line here"
                 Block::Code {
                     language: None,
                     text: "x".repeat(60),
+                    spans: Vec::new(),
                 },
             ],
         };
@@ -1501,6 +1505,53 @@ long line here"
         assert_pieces_are_placed(&hard, lines, 0, 100);
         assert_eq!(lines[0].pieces[0].rect.x, 0);
         assert_eq!(lines[1].pieces[0].rect.x, 0);
+    }
+
+    #[test]
+    fn a_second_blocks_pieces_are_in_its_own_space_not_the_plans() {
+        use std::sync::Arc;
+        let fonts = faces();
+        let first = vec![run("first paragraph", Style::default())];
+        let second = vec![
+            run("see ", Style::default()),
+            run(
+                "f",
+                Style {
+                    link: Some(Arc::from("/abs/file")),
+                    link_raw: Some(Arc::from("/abs/file")),
+                    ..Style::default()
+                },
+            ),
+            run(" now", Style::default()),
+        ];
+        let doc = Document {
+            blocks: vec![
+                Block::Paragraph(first),
+                Block::Paragraph(second.clone()),
+            ],
+        };
+        let plan = layout(&doc, &inputs(300, &fonts, &measure));
+        let block = &plan.blocks[1];
+        assert!(block.rect.y > 0, "{:?}", block.rect);
+        let piece = block
+            .lines
+            .iter()
+            .flat_map(|l| &l.pieces)
+            .find(|p| p.run == 1)
+            .expect("the link's piece");
+        // **Block-relative**: a block's first line starts at 0 even though
+        // the block begins at `block.rect.y` in the plan. The host's link
+        // hit must subtract that offset; comparing a plan y directly is
+        // the defect task 2978 B reported (a link in the second block
+        // could never be clicked).
+        assert_eq!(piece.rect.y, 0, "{:?}", piece.rect);
+        let x = piece.rect.x + 1;
+        let plan_y = block.rect.y + piece.rect.y + 1;
+        assert!(piece.rect.contains(x, plan_y - block.rect.y));
+        assert!(
+            !piece.rect.contains(x, plan_y),
+            "a plan y compared directly must not be taken as the answer"
+        );
     }
 
     #[test]
@@ -1691,6 +1742,7 @@ long line here"
             blocks: vec![Block::Code {
                 language: None,
                 text: source.to_owned(),
+                spans: Vec::new(),
             }],
         };
         let plan = layout(&doc, &inputs(2000, &fonts, &measure));
@@ -1717,6 +1769,7 @@ long line here"
             blocks: vec![Block::Code {
                 language: None,
                 text: crlf.to_owned(),
+                spans: Vec::new(),
             }],
         };
         let plan = layout(&doc, &inputs(200, &fonts, &measure));
