@@ -1273,4 +1273,65 @@ struct ControlRoomChatFeedTests {
         #expect(!rig.feed.locating)
         #expect(rig.feed.locateTrouble == "malformed locate reply")
     }
+
+    /// **A locate is a page generation like any other, and the Markdown
+    /// store must hear about it at once.** `start`, `stop` and `restartLoad`
+    /// all hand the store the new generation right after moving it; the
+    /// locate moved it and said nothing until the around page came back.
+    /// A row that outlives the replacement is re-instantiated under the new
+    /// generation *before* that answer arrives: it releases its old demand
+    /// and asks again, and the store -- still on the old generation --
+    /// refused. Nothing asked again, so the row drew its original Markdown
+    /// for ever (task 2994: "the body degrades to raw Markdown after a
+    /// locate, and does not recover").
+    @Test func testALocateHandsTheStoreTheNewGenerationBeforeTheRowsAskAgain() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                return .answer(self.ready(messages: [
+                    self.message(anchor: "p:1"),
+                ]))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        #expect(rig.scheduler.run(0.2))
+        #expect(rig.feed.rows.map(\.id) == ["p:1"])
+
+        // The row on screen was born on this page generation and asked for
+        // its Markdown under it.
+        let born = rig.feed.generation
+        rig.feed.markdown.acquire("p:1", group: "polter", generation: born)
+        rig.executor.runNextParse()
+        rig.executor.deliverNext()
+        guard case .markdown = rig.feed.markdown.content(
+            id: "p:1", group: "polter", generation: born, text: "hi"
+        ) else {
+            Issue.record("the row never reached a document")
+            return
+        }
+
+        // The person picks a search result. The generation moves now; the
+        // around page (and the rows it carries) is still in flight, so the
+        // view is re-rendered with the old rows and the new generation: it
+        // releases the old demand and asks again.
+        rig.feed.locate(anchor: "p:1", location: nil)
+        #expect(rig.feed.generation != born)
+        rig.feed.markdown.release("p:1", group: "polter", generation: born)
+        rig.feed.markdown.acquire(
+            "p:1", group: "polter", generation: rig.feed.generation)
+
+        // The body draws Markdown, not the original text -- and it is the
+        // Markdown path that carries the word-level search highlight.
+        guard case .markdown = rig.feed.markdown.content(
+            id: "p:1", group: "polter", generation: rig.feed.generation, text: "hi"
+        ) else {
+            Issue.record("the row fell back to its original text after the locate")
+            return
+        }
+    }
 }

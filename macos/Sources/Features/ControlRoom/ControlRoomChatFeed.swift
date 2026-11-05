@@ -1293,6 +1293,17 @@ final class ControlRoomChatFeed: ObservableObject {
         cancelJob()
         cancelScheduling()
         generation &+= 1
+        // **The new generation reaches the Markdown store now, not when the
+        // around page lands.** The view is re-rendered before that answer
+        // arrives: a row that outlives the replacement is handed the new
+        // generation, releases its old demand and asks again. A store still
+        // on the old generation refused that ask, nothing asked again, and
+        // the row drew its original Markdown for ever -- no rendered body,
+        // and no word-level search highlight, which only the Markdown path
+        // has. `start`, `stop`, `restartLoad` and a session change all hand
+        // the store the new generation at once; the locate is the one that
+        // did not (task 2994).
+        syncMarkdown()
         locateTrouble = nil
         locating = true
         locatedAnchor = anchor
