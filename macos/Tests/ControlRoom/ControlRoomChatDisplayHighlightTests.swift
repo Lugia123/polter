@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import Ghostty
@@ -92,6 +93,33 @@ struct ControlRoomChatDisplayHighlightTests {
         let plan = H.plan(message: message(text),
                           hit: hit(text, start: 1, [(0, 2)]))
         #expect(plan == nil)
+    }
+
+    /// **A mark SwiftUI will actually draw carries a ground *and* a
+    /// different foreground.** `Text` draws nothing for a run whose only
+    /// attribute is `AttributedString.backgroundColor`: on the real app one
+    /// message and one needle gave 0 yellow pixels with the background
+    /// alone, 784 with `.red` beside it, and 0 again with `.primary` -- the
+    /// body's own colour (task 2994). The mark therefore pairs the design's
+    /// `search_hit` ground with its `search_hit_text` word. What is proved
+    /// here is the string the view hands `Text`; the pixels are only provable
+    /// on screen.
+    @Test func testAMarkedRunCarriesTheGroundAndADifferentForeground() {
+        let text = AttributedString("a批量b")
+        let plain = "a批量b"
+        let match = ControlRoomChatDisplayHighlight.Match(
+            block: 0, text: 0, range: plain.range(of: "批量")!)
+        let out = ControlRoomChatMarkdownView.marked(
+            text, block: 0, text: 0, marks: [match], ink: .yellow, hitText: .red)
+
+        var runs = 0
+        for run in out.runs where String(out[run.range].characters) == "批量" {
+            runs += 1
+            #expect(run.backgroundColor != nil)
+            #expect(run.foregroundColor != nil)
+            #expect(run.backgroundColor != run.foregroundColor)
+        }
+        #expect(runs == 1)
     }
 
     /// The table's cells are one text each, so a match in the second cell is

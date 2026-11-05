@@ -48,9 +48,10 @@ struct ControlRoomChatMarkdownView: View {
                 in: ControlRoomChatDisplayHighlight.blocksText(document), plan: $0)
         } ?? []
         let ink = ControlRoomLook.theme(scheme).searchHit.color
+        let hitInk = ControlRoomLook.theme(scheme).searchHitText.color
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(document.blocks.enumerated()), id: \.offset) { entry in
-                block(entry.element, index: entry.offset, marks: marks, ink: ink)
+                block(entry.element, index: entry.offset, marks: marks, ink: ink, hitInk: hitInk)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,16 +68,17 @@ struct ControlRoomChatMarkdownView: View {
         _ block: ControlRoomChatMarkdown.Block,
         index: Int,
         marks: [ControlRoomChatDisplayHighlight.Match],
-        ink: Color
+        ink: Color,
+        hitInk: Color
     ) -> some View {
         switch block {
         case .paragraph(let text):
-            Text(marked(text, block: index, text: 0, marks: marks, ink: ink))
+            Text(Self.marked(text, block: index, text: 0, marks: marks, ink: ink, hitText: hitInk))
                 .font(bodyFont)
                 .fixedSize(horizontal: false, vertical: true)
 
         case .heading(let level, let text):
-            Text(marked(text, block: index, text: 0, marks: marks, ink: ink))
+            Text(Self.marked(text, block: index, text: 0, marks: marks, ink: ink, hitText: hitInk))
                 .font(.system(size: ControlRoomLook.Font.body, weight: headingWeight(level)))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
@@ -87,7 +89,7 @@ struct ControlRoomChatMarkdownView: View {
                     .font(bodyFont)
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 18, alignment: .trailing)
-                Text(marked(item.text, block: index, text: 0, marks: marks, ink: ink))
+                Text(Self.marked(item.text, block: index, text: 0, marks: marks, ink: ink, hitText: hitInk))
                     .font(bodyFont)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -98,7 +100,8 @@ struct ControlRoomChatMarkdownView: View {
                 Rectangle()
                     .fill(Color.secondary.opacity(0.35))
                     .frame(width: ControlRoomLook.Line.hairline * 4)
-                Text(marked(text, block: index, text: 0, marks: marks, ink: ink))
+                Text(Self.marked(text, block: index, text: 0, marks: marks,
+                                 ink: ink, hitText: hitInk))
                     .font(bodyFont)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -112,8 +115,8 @@ struct ControlRoomChatMarkdownView: View {
                         .foregroundStyle(.secondary)
                 }
                 ScrollView(.horizontal, showsIndicators: true) {
-                    Text(marked(AttributedString(text), block: index, text: 0,
-                                marks: marks, ink: ink))
+                    Text(Self.marked(AttributedString(text), block: index, text: 0,
+                                marks: marks, ink: ink, hitText: hitInk))
                         .font(.system(size: ControlRoomLook.Font.body, design: .monospaced))
                         .fixedSize(horizontal: true, vertical: false)
                         .textSelection(.enabled)
@@ -125,7 +128,7 @@ struct ControlRoomChatMarkdownView: View {
             .clipShape(RoundedRectangle(cornerRadius: ControlRoomLook.Radius.row))
 
         case .table(let tableValue):
-            table(tableValue, index: index, marks: marks, ink: ink)
+            table(tableValue, index: index, marks: marks, ink: ink, hitInk: hitInk)
         }
     }
 
@@ -135,12 +138,31 @@ struct ControlRoomChatMarkdownView: View {
     /// Character offsets are used because that is what the drawn text has in
     /// common with the string the mapper searched; the byte offsets stopped
     /// at `ControlRoomChatDisplayHighlight`.
-    private func marked(
+    /// The block's text with the located hit's matches marked: the design's
+    /// `search_hit` ground under the design's `search_hit_text` word.
+    ///
+    /// ⚠️ **The foreground is not decoration; without it SwiftUI draws no
+    /// ground.** Measured on the real app, one message and one needle (task
+    /// 2994, 2026-11-06):
+    ///
+    /// | run carries | yellow pixels |
+    /// |---|---|
+    /// | `backgroundColor` only | **0** |
+    /// | `backgroundColor` + `foregroundColor = .red` | **784** |
+    /// | `backgroundColor` + `foregroundColor = .primary` (same colour as the body) | **0** |
+    ///
+    /// So it is not enough to set *a* foreground: it has to be a **different**
+    /// colour from the text around it. `searchHitText` is that colour --
+    /// `#F2CC60` on `#23272D`, `#7A4B00` on light -- and it is the design's
+    /// `--search-hl-fg`, the value Windows already draws the found word in.
+    /// Mac had never consumed it until this line.
+    static func marked(
         _ text: AttributedString,
         block: Int,
         text textIndex: Int,
         marks: [ControlRoomChatDisplayHighlight.Match],
-        ink: Color
+        ink: Color,
+        hitText: Color
     ) -> AttributedString {
         var out = text
         let plain = String(text.characters)
@@ -154,6 +176,7 @@ struct ControlRoomChatMarkdownView: View {
                   start < end
             else { continue }
             out[start..<end].backgroundColor = ink
+            out[start..<end].foregroundColor = hitText
         }
         return out
     }
@@ -168,16 +191,17 @@ struct ControlRoomChatMarkdownView: View {
         _ table: ControlRoomChatMarkdown.Table,
         index: Int,
         marks: [ControlRoomChatDisplayHighlight.Match],
-        ink: Color
+        ink: Color,
+        hitInk: Color
     ) -> some View {
         ScrollView(.horizontal, showsIndicators: true) {
             Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
                 if !table.header.isEmpty {
                     GridRow {
                         ForEach(Array(0..<table.columns.count), id: \.self) { column in
-                            cell(marked(cell(table.header, column),
+                            cell(Self.marked(cell(table.header, column),
                                         block: index, text: column,
-                                        marks: marks, ink: ink),
+                                        marks: marks, ink: ink, hitText: hitInk),
                                  alignment: table.columns[column], header: true)
                         }
                     }
@@ -189,9 +213,9 @@ struct ControlRoomChatMarkdownView: View {
                             // order, then the rows' -- one cell, one text.
                             let cellIndex = table.header.count
                                 + row.offset * table.columns.count + column
-                            cell(marked(cell(row.element, column),
+                            cell(Self.marked(cell(row.element, column),
                                         block: index, text: cellIndex,
-                                        marks: marks, ink: ink),
+                                        marks: marks, ink: ink, hitText: hitInk),
                                  alignment: table.columns[column], header: false)
                         }
                     }
