@@ -1008,10 +1008,16 @@ pub const ScanPage = struct {
     /// excludes what the caller chose to exclude.
     restarted: bool,
 
-    /// True when a file the record listed could not be opened or read.
-    /// Its messages are not in this page, and the walk went on past it. A
-    /// caller that cares asks again from the cursor it passed rather than
-    /// from the one returned.
+    /// True when something in the record could not be read: a file it listed
+    /// that would not open, or a line in one that would not parse. Its
+    /// messages are not in this page, and the walk went on past it. A caller
+    /// that cares asks again from the cursor it passed rather than from the
+    /// one returned.
+    ///
+    /// **A line the walk skipped is a gap too** (task 2793): it is cheap to
+    /// step over an unreadable line, and dishonest to then call the page
+    /// complete, because a message nobody can see is exactly what the reader
+    /// is looking for.
     gap: bool,
 
     /// True when the record ran out. A gap is not the beginning: the walk
@@ -4651,7 +4657,14 @@ test "a scan cursor keeps its question and walks past lines that are not records
         defer ChatLog.freeScanPage(alloc, second);
         try testing.expectEqual(@as(usize, 1), second.entries.len);
         try testing.expectEqualStrings("oldest", second.entries[0].text);
-        try testing.expect(!second.gap);
+        // **A line that cannot be read is a gap.** The walk gets past it, so
+        // the older message still arrives, but the page cannot say the record
+        // was read to its end: something was in it that nobody will see. The
+        // flag used to mean only "a file could not be opened"; task 2793 gave
+        // it the corrupt-line case as well, because a page that answers
+        // `exhausted()` over a line it could not parse claims a completeness
+        // it does not have.
+        try testing.expect(second.gap);
     }
 
     // **The cursor belongs to one question.** A different group, filter
@@ -4770,7 +4783,13 @@ test "a scan cursor is continued across growth and not believed across a rewrite
         try testing.expect(page.restarted);
         try testing.expectEqual(@as(usize, 0), page.entries.len);
         try testing.expectEqual(ScanStop.at_end, page.stop);
-        try testing.expect(page.exhausted());
+        // **Stopped at the end, and not finished.** The file the cursor named
+        // is gone, so what the range held cannot be read; the walk is at its
+        // end but the record was not read through. `exhausted()` said only
+        // `stop == .at_end` until task 2793, which is why this used to pass:
+        // a page that stopped at the end of what it could read called itself
+        // complete over a missing file.
+        try testing.expect(!page.exhausted());
     }
 }
 
