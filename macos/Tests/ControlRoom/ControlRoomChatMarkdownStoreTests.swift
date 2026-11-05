@@ -41,6 +41,19 @@ final class ManualMarkdownExecutor: ControlRoomChatMarkdownExecutor {
     }
 }
 
+/// The redraws a store asked for, and a way to deliver them without a run
+/// loop: the production one is one turn of the main queue.
+private final class ManualRedraws {
+    private var work: [() -> Void] = []
+    var count: Int { work.count }
+
+    func ask(_ run: @escaping () -> Void) { work.append(run) }
+
+    func deliver() {
+        while !work.isEmpty { work.removeFirst()() }
+    }
+}
+
 /// The feed's Markdown store (task 2800 C2b-1, contract v2): the window is a
 /// set of values, the rows on screen are the demand, and only the demanded
 /// keys missing from a bounded, pinned cache are parsed.
@@ -272,5 +285,49 @@ struct ControlRoomChatMarkdownStoreTests {
         #expect(store.queuedCount == Store.cacheEntries - 1)
         #expect(content(store, row(Store.cacheEntries + 1))
             == .deferredBudget(text: "# hi"))
+    }
+
+    /// **A demand the cache can already answer must say so.** `reconsider`
+    /// queues only what it has to parse; a cached key queues nothing, so no
+    /// completion publishes and nothing asks the row to draw again. On the
+    /// real app the whole trace stopped at `admitted=5`: no parse, no second
+    /// `content`, and the located rows kept their original Markdown for ever
+    /// (task 2994). One redraw is the missing turn.
+    @Test func testADemandAnsweredFromTheCacheAsksForARedraw() {
+        let executor = ManualMarkdownExecutor()
+        let redraws = ManualRedraws()
+        let store = Store(executor: executor, redraw: redraws.ask)
+        let rows = [row(1)]
+        store.update(group: "polter", generation: 1, rows: rows, active: true)
+        store.acquire("r1", group: "polter", generation: 1)
+        drain(executor, 1)
+        #expect(store.cachedCount == 1)
+
+        // The page moves on: the demand is dropped, the document stays.
+        store.update(group: "polter", generation: 2, rows: rows, active: true)
+        #expect(redraws.count == 0)
+        let before = store.revision
+
+        store.acquire("r1", group: "polter", generation: 2)
+        #expect(redraws.count == 1)
+
+        redraws.deliver()
+        #expect(store.revision == before &+ 1)
+        guard case .markdown = content(store, row(1), generation: 2) else {
+            Issue.record("a row admitted from the cache still draws its original text")
+            return
+        }
+    }
+
+    /// The other half: a demand that has to be parsed asks for no redraw of
+    /// its own -- the parse's completion is what publishes.
+    @Test func testADemandThatMustBeParsedDoesNotAskForARedraw() {
+        let executor = ManualMarkdownExecutor()
+        let redraws = ManualRedraws()
+        let store = Store(executor: executor, redraw: redraws.ask)
+        store.update(group: "polter", generation: 1, rows: [row(1)], active: true)
+        store.acquire("r1", group: "polter", generation: 1)
+        #expect(redraws.count == 0)
+        #expect(executor.startsCount == 1)
     }
 }

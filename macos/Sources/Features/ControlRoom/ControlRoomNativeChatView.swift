@@ -967,10 +967,20 @@ private struct ControlRoomNativeChatRow: View {
         .background(row.message.summary ? theme.textSecondary.color.opacity(0.10) : .clear)
         .clipShape(RoundedRectangle(cornerRadius: Look.Radius.row))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { register() }
+        .onAppear { register(generation) }
         .onDisappear { unregister() }
-        .onChange(of: generation) { _ in reacquire() }
-        .onChange(of: row.message.contentVersion) { _ in reacquire() }
+        // **The value the modifier hands over, not this view's own
+        // `generation`.** SwiftUI calls the action bound to the view it is
+        // replacing, whose `generation` is still the old one; asking the
+        // store under that value was refused and nothing asked again (task
+        // 2994, measured on the real app: `row reacquire ... gen=3` while
+        // the page and the store were already on 4).
+        .onChange(of: generation) { newGeneration in
+            reacquire(generation: newGeneration)
+        }
+        .onChange(of: row.message.contentVersion) { _ in
+            reacquire(generation: generation)
+        }
     }
 
     private var authorText: String {
@@ -1047,7 +1057,7 @@ private struct ControlRoomNativeChatRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 
-    private func register() {
+    private func register(_ generation: UInt64) {
         markdown.acquire(row.id, group: group, generation: generation)
         registered = generation
     }
@@ -1061,9 +1071,9 @@ private struct ControlRoomNativeChatRow: View {
     /// A new generation or a new version of this message is a new demand.
     /// The old one is released with **the generation it was made under**, so
     /// a page that has already moved on cannot be released by this row.
-    private func reacquire() {
+    private func reacquire(generation: UInt64) {
         unregister()
-        register()
+        register(generation)
     }
 
     @ViewBuilder

@@ -132,16 +132,27 @@ final class ControlRoomChatMarkdownStore: ObservableObject {
     private var queued: Set<Key> = []
     private var sources: [Key: String] = [:]
     private var inFlight: Key?
+    /// One redraw asked for and not yet delivered, so five rows admitted in
+    /// one update are one turn of the main queue.
+    private var redrawPending = false
+    private let redraw: (@escaping () -> Void) -> Void
 
     init(
         executor: ControlRoomChatMarkdownExecutor = ControlRoomChatMarkdownBackgroundExecutor(),
         cache: ControlRoomChatMarkdown.Cache = .init(
             maxEntries: ControlRoomChatMarkdownStore.cacheEntries,
             maxBytes: ControlRoomChatMarkdownStore.cacheBytes
-        )
+        ),
+        /// **How "a drawn row's answer changed" reaches SwiftUI**: one turn
+        /// of the main queue in production, a recorder in a test. It is a
+        /// value because the store must be told, not sleep.
+        redraw: @escaping (@escaping () -> Void) -> Void = { work in
+            DispatchQueue.main.async(execute: work)
+        }
     ) {
         self.executor = executor
         self.cache = cache
+        self.redraw = redraw
     }
 
     /// The parse cache's budget and the window's own bound.
@@ -211,6 +222,27 @@ final class ControlRoomChatMarkdownStore: ObservableObject {
         if demands[id] == nil { demandOrder.append(id) }
         demands[id] = Demand(group: group, generation: generation)
         reconsider()
+        // **A demand the cache can already answer changes what the row draws,
+        // and nothing else says so.** `reconsider` queues only what it has to
+        // parse; a cached key queues nothing, so no completion publishes, and
+        // the row that has just been admitted goes on drawing its original
+        // text for ever (task 2994: demand=5, admitted=5, and not one further
+        // `content` call in the log). Ask for one redraw.
+        if let snapshot = window[id], cache.contains(snapshot.key) {
+            redrawSoon()
+        }
+    }
+
+    /// One turn of the run loop, at most one outstanding: the rows' bodies
+    /// read `content`, so `revision` is what asks them again.
+    private func redrawSoon() {
+        guard !redrawPending else { return }
+        redrawPending = true
+        redraw { [weak self] in
+            guard let self else { return }
+            self.redrawPending = false
+            self.revision &+= 1
+        }
     }
 
     /// A row went away. **A release carrying an older generation is not this
