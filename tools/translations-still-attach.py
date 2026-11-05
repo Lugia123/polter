@@ -192,33 +192,100 @@ def self_test():
     return True
 
 
-def vanished_from_template(pot_ids, catalogues):
-    """msgids the template had at HEAD, has lost, and catalogues translate.
+POT_REL = "po/com.lugia.polter.pot"
 
-    Returns `None` when there is nothing to compare against -- no git, or the
-    template is unchanged -- which is not a failure and is said out loud, so
-    that "this check found nothing" and "this check did not run" are never the
-    same line.
-    """
+# What a msgid looks like where a source hands one over. Used the other way
+# round from `adrift`: a string the template lost that the sources still say.
+SPOKEN = re.compile(
+    r"""(?:\bN_|\bn_|\btr|\b_)\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)"""
+)
+
+# Where those calls are made: the core's own `src/` tree (the `apprt/gtk`
+# walk `GhosttyI18n.zig` does is inside it) and the two Windows crates. The
+# macOS SwiftUI strings live in `Localizable.strings` and are not these.
+SPOKEN_GLOBS = (
+    "src/**/*.zig",
+    "windows/host/src/**/*.rs",
+    "windows/control-room/src/**/*.rs",
+)
+
+
+def spoken_in_sources():
+    """Every msgid some source still hands over, whatever the template says."""
+    said = set()
+    for pattern in SPOKEN_GLOBS:
+        for path in glob.glob(os.path.join(ROOT, pattern), recursive=True):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for m in SPOKEN.finditer(text):
+                said.add(m.group(1))
+    return said
+
+
+def _template_as_committed(sha):
     try:
-        head = subprocess.run(
-            ["git", "-C", ROOT, "show", "HEAD:po/com.lugia.polter.pot"],
+        got = subprocess.run(
+            ["git", "-C", ROOT, "show", f"{sha}:{POT_REL}"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if head.returncode != 0:
+    return got.stdout if got.returncode == 0 else None
+
+
+def vanished_from_template(pot_ids, catalogues):
+    """Strings an earlier template had, this one has lost, that are still used.
+
+    The baseline is **the most recent commit whose template differs from the
+    one on disk**, not `HEAD`. Comparing against `HEAD` made this check
+    disappear exactly when it mattered: run before the commit it saw the old
+    template and reported, and run after it the two were equal, so it printed
+    "did not run" and returned success -- silence read as a pass. (Task 2793:
+    121 strings were dropped from the template and nothing said so.)
+
+    Two kinds of loss are reported, in both cases because something still
+    wants the string:
+
+      * a catalogue translates it, and the translation is about to become
+        `#~`, which `msgfmt` does not compile;
+      * a source still hands it over (`N_("…")` and friends), even when no
+        catalogue translates it yet -- a new string that fell out of the
+        template is untranslatable and equally invisible.
+
+    Returns `None` only when no earlier template differs from this one, which
+    is said out loud.
+    """
+    try:
+        log = subprocess.run(
+            ["git", "-C", ROOT, "log", "-20", "--format=%H", "--", POT_REL],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
         return None
-    was = template_ids(head.stdout)
-    if was == pot_ids:
+    if log.returncode != 0:
         return None
+    for sha in log.stdout.split():
+        text = _template_as_committed(sha)
+        if text is None:
+            continue
+        was = template_ids(text)
+        if was != pot_ids:
+            break
+    else:
+        return None
+
     lost = was - pot_ids
-    out = {}
+    spoken = spoken_in_sources()
+    translated = {}
     for name, src in catalogues.items():
         for mid, mstr, obs in entries(src):
             if mid in lost and mstr and not obs:
-                out.setdefault(mid, []).append(name)
-    return out
+                translated.setdefault(mid, []).append(name)
+    used = sorted(mid for mid in lost if mid in spoken)
+    return translated, used
 
 
 def main():
@@ -246,19 +313,28 @@ def main():
     rc = 0
     van = vanished_from_template(pot_ids, catalogues)
     if van is None:
-        print("template unchanged against HEAD (or no git here): "
+        print("no earlier template differs from this one (or no git here): "
               "the rewording check had nothing to compare and did not run")
-    elif not van:
-        print("template changed against HEAD, and no string it lost is translated anywhere")
     else:
-        for mid, where in sorted(van.items()):
+        translated, used = van
+        if not translated and not used:
+            print("no string an earlier template had is missing from this one")
+        for mid, where in sorted(translated.items()):
             print(f"LOST   {mid!r} left the template and {len(where)} catalogue(s) "
                   f"translate it: {', '.join(where[:6])}"
                   f"{' …' if len(where) > 6 else ''}")
-        print(f"\n{len(van)} reworded string(s) will go untranslated in every language that "
-              "had them. The old text is not gone -- `msgmerge` keeps it as `#~` -- but "
-              "nothing will use it and nothing else would have told you.")
-        rc = 1
+        for mid in used:
+            print(f"SPOKEN {mid!r} is still handed over by a source and is not in the template")
+        if translated or used:
+            if translated:
+                print(f"\n{len(translated)} reworded string(s) will go untranslated in every "
+                      "language that had them. The old text is not gone -- `msgmerge` keeps "
+                      "it as `#~` -- but nothing will use it and nothing else would have "
+                      "told you.")
+            if used:
+                print(f"{len(used)} string(s) a source still says cannot be translated at "
+                      "all, because the template no longer carries them.")
+            rc = 1
 
     n = 0
     for name, src in catalogues.items():
