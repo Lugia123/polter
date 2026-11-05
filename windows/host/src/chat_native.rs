@@ -1201,10 +1201,31 @@ fn header_geom(
     expanded: bool,
 ) -> HeaderGeom {
     let brief = meta.map_or("", |m| m.brief.as_str());
+    // **The brief is measured in the font it is drawn in, chosen here.**
+    // It used to be measured in whatever font the caller's `dc` happened to
+    // have selected. In `paint` that is this body font; a click handler
+    // holds a `GetDC`, whose stock system font has a line box a pixel
+    // shorter. `ceil(full_h / metrics.line)` then read a one-line brief as
+    // two lines for the paint and one for the click, and `message_rect`'s
+    // top moved down a whole line in one and not the other -- so a link was
+    // drawn one line below where it was hit (task 2991). **One font, chosen
+    // in this function, so every caller answers alike.**
+    let body = crate::uifont::make(
+        (metrics.scale * 96.0).round() as i32,
+        look::font::BODY.round() as i32,
+        look::font::WEIGHT_BODY.round() as i32,
+        crate::uifont::ui_face(),
+    );
     let full_h = if brief.is_empty() {
         0
     } else {
-        unsafe { calc_height(dc, brief, width.max(1), DrawTextFlags::wrap()) }.max(0)
+        unsafe {
+            let old = SelectObject(dc, body.into());
+            let h = calc_height(dc, brief, width.max(1), DrawTextFlags::wrap());
+            SelectObject(dc, old);
+            h
+        }
+        .max(0)
     };
     let lines = if metrics.line > 0 {
         (full_h + metrics.line - 1) / metrics.line
@@ -1225,12 +1246,6 @@ fn header_geom(
     let toggle_h = if toggle_shown { metrics.line } else { 0 };
     let total = title_h + brief_h + toggle_h + metrics.gap;
 
-    let body = crate::uifont::make(
-        (metrics.scale * 96.0).round() as i32,
-        look::font::BODY.round() as i32,
-        look::font::WEIGHT_BODY.round() as i32,
-        crate::uifont::ui_face(),
-    );
     let member_text = meta.map_or(String::new(), |m| members_words(m.member_count));
     let member_w = if member_text.is_empty() {
         0
@@ -4563,40 +4578,59 @@ fn message_link_at(
                     // paragraph's first line starts at y 0, not at the
                     // block's plan offset. `hit_scrolled` found the block
                     // in plan coordinates; the piece test needs the same
-                    // point in the block's coordinates.
+                    // point in the block's coordinates -- which is also why
+                    // `block_point` is asked in that space.
+                    //
+                    // **Three different answers**, where one sentence used
+                    // to stand for all of them: a piece (a link or not), the
+                    // gap after a line's last piece, and the air between two
+                    // lines. "No piece contains x" read as a bug in the link
+                    // geometry even when the click had simply landed on
+                    // ordinary text (task 2991). The judgement is the pure
+                    // function's, so the three cases are tested without a
+                    // window.
                     let piece_y = plan_y.saturating_sub(plan_block.rect.y);
+                    let hit_x = x - left + off;
                     let mut found = None;
-                    for line in &plan_block.lines {
-                        for piece in &line.pieces {
-                            if !piece.rect.contains(x - left + off, piece_y) {
-                                continue;
-                            }
-                            let Some(run) = runs.get(piece.run) else {
-                                continue;
-                            };
-                            if let Some(link) = &run.style.link_raw {
-                                found = Some(link.to_string());
+                    match md_layout::block_point(plan_block, hit_x, piece_y) {
+                        Some(md_layout::PointHit::Piece { line, piece: index }) => {
+                            let piece = &plan_block.lines[line].pieces[index];
+                            match runs.get(piece.run).and_then(|r| r.style.link_raw.as_ref()) {
+                                Some(link) => found = Some(link.to_string()),
+                                // Only worth a line where a link was within
+                                // reach: a block with no link run at all is
+                                // ordinary text, not a miss.
+                                None if runs.iter().any(|r| r.style.link_raw.is_some()) => {
+                                    miss_why = Some(format!(
+                                        "block {} line {} piece {} (run {}) is not a link (x {}, piece_y {})",
+                                        block, line, index, piece.run, hit_x, piece_y
+                                    ));
+                                }
+                                None => {}
                             }
                         }
-                    }
-                    // The click is on the line that carries a link but on
-                    // none of its pieces: the one shape a plan lookup
-                    // cannot explain, and the one worth a line.
-                    if found.is_none() && runs.iter().any(|r| r.style.link_raw.is_some()) {
-                        if let Some(line) = plan_block
-                            .lines
-                            .iter()
-                            .find(|l| piece_y >= l.rect.y && piece_y < l.rect.y + l.rect.h)
-                        {
-                            miss_why = Some(format!(
-                                "block {} has a link run but no piece contains x {} (block y {}, piece_y {}, line {:?})",
-                                block,
-                                x - left + off,
-                                plan_block.rect.y,
-                                piece_y,
-                                line.rect
-                            ));
+                        Some(md_layout::PointHit::NoPiece { line }) => {
+                            if runs.iter().any(|r| r.style.link_raw.is_some()) {
+                                miss_why = Some(format!(
+                                    "block {} has a link run but no piece covers x {} on line {} ({:?}) (block y {}, piece_y {})",
+                                    block,
+                                    hit_x,
+                                    line,
+                                    plan_block.lines[line].rect,
+                                    plan_block.rect.y,
+                                    piece_y
+                                ));
+                            }
                         }
+                        Some(md_layout::PointHit::BetweenLines) => {
+                            if runs.iter().any(|r| r.style.link_raw.is_some()) {
+                                miss_why = Some(format!(
+                                    "block {} has a link run but the click is between its lines (piece_y {}, block y {})",
+                                    block, piece_y, plan_block.rect.y
+                                ));
+                            }
+                        }
+                        None => {}
                     }
                     found
                 }
@@ -4662,10 +4696,18 @@ fn message_link_at(
             }
         }
         if let Some(why) = miss_why {
+            // **The plan's width is part of the reading**: the side panel's
+            // breakpoint decides whether the message column keeps the whole
+            // page (covered) or is narrowed (side by side), and the two are
+            // the same width when they would be told apart by eye. A 760px
+            // window covers, so its plan is the page's width -- roughly
+            // `page - 24`; a narrowed one would be about half of that
+            // (task 2991, G9).
             plogf!(
-                "[chat-native] link click at ({}, {}) found nothing: {}",
+                "[chat-native] link click at ({}, {}) on a {}px plan found nothing: {}",
                 x,
                 y,
+                width,
                 why
             );
         }

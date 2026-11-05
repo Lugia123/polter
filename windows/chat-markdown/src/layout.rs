@@ -361,6 +361,51 @@ impl Plan {
     }
 }
 
+/// What a point **inside one block** lands on, in that block's own
+/// coordinates (`piece.rect.y` from 0, the same space the draw uses).
+///
+/// **Three answers, and the host's witness line needs them apart**: a piece
+/// that is a link, a piece that is not, and a spot no piece covers -- which
+/// is itself two different things, a gap between two pieces on one line and
+/// a gap between two lines. They were one sentence ("no piece contains x")
+/// printed whenever a link run existed, and it read as a bug in the link
+/// geometry even when the click had simply landed on ordinary text
+/// (task 2991).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointHit {
+    /// `line` and `piece` index `block.lines` and that line's `pieces`.
+    Piece { line: usize, piece: usize },
+    /// Inside `line`'s rectangle, on no piece: the gap between two pieces,
+    /// or past the last one.
+    NoPiece { line: usize },
+    /// Inside the block, between two lines (or above the first / below the
+    /// last line's own rectangle).
+    BetweenLines,
+}
+
+/// Where `(x, y)` -- in the block's own coordinates -- lands. `None` when
+/// the point is outside the block altogether.
+pub fn block_point(block: &BlockPlan, x: i32, y: i32) -> Option<PointHit> {
+    if x < 0 || y < 0 || x >= block.rect.w || y >= block.rect.h {
+        return None;
+    }
+    let Some((line_index, line)) = block
+        .lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.rect.contains(x, y))
+    else {
+        return Some(PointHit::BetweenLines);
+    };
+    match line.pieces.iter().position(|p| p.rect.contains(x, y)) {
+        Some(piece) => Some(PointHit::Piece {
+            line: line_index,
+            piece,
+        }),
+        None => Some(PointHit::NoPiece { line: line_index }),
+    }
+}
+
 /// Space around the content, and a list's step per depth, in DIP (multiplied
 /// by the DPI scale once here).
 pub const PAD_DIP: i32 = 12;
@@ -1779,5 +1824,68 @@ long line here"
             .map(|l| crlf.get(l.pieces[0].text.clone()).unwrap())
             .collect();
         assert_eq!(got, vec!["a", "b"]);
+    }
+
+    /// **The four answers the host's witness line has to tell apart**
+    /// (task 2991): a piece (link or not is the caller's question), the gap
+    /// after the last piece on a line, the gap between two lines, and a
+    /// point outside the block. The two middle ones used to share one
+    /// sentence that claimed no piece covered the click.
+    #[test]
+    fn a_point_in_a_block_says_piece_line_gap_or_between_lines() {
+        let piece = |x: i32| Piece {
+            run: 0,
+            text: 0..4,
+            rect: Rect {
+                x,
+                y: 0,
+                w: 20,
+                h: 10,
+            },
+            kind: FontKind::Body,
+        };
+        let line = |y: i32, pieces: Vec<Piece>| Line {
+            rect: Rect {
+                x: 0,
+                y,
+                w: 100,
+                h: 10,
+            },
+            ascent: 7,
+            descent: 3,
+            pieces,
+        };
+        // Two lines with ten pixels of air between them, and only the first
+        // line carrying a piece. Everything here is in the block's own
+        // coordinates: the second line starts at y 20, not at the block's
+        // own offset.
+        let block = BlockPlan {
+            kind: BlockKind::Paragraph,
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 40,
+            },
+            lines: vec![line(0, vec![piece(0)]), line(20, Vec::new())],
+            prefix: None,
+            horizontal: None,
+        };
+        assert_eq!(
+            block_point(&block, 5, 5),
+            Some(PointHit::Piece { line: 0, piece: 0 })
+        );
+        assert_eq!(
+            block_point(&block, 50, 5),
+            Some(PointHit::NoPiece { line: 0 }),
+            "inside the line's rectangle, past its only piece"
+        );
+        assert_eq!(
+            block_point(&block, 5, 15),
+            Some(PointHit::BetweenLines),
+            "the ten pixels of air between line 0 and line 1"
+        );
+        assert_eq!(block_point(&block, 5, 50), None, "past the block's bottom");
+        assert_eq!(block_point(&block, -1, 5), None, "left of the block");
     }
 }
