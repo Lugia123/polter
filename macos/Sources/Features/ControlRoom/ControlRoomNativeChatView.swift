@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 /// The group chat's messages, drawn natively (task 2791, #2791; the demand
@@ -42,10 +43,38 @@ struct ControlRoomNativeChatView: View {
     @State private var offsetY: CGFloat = 0
     @State private var viewportH: CGFloat = 0
     @State private var contentH: CGFloat = 0
+    /// How many times this blank episode has been recovered. Bounded so a
+    /// recovery that cannot help (the rows are simply not laid out yet) does
+    /// not become a scroll loop; reset as soon as a row is on screen.
+    @State private var blankAttempts = 0
     @State private var framesEpoch: UInt64 = 0
     @State private var seenFramesEpoch: UInt64 = 0
     @State private var atBottom = true
     @State private var newBelow = false
+    /// One ask of `ScrollViewReader`, for a row the lazy stack has not made
+    /// yet. **The token, not the id, is the identity**: asking twice for the
+    /// same row must fire twice.
+    private struct SeekRequest: Equatable {
+        var id: String
+        var token: UInt64
+    }
+    @State private var seekRequest: SeekRequest?
+    @State private var seekToken: UInt64 = 0
+    /// The frames epoch a restore was frozen against. **A restore that would
+    /// land where the viewport already is has not been answered until the
+    /// frames have moved on**: the frames may still be the replaced window's,
+    /// and consuming the restore then loses the correction for good.
+    @State private var frozenFramesEpoch: UInt64 = 0
+    /// Bumped when the map is replaced rather than extended. The index bar
+    /// reads it to abandon a drag that was aimed at the old map.
+    @State private var mapEpoch: UInt64 = 0
+    /// Invalidates the "the hand has left the list" restore attempts queued
+    /// by earlier wheel events.
+    @State private var quietToken: UInt64 = 0
+    /// Whether the view has told the feed the reader is moving. **The gate
+    /// is the feed's; this is only the edge that sets it**, so the view never
+    /// asks twice for the same state.
+    @State private var toldReaderActive = false
     /// The one scroll the view is doing: none, following the newest message,
     /// or putting the reader's place back. **Mutually exclusive**, so a
     /// bottom never opens a restore that then blocks the follow, and an
@@ -97,86 +126,207 @@ struct ControlRoomNativeChatView: View {
     private static let space = "poltergeist.chat.rows"
     private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+    // MARK: - The blank-screen probe (task 3002)
+
+    /// **Only the abnormal path writes a line.** The person reproduced a chat
+    /// whose header drew and whose list was empty; the suspicion is a clip
+    /// origin outside the document, which makes `LazyVStack` instantiate
+    /// nothing. This says so when it happens and is silent otherwise.
+    ///
+    /// `POLTERCHAT_TRACE` is accepted beside the brief's `POLTER_CHAT_TRACE`
+    /// because `tools/mac-test-instance.sh` unsets every inherited
+    /// `POLTER_*`/`GHOSTTY_*`/`CLAUDE*` variable -- the brief's name would
+    /// never reach an app started that way.
+    private static let traceOn =
+        ProcessInfo.processInfo.environment["POLTER_CHAT_TRACE"] == "1"
+        || ProcessInfo.processInfo.environment["POLTERCHAT_TRACE"] == "1"
+    private static let traceLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-view"
+    )
+
+    private func traceState(_ why: String) {
+        guard Self.traceOn else { return }
+        // A state word, never the refusal's own text: a diagnostic line is
+        // not the place for a message body or a core's words.
+        let state: String
+        switch feed.state {
+        case .idle: state = "idle"
+        case .loading: state = "loading"
+        case .ready: state = "ready"
+        case .empty: state = "empty"
+        case .cancelled: state = "cancelled"
+        case .gap: state = "gap"
+        case .failed: state = "failed"
+        }
+        Self.traceLog.notice(
+            "\(why, privacy: .public) rows=\(feed.rows.count, privacy: .public) state=\(state, privacy: .public) y=\(Int(offsetY), privacy: .public) content=\(Int(contentH), privacy: .public) viewport=\(Int(viewportH), privacy: .public) plan=\(self.listPlan.count, privacy: .public)"
+        )
+    }
+
+    /// **A non-empty list with no row on screen is recovered, not waited
+    /// out.** The criterion is the measured frames, not a clamped offset:
+    /// `scroll(toY:)` clamps against a document height that a `LazyVStack`
+    /// only estimates, so an offset can be perfectly legal and still land in
+    /// a stretch that instantiates nothing.
+    ///
+    /// Checked where a blank list actually came from: the probe attaching, a
+    /// tab coming back, a width change, the viewport going from 0 to real,
+    /// and a replaced map. At most two attempts per episode; any successful
+    /// sighting resets the count.
+    ///
+    /// **The order is the point**: a frozen or located place first (that is
+    /// where the reader was), then the nearest measured row (where rows
+    /// exist), and only then the bottom -- not "jump to the bottom" as a
+    /// first answer, which would throw the reader's place away.
+    private func recoverVisiblePlace(_ why: String) {
+        guard visible, handleAttached, viewportH > 0, !feed.rows.isEmpty,
+              !frames.isEmpty
+        else { return }
+        let visibleRow = frames.values.contains {
+            $0.maxY > offsetY && $0.minY < offsetY + viewportH
+        }
+        if visibleRow {
+            blankAttempts = 0
+            return
+        }
+        guard blankAttempts < 2 else { return }
+        blankAttempts += 1
+        traceState("blank-\(why)")
+        // 1. Where the reader was, if that was ever frozen or located.
+        if let target = keeper.restoreTarget(frames: frames) {
+            scrollProgrammatically(toY: target)
+            return
+        }
+        if let located = feed.locatedAnchor, let frame = frames[located] {
+            scrollProgrammatically(toY: frame.minY)
+            return
+        }
+        // 2. The nearest measured row: a place the lazy stack definitely has.
+        let centre = Double(offsetY + viewportH / 2)
+        if let id = ControlRoomChatAnchor.nearestMeasured(centre: centre, frames: frames),
+           let frame = frames[id], abs(frame.minY - offsetY) > 1 {
+            scrollProgrammatically(
+                toY: min(frame.minY, max(0, contentH - viewportH)))
+            return
+        }
+        // 3. Nothing measured reaches the viewport: the newest messages are
+        // the end of the map that always exists.
+        requestFollow()
+    }
+
     var body: some View {
         let theme = Look.theme(scheme)
         let plan = listPlan
         let indexByID = rowIndexByID
         ZStack(alignment: .bottomTrailing) {
             GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        olderBoundary(theme)
-                        contextOlderBoundary(theme)
-                        ForEach(plan, id: \.id) { item in
-                            switch item {
-                            case let .gap(gap):
-                                gapBoundary(theme, gap: gap)
-                            case let .message(id):
-                                if let index = indexByID[id], index < feed.rows.count {
-                                    let row = feed.rows[index]
-                                    let dayBreak = needsDivider(index)
-                                    // **One hairline, never two**: a day
-                                    // divider already separates this row, so
-                                    // the speaker's rule is not stacked on it.
-                                    let speakerBreak = !dayBreak && needsSpeakerRule(index)
-                                    if dayBreak {
-                                        dayDivider(row.message.atMs, theme)
-                                    } else if speakerBreak {
-                                        speakerRule(theme)
-                                    }
-                                    let located = feed.locatedAnchor == row.id
-                                    ControlRoomNativeChatRow(
-                                        row: row,
-                                        group: feed.group ?? "",
-                                        generation: feed.generation,
-                                        markdown: feed.markdown,
-                                        hit: located ? locatedHit : nil,
-                                        onReference: onReference
-                                    )
-                                    .background(located
-                                        ? theme.searchTarget.color.opacity(locatedGlow)
-                                        : Color.clear)
-                                    .overlay(alignment: .leading) {
-                                        // The located row's own edge, so the
-                                        // hit reads as one message rather
-                                        // than a wash over the list.
-                                        if located {
-                                            Rectangle()
-                                                .fill(theme.searchTargetEdge.color)
-                                                .frame(width: 4)
-                                                .opacity(locatedGlow)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            // **No loading row above the list** (task 3002): the
+                            // window is a fixed-height frame over a stream with no
+                            // length, and getting more of it is the background's
+                            // business -- it must not be a visible event.
+                            ForEach(plan, id: \.id) { item in
+                                switch item {
+                                case let .gap(gap):
+                                    gapBoundary(theme, gap: gap)
+                                case let .message(id):
+                                    if let index = indexByID[id], index < feed.rows.count {
+                                        let row = feed.rows[index]
+                                        let dayBreak = needsDivider(index)
+                                        // **One hairline, never two**: a day
+                                        // divider already separates this row, so
+                                        // the speaker's rule is not stacked on it.
+                                        let speakerBreak = !dayBreak && needsSpeakerRule(index)
+                                        if dayBreak {
+                                            dayDivider(row.message.atMs, theme)
+                                        } else if speakerBreak {
+                                            speakerRule(theme)
                                         }
+                                        let located = feed.locatedAnchor == row.id
+                                        ControlRoomNativeChatRow(
+                                            row: row,
+                                            group: feed.group ?? "",
+                                            generation: feed.generation,
+                                            markdown: feed.markdown,
+                                            hit: located ? locatedHit : nil,
+                                            onReference: onReference
+                                        )
+                                        .background(located
+                                            ? theme.searchTarget.color.opacity(locatedGlow)
+                                            : Color.clear)
+                                        .overlay(alignment: .leading) {
+                                            // The located row's own edge, so the
+                                            // hit reads as one message rather
+                                            // than a wash over the list.
+                                            if located {
+                                                Rectangle()
+                                                    .fill(theme.searchTargetEdge.color)
+                                                    .frame(width: 4)
+                                                    .opacity(locatedGlow)
+                                            }
+                                        }
+                                        .clipShape(RoundedRectangle(cornerRadius: Look.Radius.row))
+                                        .background(rowFrames(row.id))
                                     }
-                                    .clipShape(RoundedRectangle(cornerRadius: Look.Radius.row))
-                                    .background(rowFrames(row.id))
                                 }
                             }
+                            contextNewerBoundary(theme)
                         }
-                        contextNewerBoundary(theme)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .coordinateSpace(name: Self.space)
+                        .background(ControlRoomChatScrollProbe(
+                            handle: scroll,
+                            onAttach: { attached in
+                                handleAttached = attached
+                                if attached {
+                                    performFollowIfPossible()
+                                    restoreSoon()
+                                    // **A probe that has just found its
+                                    // scroll view** is one of the moments the
+                                    // blank list came from (a return to the
+                                    // tab, a rebuilt host): the place is put
+                                    // back once the frames are known.
+                                    DispatchQueue.main.async {
+                                        recoverVisiblePlace("attach")
+                                    }
+                                }
+                            },
+                            onVisible: { _ in },
+                            onUserScroll: userTookScroll,
+                            onUserScrollEnd: handLeftTheList,
+                            report: scrolled
+                        ))
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .coordinateSpace(name: Self.space)
-                    .background(ControlRoomChatScrollProbe(
-                        handle: scroll,
-                        onAttach: { attached in
-                            handleAttached = attached
-                            if attached {
-                                performFollowIfPossible()
-                                restoreSoon()
-                            }
-                        },
-                        onVisible: { _ in },
-                        onUserScroll: userTookScroll,
-                        report: scrolled
-                    ))
-                }
-                .onChange(of: geometry.size.width) { _ in
-                    layoutChangedForScroll()
+                    .scrollIndicators(.hidden)
+                    .onChange(of: geometry.size.width) { _ in
+                        layoutChangedForScroll()
+                    }
+                    .onChange(of: seekRequest) { request in
+                        guard let request else { return }
+                        // **A jump inside the loaded map** (task 3002): the
+                        // index bar and the search never point at a row the
+                        // ForEach does not have, so this is a scroll and not
+                        // a change of map. The measured correction that
+                        // follows is `restoreSoon`'s.
+                        proxy.scrollTo(request.id, anchor: .top)
+                    }
+                    .overlay(alignment: .trailing) {
+                        indexBar(theme, height: geometry.size.height)
+                    }
                 }
             }
-            if !atBottom {
+            // **A located window keeps its own way out.** Its bottom is the
+            // end of the around window, not the newest message, so the pill
+            // has to return the page to the live tail; `requestFollow()`
+            // alone would only scroll this map. The condition is the located
+            // state, not `atBottom`: reading the middle of a located window
+            // leaves `atBottom` false too, and the two mean different things.
+            if isLocated || !atBottom {
                 jumpPill(theme)
             }
         }
@@ -184,24 +334,18 @@ struct ControlRoomNativeChatView: View {
             visible = true
             activeToken &+= 1
             lastIDs = feed.rows.map(\.id)
-            // **A page shown again comes back where it was read**, not at the
-            // bottom. Only a page with no saved position follows the newest
-            // message.
-            if let saved = feed.savedReading,
-               feed.rows.contains(where: { $0.id == saved.id }) {
-                // **A saved reading position is history intent**, not a
-                // bottom: the first bounds of the new showing must not move
-                // it, and restoreSoon must not be turned away by atBottom.
-                atBottom = false
-                scrollPhase = .layoutAwaitingFrames
-                keeper.seed(saved)
-                keeper.layoutWillChange()
-                scrollIntent = .restore
-                restoreSoon()
-            } else {
-                atBottom = true
-                requestFollow()
-            }
+            // **A page always opens on the newest message** (task 3002, the
+            // person's ruling of 2026-11-06). The list is a fixed-height
+            // frame over a stream, not a document with a remembered bookmark:
+            // a group that comes back where it was read starts the reader in
+            // history by accident. The place is still reported to the feed
+            // (`reading(anchor:)`) so trimming keeps the reader's
+            // neighbourhood -- it just never seeds the viewport.
+            atBottom = true
+            newBelow = false
+            blankAttempts = 0
+            requestFollow()
+            DispatchQueue.main.async { recoverVisiblePlace("appear") }
             // A page that opens already located: the mark may breathe once
             // the row is measured and under the viewport, which is what the
             // frames preference and the bounds callbacks ask below.
@@ -213,23 +357,27 @@ struct ControlRoomNativeChatView: View {
             scrollIntent = .none
             activeToken &+= 1
             lifecycleEpoch &+= 1
+            // **The hand is not on a page that is gone.** A gesture
+            // interrupted by leaving the page would otherwise leave the view
+            // believing the reader is still touching the list, and it would
+            // never announce the next one -- the feed would keep holding
+            // pages for a hand that left. **Not `readerIdle()`**: a page may
+            // be merged when the hand leaves a list that is still there, not
+            // because the page went away (`feed.stop` is that moment).
+            if toldReaderActive {
+                toldReaderActive = false
+                feed.readerActive(false)
+            }
+            // Any quiet check still queued belongs to the page that left.
+            quietToken &+= 1
         }
-        .onChange(of: feed.locatedAnchor) { target in
-            // **The breathing is not armed here**: this fires before the
-            // around window arrives, when the target row is not on screen
-            // yet. It is played from the bounds and frames callbacks, once
-            // the located row is measured and under the viewport.
-            guard let target else { return }
-            // A located window is history reading: do not follow, and put
-            // the target at the top once its row exists.
-            atBottom = false
-            newBelow = false
-            keeper.seed(.init(id: target, offset: 0))
-            keeper.layoutWillChange()
-            scrollIntent = .restore
-            scrollPhase = .layoutAwaitingFrames
-            restoreSoon()
-        }
+        // **The locate's own epoch drives the landing** (task 3002 review A).
+        // The anchor's value could not: picking the same search result twice
+        // changes nothing about it, so nothing happened. The feed bumps
+        // `locateEpoch` on `locate()` and on a locate's own failure -- and
+        // **not** on a stop, a reload or a session change, which are not
+        // locates and must not pull the reader anywhere.
+        .onChange(of: feed.locateEpoch) { _ in landOnLocate() }
         .onChange(of: feed.rows) { rows in
             lifecycleEpoch &+= 1
             // The rows changed, so the frames will too: history freezes the
@@ -238,10 +386,18 @@ struct ControlRoomNativeChatView: View {
             if atBottom {
                 keeper.cancelRestore()
             } else {
-                keeper.layoutWillChange()
-                scrollIntent = .restore
+                freezeForRestore()
             }
             rowsChanged(rows)
+        }
+        // **A viewport that has just become real** (0 → positive, or a new
+        // size): the moment the reproduced blank chat came back from.
+        .onChange(of: viewportH) { height in
+            guard height > 0 else { return }
+            DispatchQueue.main.async {
+                recoverVisiblePlace("viewport")
+                publishViewportRows()
+            }
         }
         .onPreferenceChange(RowFramesPreference.self) { value in
             frames = value
@@ -263,6 +419,8 @@ struct ControlRoomNativeChatView: View {
             // The located row may have just been measured: that is one of
             // the two moments its mark may breathe (task 2999 ④).
             breatheLocatedIfInView()
+            recoverVisiblePlace("frames")
+            publishViewportRows()
         }
     }
 
@@ -394,6 +552,16 @@ struct ControlRoomNativeChatView: View {
         // **A hidden host scrolls nothing.** `feed.stop` and a hidden ancestor
         // do not always reach `onDisappear`; the live view test does.
         guard visible, scroll.isVisible else { return }
+        // **A clip origin past the document instantiates nothing.** The
+        // reproduced blank chat is this: the header drew, the list did not,
+        // and the origin was outside the content. A rubber-band overscroll is
+        // the reader's and is left alone; anything else is clamped back.
+        if content > viewport + 1, y > content - viewport + 2,
+           !inScrollCall, !scroll.userScrolling, !scroll.readerMovedRecently {
+            traceState("origin-past-content")
+            scrollProgrammatically(toY: content - viewport)
+            return
+        }
         let contentChanged = abs(content - contentH) > 0.5
         let wasAtBottom = atBottom
         offsetY = y
@@ -438,10 +606,22 @@ struct ControlRoomNativeChatView: View {
             if atBottom {
                 requestFollow()
             } else {
-                keeper.layoutWillChange()
-                scrollIntent = .restore
+                freezeForRestore()
                 restoreSoon()
             }
+        }
+        // **A hand on the list has an end after all.** There is no "the
+        // reader let go" event to correct at, so the corrections a gesture
+        // interrupted are taken back here: when the wheel has been quiet for
+        // its window (0.3s), or when the live scroll ends. The restore is
+        // still the frozen anchor + intra-row offset, one shot -- never a sum
+        // of per-row height differences.
+        if cause == .user {
+            if !toldReaderActive {
+                toldReaderActive = true
+                readerActive(true)
+            }
+            armQuietCheck()
         }
 
         // **Who moved is decided here and handed down.** The keeper used to
@@ -483,18 +663,36 @@ struct ControlRoomNativeChatView: View {
                 restoreSoon()
             }
         }
-        if user, ControlRoomChatAnchor.shouldLoadOlder(offset: y), feed.canLoadOlder {
-            feed.loadOlder()
+        // **The top edge asks quietly** (task 3002): with no loading row and
+        // no "load earlier" control, getting the next page is the background
+        // continuing, not an event. The threshold is one viewport rather than
+        // the old 24pt: 24pt fires only once the reader is already at the
+        // very end of the map, so every page would arrive after them. One
+        // viewport asks while there is still content above to read.
+        if user, ControlRoomChatAnchor.shouldLoadOlder(offset: y, threshold: viewport) {
+            askForMore(.older)
+        }
+        // **And the bottom edge in a located window.** An around answer is a
+        // short window: without this the lower half of the screen is empty
+        // once the reader reaches its end, and the boundary row that used to
+        // offer the next page is gone with the rest of them.
+        if user, feed.context != nil,
+           ControlRoomChatAnchor.isAtBottom(
+                offset: y, viewport: viewport, content: content, tolerance: viewport) {
+            askForMore(.newer)
         }
         // **The viewport has moved**: if it has come to rest on the located
         // row, that is the moment its mark breathes (task 2999 ④).
         breatheLocatedIfInView()
+        recoverVisiblePlace("scrolled")
+        publishViewportRows()
     }
 
     private func rowsChanged(_ rows: [ControlRoomChatFeed.Row]) {
         let ids = rows.map(\.id)
-        switch ControlRoomChatAnchor.change(from: lastIDs, to: ids) {
-        case .appended, .replaced:
+        let change = ControlRoomChatAnchor.change(from: lastIDs, to: ids)
+        switch change {
+        case .appended:
             if feed.locatedAnchor != nil {
                 // A replaced body here is a search locate, not new messages.
                 atBottom = false
@@ -504,6 +702,25 @@ struct ControlRoomNativeChatView: View {
             } else if !rows.isEmpty {
                 newBelow = true
             }
+        case .replaced:
+            // **A new map, not a longer one.** The frames the view holds are
+            // the old window's coordinates, and a restore computed from them
+            // lands somewhere that does not exist any more; the drag the
+            // index bar is in the middle of was aimed at the old map too.
+            frames = [:]
+            framesEpoch &+= 1
+            mapEpoch &+= 1
+            if feed.locatedAnchor != nil {
+                atBottom = false
+                newBelow = false
+            } else if atBottom {
+                requestFollow()
+            } else if !rows.isEmpty {
+                newBelow = true
+            }
+            // Out of range almost only happens on a replacement, so the
+            // recovery is asked for here as well as from the frames.
+            DispatchQueue.main.async { recoverVisiblePlace("replaced") }
         case .prepended:
             // The reader stays on their message; the frozen anchor is put
             // back once the new frames are known. At the bottom there is
@@ -513,6 +730,174 @@ struct ControlRoomNativeChatView: View {
             break
         }
         lastIDs = ids
+        // The new rows are laid out after this turn: if they arrived but none
+        // is on screen, that is the blank list, and it is recovered there.
+        blankAttempts = 0
+        DispatchQueue.main.async { recoverVisiblePlace("rows") }
+    }
+
+    /// **A jump to a row in the loaded map** (task 3002). The index bar and
+    /// the search never name a row the `ForEach` does not have, so this is a
+    /// scroll and never a change of map: reaching a message that is not
+    /// loaded is `feed`'s `around` window, and by the time it answers the row
+    /// is here.
+    ///
+    /// A measured row moves in one step. A row the lazy stack has not made
+    /// yet is asked for by name, and the keeper's frozen place is the same
+    /// row, so the one correction the frames preference causes lands on it --
+    /// two rounds at most, because the keeper is spent after one.
+    private func seek(toIndex index: Int) {
+        guard index >= 0, index < feed.rows.count else { return }
+        let row = feed.rows[index]
+        // The person asked for a place: no bottom is owed and no older page
+        // is being waited for.
+        followIntent = false
+        newBelow = false
+        atBottom = false
+        freezeForRestore(.init(id: row.id, offset: 0))
+        if let frame = frames[row.id] {
+            scrollPhase = .idle
+            scrollProgrammatically(toY: frame.minY)
+            restoreSoon()
+            return
+        }
+        scrollPhase = .layoutAwaitingFrames
+        seekToken &+= 1
+        seekRequest = SeekRequest(
+            id: ControlRoomChatPresentation.ListRow.message(id: row.id).id,
+            token: seekToken
+        )
+    }
+
+    /// A click on the bare track: one screenful in the direction asked for,
+    /// within the loaded map (the index bar never covers more than that).
+    /// Near the top it also asks the feed for the next page, exactly as a
+    /// wheel there would.
+    private func pageBy(_ direction: Int) {
+        guard direction != 0, viewportH > 0 else { return }
+        let target = max(0, offsetY + CGFloat(direction) * viewportH)
+        keeper.cancelRestore()
+        followIntent = false
+        scrollIntent = .none
+        scrollPhase = .idle
+        scrollProgrammatically(toY: target)
+        if direction < 0,
+           ControlRoomChatAnchor.shouldLoadOlder(offset: target, threshold: viewportH) {
+            askForMore(.older)
+        }
+        // **The mirror of the top edge**: a programmatic page never comes
+        // back as `user`, so the near-bottom ask in `scrolled` can never fire
+        // for it. In a located window that leaves the lower half of the
+        // screen empty -- the boundary row that used to offer the next page
+        // is gone.
+        if direction > 0, feed.context != nil,
+           ControlRoomChatAnchor.isAtBottom(
+                offset: Double(target), viewport: Double(viewportH),
+                content: Double(contentH), tolerance: Double(viewportH)) {
+            askForMore(.newer)
+        }
+    }
+
+    /// **The feed asks for blocks the size of this window and cannot measure
+    /// it.** The count is the index bar's own coverage -- one algorithm, so
+    /// the bar and the page the feed asks for cannot disagree about how tall
+    /// a screen is. Written from callbacks only, never from `body`.
+    private func publishViewportRows() {
+        guard viewportH > 0, !frames.isEmpty else { return }
+        guard let covered = ControlRoomChatIndexBar.viewportTicks(
+            order: feed.rows.map(\.id),
+            frames: frames,
+            offset: Double(offsetY),
+            viewport: Double(viewportH)
+        ) else { return }
+        let rows = max(1, Int(covered))
+        guard rows != feed.viewportRows else { return }
+        feed.viewportRows = rows
+    }
+
+    private enum AskDirection {
+        case older
+        case newer
+    }
+
+    /// **Asking for more is silent, and the feed owns both gates.** With no
+    /// loading row the records either side of the frame are the background's
+    /// business. `canLoadOlder` is the single question -- false while a page
+    /// is out, held for the reader's hand, or cooling down after a failure --
+    /// so this can be asked on every bounds callback without a request storm
+    /// and without a second cooldown of the view's own. `loadOlder` routes to
+    /// the context cursor by itself when a located window has no
+    /// `historyTail`; only the newer direction is a separate call, because
+    /// that edge belongs to a located window alone.
+    private func askForMore(_ direction: AskDirection) {
+        switch direction {
+        case .older:
+            guard feed.canLoadOlder else { return }
+            feed.loadOlder()
+        case .newer:
+            feed.loadContextNewer()
+        }
+    }
+
+    /// **The page that could not be read has to say so somewhere.** The
+    /// boundary row that used to say it is gone with the rest of them, so
+    /// the index bar carries it: a mark at the top of the track and one
+    /// sentence in its bubble, which moves nothing and blocks nothing.
+    private var olderNotice: String? {
+        switch feed.older {
+        case .failed:
+            return String(localized: "Earlier records could not be read.",
+                          comment: "总控台：群聊页，更早记录读取失败（索引条提示）")
+        case .gap:
+            return String(localized: "Some earlier records could not be read.",
+                          comment: "总控台：群聊页，更早记录有损坏（索引条提示）")
+        case .idle, .loading, .scanning, .atEnd, .cancelled:
+            // **A cancellation says nothing.** It is the state `stop()`
+            // leaves behind, so a page shown again would carry a sentence
+            // about the session before it -- and a reader who stopped the
+            // scan already knows.
+            return nil
+        }
+    }
+
+    /// The person's index bar (task 3002). It reads the same frames and the
+    /// same bounds every other rule here reads, and asks for nothing but a
+    /// scroll: no page, no group, no window.
+    @ViewBuilder
+    private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
+        if !feed.rows.isEmpty, height > 0 {
+            let order = feed.rows.map(\.id)
+            let top = ControlRoomChatIndexBar.topTick(
+                order: order,
+                frames: frames,
+                offset: Double(offsetY),
+                viewport: Double(viewportH)
+            ) ?? 0
+            let covered = ControlRoomChatIndexBar.viewportTicks(
+                order: order,
+                frames: frames,
+                offset: Double(offsetY),
+                viewport: Double(viewportH)
+            ) ?? 1
+            ControlRoomChatIndexBarView(
+                totalTicks: feed.rows.count,
+                topTick: top,
+                viewportTicks: covered,
+                trackH: max(0, height - 16),
+                theme: theme,
+                mapEpoch: mapEpoch,
+                notice: olderNotice,
+                time: { index in
+                    guard index >= 0, index < feed.rows.count else { return "" }
+                    return ControlRoomChatPresentation.timeText(
+                        atMs: feed.rows[index].message.atMs)
+                },
+                onSeek: seek(toIndex:),
+                onPage: pageBy
+            )
+            .padding(.trailing, ControlRoomChatIndexBar.trackInset)
+            .padding(.vertical, 8)
+        }
     }
 
     /// A layout change that is not the reader moving: **at the bottom it only
@@ -525,10 +910,62 @@ struct ControlRoomNativeChatView: View {
             requestFollow()
         } else {
             scrollPhase = .layoutAwaitingFrames
-            keeper.layoutWillChange()
-            scrollIntent = .restore
+            freezeForRestore()
             restoreSoon()
         }
+        // The width changed under the list: if that left nothing on screen,
+        // put a place back (see `recoverVisiblePlace`).
+        DispatchQueue.main.async { recoverVisiblePlace("width") }
+    }
+
+    /// **Freeze the reader's place for one restore.** The place is a row and
+    /// an offset into it, never a sum of row heights: a frame that measures
+    /// ten rows is one restore to the same row, not ten shifts.
+    ///
+    /// An anchor is never absent while rows are measured -- the place is a
+    /// fact about the frames, not about the reader having scrolled -- so a
+    /// prepend with no anchor yet is given the first row's measured frame
+    /// rather than shifting content under a reader nothing compensates for.
+    ///
+    /// The frames epoch the freeze was made against travels with it: a
+    /// restore answered by the map it froze against has answered nothing.
+    private func freezeForRestore(_ anchor: ControlRoomChatAnchor.Anchor? = nil) {
+        let place = anchor
+            ?? keeper.anchor
+            ?? ControlRoomChatAnchor.anchor(
+                order: feed.rows.map(\.id), frames: frames, at: Double(offsetY))
+        if let place { keeper.seed(place) }
+        keeper.layoutWillChange()
+        frozenFramesEpoch = framesEpoch
+        scrollIntent = .restore
+    }
+
+    /// **A locate landed (or failed).** The landed case puts the target at
+    /// the top once its row exists -- and it does so even when `rows` did not
+    /// change at all, which is what picking the same search result twice is.
+    ///
+    /// ⚠️ **Not a promise that every repeat locate moves the list**: a target
+    /// row that is in the window but has never been instantiated has no
+    /// frame, and this view cannot make the lazy stack make it. The locate's
+    /// own window replacement is what gives the row a frame. The measuring
+    /// that proves "the second click landed too" is a real-app reading.
+    private func landOnLocate() {
+        guard let target = feed.locatedAnchor else {
+            // **A failed or cleared locate leaves no place to land on.** The
+            // optimistic freeze must go with it, or the next layout change
+            // (a sidebar opening, a wider window) would execute it and jump
+            // to a row the reader never asked for.
+            keeper.cancelRestore()
+            if scrollIntent == .restore { scrollIntent = .none }
+            return
+        }
+        // A located window is history reading: do not follow, and put the
+        // target at the top once its row exists.
+        atBottom = false
+        newBelow = false
+        scrollPhase = .layoutAwaitingFrames
+        freezeForRestore(.init(id: target, offset: 0))
+        restoreSoon()
     }
 
     /// Put the viewport back on the **frozen** anchor. Every fact is checked
@@ -539,9 +976,10 @@ struct ControlRoomNativeChatView: View {
         // **Nothing is put back under a hand that is on the list.** A restore
         // that ran during a wheel or a live scroll is a second thing moving
         // the viewport at the same time; whichever won, the reader saw a
-        // jump. The owed restore is dropped rather than delayed: the reader's
-        // own bounds callback clears the keeper's frozen place, so there is
-        // nothing left to put back.
+        // jump. What is owed is not dropped here, either: the feed holds a
+        // page that arrives while the reader is moving, and the quiet timer
+        // (`armQuietCheck` -> `handLeftTheList`) freezes, lets the merge in
+        // and restores once, after the hand has really left.
         guard ControlRoomChatAnchor.mayRestore(
             userScrolling: scroll.userScrolling,
             readerRecently: scroll.readerMovedRecently
@@ -552,6 +990,7 @@ struct ControlRoomNativeChatView: View {
         let active = activeToken
         let feedGeneration = feed.generation
         let session = feed.session
+        let owedEpoch = frozenFramesEpoch
         DispatchQueue.main.async {
             guard scrollIntent == .restore, visible, scroll.isVisible, handleAttached,
                   !atBottom, keeper.restoring,
@@ -563,6 +1002,13 @@ struct ControlRoomNativeChatView: View {
                   let target = keeper.restoreTarget(frames: frames)
             else { return }
             if abs(target - offsetY) <= 1 {
+                // **Not answered yet, so not spent.** `frames` may still be
+                // the map the restore was frozen against (the replacement's
+                // preference has not arrived); consuming it there would mark
+                // the correction done and nothing would ask again.
+                guard ControlRoomChatAnchor.restoreWasAnswered(
+                    framesEpoch: framesEpoch, frozenAt: owedEpoch
+                ) else { return }
                 keeper.restored()
                 scrollIntent = .none
                 return
@@ -585,6 +1031,83 @@ struct ControlRoomNativeChatView: View {
         followIntent = false
         scrollPhase = .idle
         lifecycleEpoch &+= 1
+        // The reader is here and moving: a blank-list recovery may try again
+        // from wherever they have gone.
+        blankAttempts = 0
+        // **And the feed is told, so a page it already holds is not merged
+        // into a document the reader is moving** (task 3002 review, the
+        // ruling of `### 5`): inserting above the viewport moves the
+        // document at once, and putting it back afterwards is a second
+        // visible movement -- a correction can fix the endpoint, never the
+        // moment. The page waits in the feed instead.
+        toldReaderActive = true
+        readerActive(true)
+        armQuietCheck()
+    }
+
+    /// **The hand has left the list** -- it has been still for the wheel
+    /// window. Freeze the place first, then let the feed merge what it held,
+    /// and restore once.
+    private func handLeftTheList() {
+        guard toldReaderActive else { return }
+        // **Momentum is still the reader**: `didEndLiveScroll` fires when the
+        // fingers lift, not when the list stops. A wheel inside its window
+        // means the hand has not really left yet.
+        guard !scroll.readerMovedRecently else {
+            armQuietCheck()
+            return
+        }
+        toldReaderActive = false
+        // **Freeze first, against the rows as they are**: nothing has been
+        // merged into them while the hand was on the list. `readerIdle()`
+        // merges synchronously, so the freeze must be in place before it.
+        let rowsAtFreeze = feed.rows.count
+        freezeForRestore()
+        feed.readerIdle()
+        restoreSoon()
+        // **A freeze that nothing answered is not left standing.** If the
+        // feed had no page to merge, the keeper would stay "restoring" and
+        // hold the next follow off. The wait is longer than a turn because
+        // the merge arrives through a SwiftUI update of its own; the row
+        // count must still be the one the freeze was made against.
+        quietToken &+= 1
+        let token = quietToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard quietToken == token, keeper.restoring,
+                  frozenFramesEpoch == framesEpoch,
+                  feed.rows.count == rowsAtFreeze
+            else { return }
+            keeper.cancelRestore()
+            if scrollIntent == .restore { scrollIntent = .none }
+        }
+    }
+
+    /// **A timer, not only the end notification**: a hand that rests on the
+    /// trackpad without lifting never posts `didEndLiveScroll`. Each call
+    /// invalidates the one before it, so a wheel burst queues one look.
+    private func armQuietCheck() {
+        quietToken &+= 1
+        let token = quietToken
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + ControlRoomChatScrollHandle.wheelWindow
+        ) {
+            guard quietToken == token else { return }
+            if scroll.userScrolling || scroll.readerMovedRecently {
+                armQuietCheck()
+                return
+            }
+            handLeftTheList()
+        }
+    }
+
+    /// **The feed's reader gate.** It is only "is the hand on the list"; the
+    /// 0.3s quiet judgement is this view's (`armQuietCheck`), because only
+    /// the view sees the wheel stream. `true` holds a page that arrives; the
+    /// hand leaving goes through `feed.readerIdle()`, which merges it and
+    /// sets the flag itself -- a bare `false` would hold no merge.
+    private func readerActive(_ active: Bool) {
+        guard active else { return }
+        feed.readerActive(true)
     }
 
     private func requestFollow() {
@@ -641,38 +1164,6 @@ struct ControlRoomNativeChatView: View {
     // MARK: - Boundaries
 
     @ViewBuilder
-    private func contextOlderBoundary(_ theme: Look.Theme) -> some View {
-        if let context = feed.context {
-            HStack(spacing: 8) {
-                if feed.contextOlderStale {
-                    Text(String(localized: "This direction's edge was released.",
-                                comment: "总控台：群聊页，定位窗口的更早方向已失效"))
-                    Button(String(localized: "Re-anchor here",
-                                  comment: "总控台：群聊页，用保留边缘重新定位")) {
-                        feed.reanchorOlder()
-                    }
-                    .buttonStyle(.link)
-                } else if !context.olderAtEnd {
-                    Button(String(localized: "Earlier context",
-                                  comment: "总控台：群聊页，加载定位窗口更早的上下文")) {
-                        feed.loadContextOlder()
-                    }
-                    .buttonStyle(.link)
-                }
-                Spacer(minLength: 0)
-                Button(String(localized: "Return to latest",
-                              comment: "总控台：群聊页，退出定位回到最新")) {
-                    feed.returnToLatest()
-                }
-                .buttonStyle(.link)
-            }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    @ViewBuilder
     private func contextNewerBoundary(_ theme: Look.Theme) -> some View {
         if let context = feed.context {
             HStack(spacing: 8) {
@@ -697,92 +1188,6 @@ struct ControlRoomNativeChatView: View {
             .foregroundStyle(theme.textSecondary.color)
             .frame(maxWidth: .infinity)
         }
-    }
-
-    @ViewBuilder
-    private func olderBoundary(_ theme: Look.Theme) -> some View {
-        switch feed.older {
-        case .loading, .scanning:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(String(localized: "Loading earlier messages…",
-                            comment: "总控台：群聊页，向前加载更早记录"))
-                Button(String(localized: "Cancel", comment: "总控台：群聊页，取消更早记录加载")) {
-                    feed.cancelOlder()
-                }
-                .buttonStyle(.link)
-            }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .frame(maxWidth: .infinity)
-        case .atEnd:
-            boundaryText(String(localized: "You have reached the earliest message.",
-                                comment: "总控台：群聊页，已到最早记录"), theme: theme)
-        case .gap:
-            HStack(spacing: 8) {
-                Text(String(localized: "Some earlier records could not be read.",
-                            comment: "总控台：群聊页，更早记录有损坏"))
-                if feed.canLoadOlder {
-                    Button(String(localized: "Continue", comment: "总控台：群聊页，继续加载")) {
-                        feed.loadOlder()
-                    }
-                    .buttonStyle(.link)
-                }
-            }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .frame(maxWidth: .infinity)
-        case .cancelled:
-            HStack(spacing: 8) {
-                Text(String(localized: "Loading earlier messages was cancelled.",
-                            comment: "总控台：群聊页，更早记录加载被取消"))
-                if feed.canLoadOlder {
-                    Button(String(localized: "Continue", comment: "总控台：群聊页，继续加载")) {
-                        feed.loadOlder()
-                    }
-                    .buttonStyle(.link)
-                }
-            }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .frame(maxWidth: .infinity)
-        case let .failed(why):
-            HStack(spacing: 8) {
-                Text(String(localized: "Could not load earlier messages (\(why)).",
-                            comment: "总控台：群聊页，更早记录加载失败"))
-                if feed.canLoadOlder {
-                    Button(String(localized: "Try Again", comment: "总控台：群聊页，读取失败后的重试按钮")) {
-                        feed.loadOlder()
-                    }
-                    .buttonStyle(.link)
-                }
-            }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .frame(maxWidth: .infinity)
-        case .idle:
-            if feed.canLoadOlder {
-                Button(String(localized: "Load earlier messages",
-                              comment: "总控台：群聊页，主动加载更早记录")) {
-                    feed.loadOlder()
-                }
-                .buttonStyle(.link)
-                .font(.system(size: Look.Font.min))
-                .frame(maxWidth: .infinity)
-            }
-        }
-    }
-
-    private func boundaryText(_ text: String, theme: Look.Theme) -> some View {
-        HStack(spacing: 8) {
-            line(theme)
-            Text(text)
-                .font(.system(size: Look.Font.min))
-                .foregroundStyle(theme.textTertiary.color)
-                .fixedSize()
-            line(theme)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     private func line(_ theme: Look.Theme) -> some View {
@@ -839,19 +1244,39 @@ struct ControlRoomNativeChatView: View {
         .padding(.vertical, 2)
     }
 
+    /// **A located page**: its window is another map, and its own way out is
+    /// a different action from "scroll to the bottom of this one". The
+    /// context arrives a moment after the locate, so the anchor counts too.
+    private var isLocated: Bool {
+        feed.context != nil || feed.locatedAnchor != nil
+    }
+
     private func jumpPill(_ theme: Look.Theme) -> some View {
-        Button {
+        let located = isLocated
+        return Button {
             // The person asked for the bottom: an explicit intent, not a
             // scroll position this view guessed.
             newBelow = false
+            if located {
+                // **Back to the live conversation.** A located window is
+                // another map; scrolling to its end is not "latest". The
+                // feed replaces the window, the index bar starts again on
+                // the new map, and the view follows the tail from there.
+                atBottom = true
+                feed.returnToLatest()
+            }
             requestFollow()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.down")
-                Text(newBelow
-                    ? String(localized: "New messages · jump to latest",
-                             comment: "总控台：群聊页，有新消息且不在底部")
-                    : String(localized: "Jump to latest", comment: "总控台：群聊页，回到最新"))
+                Text(located
+                    ? String(localized: "Return to latest",
+                             comment: "总控台：群聊页，退出定位回到最新")
+                    : newBelow
+                        ? String(localized: "New messages · jump to latest",
+                                 comment: "总控台：群聊页，有新消息且不在底部")
+                        : String(localized: "Jump to latest",
+                                 comment: "总控台：群聊页，回到最新"))
             }
             .font(.system(size: Look.Font.min))
             .foregroundStyle(theme.text.color)
@@ -897,7 +1322,9 @@ final class ControlRoomChatScrollHandle: ObservableObject {
     /// `ProcessInfo.processInfo.systemUptime`'s clock -- the same clock the
     /// view reads it with, so no event timestamp crosses a clock here.
     private(set) var lastWheelAt: TimeInterval = 0
-    private static let wheelWindow: TimeInterval = 0.3
+    /// The window a wheel still counts as "the reader is moving". Also the
+    /// wait before a restore the hand interrupted is taken back.
+    static let wheelWindow: TimeInterval = 0.3
 
     /// Whether a wheel is moving this list now, or did within the window a
     /// bounds callback arrives in.
@@ -953,6 +1380,10 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
     var onAttach: (Bool) -> Void
     var onVisible: (Bool) -> Void
     var onUserScroll: (() -> Void)?
+    /// The live scroll ended (fingers lifted). **Not the same as the hand
+    /// having left the list**: momentum keeps moving it, so the view checks
+    /// the wheel window before doing anything.
+    var onUserScrollEnd: (() -> Void)?
     var report: (CGFloat, CGFloat, CGFloat) -> Void
 
     func makeNSView(context: Context) -> Probe {
@@ -961,6 +1392,7 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
         probe.onAttach = onAttach
         probe.onVisible = onVisible
         probe.onUserScroll = onUserScroll
+        probe.onUserScrollEnd = onUserScrollEnd
         probe.report = report
         return probe
     }
@@ -970,6 +1402,7 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
         view.onAttach = onAttach
         view.onVisible = onVisible
         view.onUserScroll = onUserScroll
+        view.onUserScrollEnd = onUserScrollEnd
         view.report = report
     }
 
@@ -982,6 +1415,7 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
         var onAttach: ((Bool) -> Void)?
         var onVisible: ((Bool) -> Void)?
         var onUserScroll: (() -> Void)?
+        var onUserScrollEnd: (() -> Void)?
         var report: ((CGFloat, CGFloat, CGFloat) -> Void)?
         private var observer: NSObjectProtocol?
         private var occlusionObserver: NSObjectProtocol?
@@ -1039,7 +1473,7 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
                 ) { [weak self] _ in
                     guard let self else { return }
                     self.handle?.userScrolling = value
-                    if value { self.onUserScroll?() }
+                    if value { self.onUserScroll?() } else { self.onUserScrollEnd?() }
                 })
             }
             // **A plain mouse wheel does not always start a live scroll**,
@@ -1394,11 +1828,19 @@ struct ControlRoomNativeChatPane: View {
                     .padding(.top, 8)
                     .textSelection(.enabled)
             }
-            if feed.rows.isEmpty {
-                placeholder
-            } else {
-                ControlRoomNativeChatView(
-                    feed: feed, locatedHit: locatedHit, onReference: onReference)
+            // **The list exists even with no rows.** Choosing between the
+            // list and a placeholder destroys `ControlRoomNativeChatView`
+            // when a reload clears the window (`reloadClearingGap` →
+            // `clearWindow`), taking the keeper, the frames and the scroll
+            // handle with it -- and the new view's `onAppear` then drops to
+            // the bottom. That is one of the two ways the blank chat was
+            // made, and it also made loading visible as a remount. The empty
+            // states are drawn *over* the list instead.
+            ControlRoomNativeChatView(
+                feed: feed, locatedHit: locatedHit, onReference: onReference
+            )
+            .overlay(alignment: .topLeading) {
+                if feed.rows.isEmpty { placeholder }
             }
             if feed.canReload {
                 Button {

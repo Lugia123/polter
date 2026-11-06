@@ -59,10 +59,10 @@ final class ControlRoomChatTimerScheduler: ControlRoomChatScheduling {
 /// **first** anchor this feed saw for that message, which is what a list
 /// needs to be stable across the identity becoming canonical.
 ///
-/// **What is kept is bounded**: the newest 500 messages and 4 MiB of their
-/// text and identity strings (the contract's own boundary, not the process's
-/// memory). Dropping a message from the front drops its aliases too, so the
-/// windows behind them cannot grow with the night.
+/// **What is kept is bounded**: `retainedLimit` rows and 32 MiB of their
+/// text and identity strings. Past a ceiling whole blocks leave from one
+/// end -- never a row out of the middle -- and a dropped message takes its
+/// aliases with it, so the maps behind them cannot grow with the night.
 ///
 /// **Not drawing, not scrolling, not Markdown.** Those are later slices'.
 final class ControlRoomChatFeed: ObservableObject {
@@ -115,9 +115,14 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     /// Where loading further back stands (DESIGN-v2 §4/§14; the contract's
-    /// budget/at_end/gap states). Every one of these is drawn differently;
-    /// an empty page that still has a resume token is `.scanning`, never
-    /// "the beginning of the log".
+    /// budget/at_end/gap states). **None of these is a drawing**: the page's
+    /// top edge no longer shows loading, cancellation or failure, because
+    /// loading an older page is invisible -- the scroll bar's total (the
+    /// number of rows loaded) is the only evidence of it. What is left here
+    /// are its three jobs: refuse a second request while one is out, keep a
+    /// failure askable again from the same token, and answer
+    /// `canLoadOlder`. An empty page that still has a resume token is
+    /// `.scanning`, never "the beginning of the log".
     enum Older: Equatable {
         /// No page is out. `canLoadOlder` says whether one may be asked for.
         case idle
@@ -154,25 +159,63 @@ final class ControlRoomChatFeed: ObservableObject {
     static let historyPollDelay: TimeInterval = 0.2
     /// How long a live read that said `more` waits before its catch-up.
     static let catchUpDelay: TimeInterval = 0.2
-    /// The window: the newest this many messages ...
-    static let windowLimit = 500
+
+    /// **The two chunk sizes, in one place.** The first screen asks for
+    /// `firstChunk`; each upward page asks for `olderChunk`. The eviction
+    /// block is the same 100 as `firstChunk` on purpose -- a page leaves in
+    /// the units it was read in. These two numbers decide how much is asked
+    /// for anywhere in this file; when Polter grows a chat configuration
+    /// section, this is where its two values land.
+    static let firstChunk = 100
+    static let olderChunk = 50
+    /// The context page's own size. **Not `olderChunk`**: a located
+    /// window's page is a different question from the plain resume page and
+    /// the two may be tuned apart (they happen to start equal). The search
+    /// page's limit lives in `ControlRoomChatSearchFeed`, where its request
+    /// is built, and is likewise its own number.
+    static let contextChunk = 50
+
+    /// **How much of the conversation one showing keeps.** A chat page is a
+    /// fixed window onto an endless stream: the window never says how much
+    /// is behind it, so the old 500-row bound (a screen's worth, kept as
+    /// though it were the document's own end) is gone. Five thousand rows is
+    /// the row ceiling; past it rows leave **one whole block at a time, from
+    /// the end farthest from the reader**, so what is kept stays one
+    /// contiguous run and the scroll bar's total (`rows.count`) is the only
+    /// thing that changes.
+    ///
+    /// **The row ceiling alone would not bound memory.** A record on disk is
+    /// at most ~64 KiB (`ChatLog.zig`), so five thousand rows could hold
+    /// ~312 MiB of text -- and `aroundVerified` admits records up to 96 KiB.
+    /// That is exactly why the byte ceiling below stays: it is the bound
+    /// that is actually felt.
+    static let retainedLimit = 5000
     /// ... and at most this many bytes of their text and identity strings.
-    static let windowBytes = 4 * 1024 * 1024
-    /// The begin request's page size.
-    static let historyLimit = 50
-    /// How many rows on each side of the reader's own row the window keeps
-    /// when it has to drop something, and how many of the newest it never
-    /// drops. **Dropping the oldest is wrong while somebody reads history**:
-    /// the page just asked for is the oldest one, and it would go before it
-    /// was ever seen. The view tells the feed which message its viewport
-    /// starts on (`reading(anchor:)`); `trim` keeps that neighbourhood and
-    /// the live tail, and drops outside them.
-    static let keepAboveReader = 100
-    static let keepBelowReader = 100
-    static let keepLiveTail = 50
+    /// **Thirty-two megabytes, the same number the Windows host keeps**: a
+    /// 4 MiB ceiling would fill long before five thousand rows in any group
+    /// whose messages average more than 800 bytes, which would make
+    /// `retainedLimit` a promise the byte bound never lets be kept. The
+    /// structure behind the rows (`byAnchor`, `byAlias`, `aliasesOf`) costs
+    /// roughly another megabyte or two at this size. Over the byte ceiling,
+    /// whole blocks go the same way.
+    static let retainedBytes = 32 * 1024 * 1024
+
     /// An empty budget page carries the scan on after this long. A delay and
     /// not a recursive call: the next page is a fresh scheduled turn.
     static let olderAdvanceDelay: TimeInterval = 0.05
+    /// How long a failed older page holds the top edge back before it may be
+    /// asked for again. **A failure must not become a request storm**: the
+    /// view asks for older records on every scroll event near the top, so a
+    /// failure that is re-askable at once is one request per event while the
+    /// core keeps refusing. This also covers a located window's context
+    /// cursor, whose failures end in `failLocate`.
+    static let olderFailureCooldown: TimeInterval = 2
+    /// How many empty `budget` pages the scan may carry itself through
+    /// before it stops. The contract lets a quiet range take more than one
+    /// page, but a core that keeps answering "empty, here is another token"
+    /// must not be followed for ever. The resume token stays in
+    /// `historyTail`, so the person's next ask continues from it.
+    static let maxAutomaticAdvances = 8
 
     @Published private(set) var rows: [Row] = []
     @Published private(set) var state: Load = .idle
@@ -185,7 +228,9 @@ final class ControlRoomChatFeed: ObservableObject {
     /// bootstrap per visible visit and then stops here.
     @Published private(set) var canReload = false
 
-    /// Loading further back, drawn at the top of the list (DESIGN-v2 §4).
+    /// Loading further back. **Not drawn**: the view no longer turns any of
+    /// these into a row at the top of the list (DESIGN-v2 §4); see `Older`
+    /// for the three jobs this state keeps.
     @Published private(set) var older: Older = .idle
 
     /// The two cursors a search-located window carries (around/context).
@@ -202,6 +247,14 @@ final class ControlRoomChatFeed: ObservableObject {
     /// The message a search result located, for the transient highlight and
     /// the view's scroll restore.
     @Published private(set) var locatedAnchor: String?
+    /// **A locate's own event counter.** `generation` also moves for
+    /// reasons that are not a locate (a stop, a reload, a session change),
+    /// so it cannot tell the view "a locate happened again" -- and a second
+    /// locate of the same anchor, or a second failure, changes nothing else
+    /// the view can see (`locatedAnchor` nil -> nil is no change). This
+    /// moves at the start of every `locate()` call -- before it decides
+    /// whether it can run -- and again when a locate fails.
+    @Published private(set) var locateEpoch: UInt64 = 0
     /// A locate is out and has not answered yet. **A different state from
     /// `locateTrouble`**: "still asking" and "the core said no" are the two
     /// things the search panel has to tell apart (DESIGN-v2 §11.3).
@@ -229,8 +282,10 @@ final class ControlRoomChatFeed: ObservableObject {
     /// what they say, but records between them are no longer held, and the
     /// header/list draws that boundary and offers `reloadClearingGap()`.
     /// `trimmedBefore` names the first kept row when records older than it
-    /// went; `trimmedAfter` names the last kept row before a released run in
-    /// the middle (between the reading window and the live tail).
+    /// went; `trimmedAfter` names the last kept row when the newest end was
+    /// released instead (the reader was at the top loading older pages, so
+    /// the far block was the newest one). Both mark a released run of whole
+    /// blocks at an end of the kept window, never a hole in the middle.
     @Published private(set) var trimmedBefore: String?
     @Published private(set) var trimmedAfter: String?
 
@@ -239,7 +294,7 @@ final class ControlRoomChatFeed: ObservableObject {
     /// The stable identity of the message the reader's viewport starts on,
     /// as the view last said. **Trim only**: it never moves the reader and
     /// nothing is drawn from it. Nil before the view has reported one, and
-    /// then `trim` falls back to the oldest-first rule.
+    /// then `trim` treats the oldest block as the far one.
     private(set) var readingAnchor: String?
     /// How far into that message the reader was, kept with the id so a page
     /// that is shown again comes back to the same line rather than to the
@@ -252,10 +307,26 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     /// Whether a page older than the window can be asked for now. A page
-    /// already out is not asked for again: `loadOlder` refuses while
-    /// `.loading` or `.scanning`, and the list's top edge calls it on every
-    /// scroll event while the reader stays there.
+    /// already out is not asked for again: the top edge calls `loadOlder` on
+    /// every scroll event while the reader stays there, so this is what keeps
+    /// that to one request. **A failed page is not askable again until its
+    /// cooldown passes** (`olderFailureCooldown`), or a core that keeps
+    /// refusing would get one request per event.
+    ///
+    /// **A located window has its own older cursor.** `locate` clears
+    /// `historyTail`, so after a search result lands the resume token the
+    /// plain path needs is gone; the context cursor is what may still ask.
     var canLoadOlder: Bool {
+        guard !olderCoolingDown else { return false }
+        // A page already here but held for the reader's hand is still a page
+        // in flight as far as the top edge is concerned: asking again would
+        // scan the same range twice.
+        guard heldOlder == nil, heldContextOlder == nil else { return false }
+        if let context {
+            return context.olderToken != nil && !context.olderAtEnd
+                && !contextOlderStale
+                && locateJobID == nil && locateRequestID == nil
+        }
         guard historyTail?.nextToken != nil else { return false }
         switch older {
         case .loading, .scanning: return false
@@ -282,6 +353,31 @@ final class ControlRoomChatFeed: ObservableObject {
 
     /// How often the live read looks again; the tests shorten it.
     var period: TimeInterval = ControlRoomChatFeed.livePeriod
+
+    /// **How much this showing keeps.** The two static defaults are the
+    /// production ceiling; these instances are what `trim` and the
+    /// per-message `TooLarge` check actually read, so a test can reach the
+    /// edge with a handful of small messages instead of building five
+    /// thousand rows or thirty-two megabytes of text.
+    var rowLimit = ControlRoomChatFeed.retainedLimit
+    var byteLimit = ControlRoomChatFeed.retainedBytes
+
+    /// How many rows the page's viewport shows, as the view last reported.
+    /// **The feed cannot measure this**: it holds messages, not heights. The
+    /// view sets it from its own frames when it knows the real value; until
+    /// then `defaultViewportRows` stands for one ordinary chat screen.
+    var viewportRows = ControlRoomChatFeed.defaultViewportRows
+    /// ~800 pt of pane at ~50 pt per ordinary row.
+    static let defaultViewportRows = 16
+
+    /// The `before`/`after` a located window asks for. **One and a half
+    /// viewports each way**: the new page has no boundary strip saying
+    /// "there is more below", so a 10+10 window would leave half the screen
+    /// empty until the person scrolls. At least 10 keeps the old minimum;
+    /// the core's own hard limit is 99 a side (`aroundBegin`).
+    var locateWindowRows: Int {
+        min(99, max(10, Int((Double(viewportRows) * 1.5).rounded(.up))))
+    }
 
     private let ask: Ask
     private let scheduler: ControlRoomChatScheduling
@@ -354,6 +450,25 @@ final class ControlRoomChatFeed: ObservableObject {
     /// from inside the handler that read the page: a long quiet range would
     /// otherwise be one unbroken recursion on the page's thread.
     private var olderAdvanceToken: UUID?
+    /// A failed older page's cooling-off. While it stands, `canLoadOlder` is
+    /// false and `loadOlder` refuses: the top edge must not turn one refusal
+    /// into one request per scroll event.
+    private var olderCoolingDown = false
+    private var olderCooldownToken: UUID?
+    /// Empty `budget` pages carried on since the last real ask, against
+    /// `maxAutomaticAdvances`. A person's request resets it.
+    private var automaticAdvances = 0
+    /// The view's hand is on the list, as `readerActive(_:)` last said.
+    private var readerIsActive = false
+    /// A page that arrived while it was. Nothing about it is applied --
+    /// not one row, not the tail, not the `older` word -- until
+    /// `readerIdle()`, and the generation it arrived under is kept so a
+    /// lifecycle change meanwhile drops it.
+    private var heldOlder: H.Ready?
+    private var heldOlderGeneration: UInt64 = 0
+    private var heldContextOlder: ControlRoomChatContext.Context?
+    private var heldContextJobID: String?
+    private var heldContextGeneration: UInt64 = 0
     /// The locate job: around first, then one context page at a time.
     private var locateJobID: String?
     private var locateRequestID: String?
@@ -385,6 +500,7 @@ final class ControlRoomChatFeed: ObservableObject {
         if let catchUpToken { scheduler.cancel(catchUpToken) }
         if let olderPollToken { scheduler.cancel(olderPollToken) }
         if let olderRetryToken { scheduler.cancel(olderRetryToken) }
+        if let olderCooldownToken { scheduler.cancel(olderCooldownToken) }
         cancelJob()
     }
 
@@ -424,6 +540,7 @@ final class ControlRoomChatFeed: ObservableObject {
         // this scan's.
         older = .idle
         olderAutomatic = false
+        automaticAdvances = 0
         historyTail = nil
         syncMarkdown()
         requestMetadata(clear: true)
@@ -435,6 +552,7 @@ final class ControlRoomChatFeed: ObservableObject {
     private func armOlderAfterResume() {
         if older == .loading || older == .scanning { older = .cancelled }
         olderAutomatic = false
+        automaticAdvances = 0
         syncMarkdown()
     }
 
@@ -495,6 +613,7 @@ final class ControlRoomChatFeed: ObservableObject {
         trouble = nil
         older = .idle
         olderAutomatic = false
+        automaticAdvances = 0
         historyTail = nil
         context = nil
         locatedAnchor = nil
@@ -575,6 +694,7 @@ final class ControlRoomChatFeed: ObservableObject {
         historyTail = nil
         older = .idle
         olderAutomatic = false
+        automaticAdvances = 0
         metadata = .idle
         context = nil
         locatedAnchor = nil
@@ -588,7 +708,7 @@ final class ControlRoomChatFeed: ObservableObject {
         syncMarkdown()
     }
 
-    /// A fresh bootstrap: new `request_id`, `limit` 50 and no resume token.
+    /// A fresh bootstrap: new `request_id`, `firstChunk` and no resume token.
     /// A retry of the same begin reuses the id and parameters.
     private func startBootstrap() {
         bootstrapID = ControlRoomChatRequest.newRequestID()
@@ -603,7 +723,7 @@ final class ControlRoomChatFeed: ObservableObject {
         guard started, let group, let id = bootstrapID else { return }
         let generation = self.generation
         guard let request = try? ControlRoomChatRequest.begin(
-            group: group, requestID: id, limit: Self.historyLimit
+            group: group, requestID: id, limit: Self.firstChunk
         ) else {
             stopWithError("BadParams")
             return
@@ -800,6 +920,7 @@ final class ControlRoomChatFeed: ObservableObject {
         replacing = true
         older = .idle
         olderAutomatic = false
+        automaticAdvances = 0
         historyTail = nil
         context = nil
         locatedAnchor = nil
@@ -904,14 +1025,26 @@ final class ControlRoomChatFeed: ObservableObject {
             // (contract §"Ready"): the scan used its 2 MiB without finding a
             // record and named where to carry on. Asking again from that
             // token is what reads the first screen at all for a large log
-            // whose recent range is quiet.
-            if page.messages.isEmpty, page.stop == .budget, let token = page.nextToken {
-                if rows.isEmpty {
-                    state = .loading
-                } else if case .loading = state {
-                    state = .ready
+            // whose recent range is quiet. `olderAdvance` says where that
+            // stops (damage, a restarted range, or too many empty pages).
+            if let advance = olderAdvance(page) {
+                switch advance {
+                case let .carryOn(token):
+                    if rows.isEmpty {
+                        state = .loading
+                    } else if case .loading = state {
+                        state = .ready
+                    }
+                    scheduleOlderAdvance(token: token, generation: generation)
+                case let .stop(why):
+                    if let why {
+                        failOlder(why)
+                    } else {
+                        settleOlder(page)
+                        settleFirstScreen(page)
+                        firstScreenReady = true
+                    }
                 }
-                scheduleOlderAdvance(token: token, generation: generation)
                 return
             }
             settleOlder(page)
@@ -958,10 +1091,61 @@ final class ControlRoomChatFeed: ObservableObject {
         readingOffset = offset
     }
 
-    /// The person asked for what came before the window (DESIGN-v2 §4: the
-    /// top edge's own request). A page already out is not asked for again.
+    // MARK: - The reader's hand (task 3003, both hosts' model)
+
+    /// **The view's hand is on the list.** `true` while it is; `false` alone
+    /// does not mean the hand is off -- the view runs its own ~0.3 s quiet
+    /// timer (no bounds change), freezes its anchor, and then calls
+    /// `readerIdle()`. **Not `didEndLiveScroll`**: a finger resting still on
+    /// the trackpad never lifts, and an older page inserted above the
+    /// viewport moves the document coordinate at that instant -- a restore
+    /// can fix the end position, not the jump during the gesture.
+    func readerActive(_ active: Bool) {
+        readerIsActive = active
+    }
+
+    /// The hand is off and the view has frozen its anchor: land the page
+    /// that arrived while it was on, in **one** rows change. A no-op when
+    /// nothing is held.
+    func readerIdle() {
+        readerIsActive = false
+        if let page = heldContextOlder {
+            heldContextOlder = nil
+            let jobID = heldContextJobID
+            heldContextJobID = nil
+            if started, heldContextGeneration == generation, let jobID {
+                applyContext(page, jobID: jobID)
+            }
+        }
+        if let page = heldOlder {
+            heldOlder = nil
+            if started, heldOlderGeneration == generation {
+                finishContinuation(page, generation: generation)
+            }
+        }
+    }
+
+    /// The person (or the view near its top edge) asked for what came
+    /// before the window. A page already out is not asked for again, so
+    /// calling this on every scroll event sends one request, not twenty.
+    ///
+    /// **One entry for both kinds of window.** A located window (`context !=
+    /// nil`) has no `historyTail` -- `locate` cleared it -- so the plain
+    /// resume token would do nothing there; the same gesture routes to the
+    /// context cursor instead. The view can call this at the top edge
+    /// without knowing which kind of window it is showing.
+    ///
+    /// **Loading older is not a UI event.** It adds rows and moves `older`;
+    /// it never touches `state`: a page that already has rows stays
+    /// `.ready` while an older page is out, `.loading` belongs to a first
+    /// screen that has nothing to draw yet.
     func loadOlder() {
-        guard started, group != nil, let token = historyTail?.nextToken else { return }
+        guard started, group != nil, !olderCoolingDown else { return }
+        if context != nil {
+            loadContextOlder()
+            return
+        }
+        guard let token = historyTail?.nextToken else { return }
         switch older {
         case .loading, .scanning: return
         default: break
@@ -992,6 +1176,7 @@ final class ControlRoomChatFeed: ObservableObject {
     private func beginContinuation(token: String, automatic: Bool) {
         guard started, group != nil, historyTail?.nextToken == token else { return }
         olderAutomatic = automatic
+        if !automatic { automaticAdvances = 0 }
         olderRequestID = ControlRoomChatRequest.newRequestID()
         olderToken = token
         olderJobID = nil
@@ -1005,7 +1190,7 @@ final class ControlRoomChatFeed: ObservableObject {
         else { return }
         let generation = self.generation
         guard let request = try? ControlRoomChatRequest.begin(
-            group: group, requestID: requestID, limit: Self.historyLimit, resumeToken: token
+            group: group, requestID: requestID, limit: Self.olderChunk, resumeToken: token
         ) else {
             failOlder("BadParams")
             return
@@ -1147,33 +1332,21 @@ final class ControlRoomChatFeed: ObservableObject {
                 return
             }
             if session == nil { session = page.session }
-            mergeHistory(page.messages)
-            historyTail = HistoryTail(
-                stop: page.stop,
-                nextToken: page.nextToken,
-                restarted: page.restarted,
-                gap: page.gap
-            )
             self.olderJobID = nil
-            trouble = nil
-            // **An empty budget page is progress.** The contract says so in
-            // one line, and this is the host half of it: continue from the
-            // token it named, but never from the token already used -- that
-            // would scan the same range for ever and look like a slow disk.
-            if page.messages.isEmpty, page.stop == .budget, let next = page.nextToken {
-                guard next != olderToken else {
-                    failOlder("the history scan stopped advancing")
-                    return
-                }
-                scheduleOlderAdvance(token: next, generation: generation)
+            // **The page lands only when the hand is off the list.** An
+            // inserted row above the viewport moves the document coordinate
+            // at that instant; a restore can fix the end position, not the
+            // jump during the gesture. Everything about the page waits --
+            // its messages, the new `historyTail`, the `older` word -- and
+            // `older` stays `.loading`/`.scanning` so no second request can
+            // go out while it is held. The view freezes its own anchor
+            // first and then calls `readerIdle()`.
+            if readerIsActive {
+                heldOlder = page
+                heldOlderGeneration = generation
                 return
             }
-            settleOlder(page)
-            olderToken = nil
-            if case .loading = state {
-                settleFirstScreen(page)
-                firstScreenReady = true
-            }
+            finishContinuation(page, generation: generation)
         case let .failed(failure):
             guard generation == self.generation else {
                 if let named = failure.jobID { cancelUnaccepted(named) }
@@ -1192,12 +1365,58 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
+    /// Land a continuation page: merge it, take its tail, settle the loader.
+    /// **One call is one rows change** -- `mergeHistory` ends with a single
+    /// `syncMarkdown` -- which is what lets `readerIdle()` put the whole
+    /// held page in at once.
+    private func finishContinuation(_ page: H.Ready, generation: UInt64) {
+        mergeHistory(page.messages)
+        historyTail = HistoryTail(
+            stop: page.stop,
+            nextToken: page.nextToken,
+            restarted: page.restarted,
+            gap: page.gap
+        )
+        trouble = nil
+        // **An empty budget page is progress.** The contract says so in one
+        // line, and this is the host half of it: continue from the token it
+        // named, but never from the token already used -- that would scan
+        // the same range for ever and look like a slow disk. `olderAdvance`
+        // also stops at damage, at a restarted range, and after too many
+        // empty pages in a row.
+        if let advance = olderAdvance(page) {
+            switch advance {
+            case let .carryOn(next):
+                guard next != olderToken else {
+                    failOlder("the history scan stopped advancing")
+                    return
+                }
+                scheduleOlderAdvance(token: next, generation: generation)
+            case let .stop(why):
+                if let why {
+                    failOlder(why)
+                } else {
+                    settleOlder(page)
+                    olderToken = nil
+                }
+            }
+            return
+        }
+        settleOlder(page)
+        olderToken = nil
+        if case .loading = state {
+            settleFirstScreen(page)
+            firstScreenReady = true
+        }
+    }
+
     /// The state `page` leaves the older loader in. **Completeness is not
     /// `stop == atEnd` alone**: the contract says only `at_end && !gap &&
     /// !restarted` is complete. A page that says `at_end` over damaged
     /// records, or after its captured range restarted, is a gap -- it must
     /// not draw "已到最早记录" and it must not draw an empty chat.
     private func settleOlder(_ page: H.Ready) {
+        automaticAdvances = 0
         if page.gap || page.restarted {
             older = page.nextToken == nil ? .gap : .idle
             return
@@ -1229,8 +1448,34 @@ final class ControlRoomChatFeed: ObservableObject {
     /// Carry an empty `budget` page on from `token`, **after this turn**.
     /// One scheduled look per page, never a call from inside the handler
     /// that read the last one.
+    /// What an empty `budget` page may do next, or nil when it is a real
+    /// page. **The termination rules are explicit**:
+    ///
+    /// - a page over damaged records, or after its captured range restarted,
+    ///   is **not** carried on: `settleOlder` records the gap, and the token
+    ///   stays in `historyTail` for a fresh ask;
+    /// - a clean empty page is progress, but only up to
+    ///   `maxAutomaticAdvances` in a row. Past that the scan stops with a
+    ///   reason; the same token is never retried by the scan itself, and the
+    ///   person's next ask starts a new run with a fresh budget.
+    private enum OlderAdvance {
+        case carryOn(String)
+        case stop(why: String?)
+    }
+
+    private func olderAdvance(_ page: H.Ready) -> OlderAdvance? {
+        guard page.messages.isEmpty, page.stop == .budget, let token = page.nextToken
+        else { return nil }
+        if page.gap || page.restarted { return .stop(why: nil) }
+        guard automaticAdvances < Self.maxAutomaticAdvances else {
+            return .stop(why: "the history scan kept advancing over empty pages")
+        }
+        return .carryOn(token)
+    }
+
     private func scheduleOlderAdvance(token: String, generation: UInt64) {
         guard olderAdvanceToken == nil, started else { return }
+        automaticAdvances += 1
         older = .scanning
         olderAdvanceToken = scheduler.after(Self.olderAdvanceDelay) { [weak self] in
             self?.olderAdvanceToken = nil
@@ -1241,7 +1486,9 @@ final class ControlRoomChatFeed: ObservableObject {
 
     /// A page that could not be read. The resume token stays in
     /// `historyTail`, so the person's "try again" asks for the same range
-    /// rather than starting over.
+    /// rather than starting over -- **after the cooldown**: an immediately
+    /// re-askable failure is one request per scroll event while the core
+    /// keeps refusing.
     private func failOlder(_ why: String) {
         olderJobID = nil
         olderRequestID = nil
@@ -1251,6 +1498,28 @@ final class ControlRoomChatFeed: ObservableObject {
             state = rows.isEmpty ? .failed(why) : .ready
             canReload = true
         }
+        holdOlderBack()
+    }
+
+    /// Stop the top edge asking again for one cooldown period. Scheduled on
+    /// the feed's own clock, so a test steps it instead of waiting.
+    private func holdOlderBack() {
+        guard olderCooldownToken == nil else { return }
+        let generation = self.generation
+        olderCoolingDown = true
+        olderCooldownToken = scheduler.after(Self.olderFailureCooldown) { [weak self] in
+            self?.olderCooldownToken = nil
+            guard let self, self.generation == generation else { return }
+            self.olderCoolingDown = false
+        }
+    }
+
+    /// A new lifecycle (or the person cancelling) is not held back by a
+    /// failure from the old one.
+    private func clearOlderCooldown() {
+        if let olderCooldownToken { scheduler.cancel(olderCooldownToken) }
+        olderCooldownToken = nil
+        olderCoolingDown = false
     }
 
     /// A reply named a job this feed will not adopt. **Cancel it, unless the
@@ -1300,6 +1569,12 @@ final class ControlRoomChatFeed: ObservableObject {
 
     func locate(anchor: String, location: String?) {
         guard started, let group else { return }
+        // **The view's land-and-highlight effect is keyed on this**, not on
+        // `generation` (which also moves for a stop, a reload and a session
+        // change) and not on the anchor's value (a second locate of the same
+        // result must land again). A successful locate does not move it
+        // again, or one locate would land twice.
+        locateEpoch &+= 1
         cancelJob()
         cancelScheduling()
         generation &+= 1
@@ -1349,10 +1624,20 @@ final class ControlRoomChatFeed: ObservableObject {
         restartLoad(clearingGap: true)
     }
 
+    /// One context page in either direction. **Idempotent like the plain
+    /// older load**: while a begin or a poll is out (`locateRequestID` /
+    /// `locateJobID`) the next call refuses, so the top edge's per-event call
+    /// is one request. **A body with rows keeps its `state`**: the around
+    /// page settled it, and a context page only adds rows; the one place a
+    /// state word is written is the `case .loading` guard in `handleContext`,
+    /// which cannot fire for a body that already has rows. A failure holds
+    /// both directions back for `olderFailureCooldown` (`failLocate`).
     func loadContextOlder() {
         guard let context, let token = context.olderToken,
               !context.olderAtEnd, !contextOlderStale,
-              locateJobID == nil, started, let group
+              locateJobID == nil, locateRequestID == nil,
+              heldContextOlder == nil, heldOlder == nil,
+              !olderCoolingDown, started, let group
         else { return }
         contextOlderStale = false
         sendContextBegin(group: group, token: token, direction: .older)
@@ -1361,7 +1646,8 @@ final class ControlRoomChatFeed: ObservableObject {
     func loadContextNewer() {
         guard let context, let token = context.newerToken,
               !context.newerAtEnd, !contextNewerStale,
-              locateJobID == nil, started, let group
+              locateJobID == nil, locateRequestID == nil,
+              !olderCoolingDown, started, let group
         else { return }
         contextNewerStale = false
         sendContextBegin(group: group, token: token, direction: .newer)
@@ -1373,7 +1659,9 @@ final class ControlRoomChatFeed: ObservableObject {
         locateLocation = location
         let generation = self.generation
         guard let request = try? ControlRoomChatRequest.aroundBegin(
-            group: group, requestID: requestID, anchor: anchor, location: location
+            group: group, requestID: requestID, anchor: anchor,
+            before: locateWindowRows, after: locateWindowRows,
+            location: location
         ) else {
             failLocate("BadParams")
             return
@@ -1545,7 +1833,8 @@ final class ControlRoomChatFeed: ObservableObject {
         let generation = self.generation
         guard let requestID = locateRequestID,
               let request = try? ControlRoomChatRequest.contextBegin(
-                group: group, requestID: requestID, resumeToken: token
+                group: group, requestID: requestID, resumeToken: token,
+                limit: Self.contextChunk
               )
         else {
             failLocate("BadParams")
@@ -1601,6 +1890,24 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     private func handleContext(_ page: ControlRoomChatContext.Context, jobID: String) {
+        // **Only the upward page is held.** A newer page appends below the
+        // viewport, which moves nothing above it; an older page inserts
+        // rows above the reader, and that is the coordinate jump the hold is
+        // for. Everything about the held page waits -- rows, the context
+        // cursors, the staleness words -- until `readerIdle()`.
+        if page.direction == .older, readerIsActive {
+            heldContextOlder = page
+            heldContextJobID = jobID
+            heldContextGeneration = generation
+            locateJobID = nil
+            return
+        }
+        applyContext(page, jobID: jobID)
+    }
+
+    /// Land a context page: merge (older) or append (newer), take both
+    /// cursors, and say which edge was released.
+    private func applyContext(_ page: ControlRoomChatContext.Context, jobID: String) {
         guard page.page.jobID == jobID, page.page.group == group,
               session == nil || page.page.session == session
         else {
@@ -1655,12 +1962,33 @@ final class ControlRoomChatFeed: ObservableObject {
         // page's failure arrives after the around window did, with
         // `locating` already false, and the window it was reading is still
         // the right one.
-        if locating { locatedAnchor = nil }
+        if locating {
+            locatedAnchor = nil
+            // **Only a locate's own failure moves the epoch.** This method
+            // also carries a located window's context failures, and those
+            // arrive with `locatedAnchor` still standing and `locating`
+            // already false: bumping there would make the view treat a
+            // failed "older context" page as a new locate and drag the
+            // reader back to the search target. A second failure of the
+            // same anchor must still be observable, so it moves here.
+            locateEpoch &+= 1
+        }
         locateTrouble = why
         locating = false
         locateJobID = nil
         locateRequestID = nil
         cancelLocateScheduling()
+        // **The live read comes back.** `locate()` cancelled the schedule at
+        // its first line; a locate that fails must not leave the group
+        // without a live read -- after a search jump became the main path,
+        // one failure would mean this group never shows a new message again,
+        // which reads as "nobody is talking". `armLive` is idempotent (it
+        // does nothing while a token stands).
+        armLive()
+        // A located window's cursor is loaded from the same top edge as the
+        // plain one, so its failures need the same cooling-off: otherwise
+        // every scroll event re-asks a core that has already refused.
+        holdOlderBack()
     }
 
     private func cancelLocateUnaccepted(_ jobID: String) {
@@ -1756,6 +2084,15 @@ final class ControlRoomChatFeed: ObservableObject {
         )
     }
 
+    /// A held page belongs to the lifecycle it arrived in; a stop, a reload,
+    /// a session change or a new locate drops it rather than landing old
+    /// rows into a world that has moved on.
+    private func clearHeldPages() {
+        heldOlder = nil
+        heldContextOlder = nil
+        heldContextJobID = nil
+    }
+
     private func cancelScheduling() {
         if let liveToken { scheduler.cancel(liveToken) }
         if let pollToken { scheduler.cancel(pollToken) }
@@ -1773,15 +2110,20 @@ final class ControlRoomChatFeed: ObservableObject {
         olderAdvanceToken = nil
         locatePollToken = nil
         locateRetryToken = nil
+        // A cooldown belongs to the lifecycle that failed; the next one
+        // starts unheld.
+        clearOlderCooldown()
     }
 
     /// Best effort, once: a job whose answer nobody will read is still a job
     /// scanning the disk. A cancel that fails is not reported -- it must not
     /// raise a notification or merge an old page.
     private func cancelJob() {
-        // **Every job.** `stop`/`deinit` cancel the bootstrap, the older
-        // scan and the locate job together: one left running is a job
-        // scanning a disk for an answer nobody will draw.
+        // **Every job, and every page held for a gesture that belongs to a
+        // lifecycle already gone.** `stop`/`deinit` cancel the bootstrap,
+        // the older scan and the locate job together: one left running is a
+        // job scanning a disk for an answer nobody will draw.
+        clearHeldPages()
         cancelOlderJob()
         cancelLocateJob()
         guard let jobID else { return }
@@ -1819,7 +2161,7 @@ final class ControlRoomChatFeed: ObservableObject {
     /// does not fit the window at all.
     @discardableResult
     private func absorb(_ m: D.Message) -> Bool {
-        if Self.cost(m) > Self.windowBytes {
+        if Self.cost(m) > byteLimit {
             stopWithError("TooLarge")
             return false
         }
@@ -1890,7 +2232,7 @@ final class ControlRoomChatFeed: ObservableObject {
     /// Older messages: each page is old→new and goes in front of everything
     /// already held, overlapping rows updated where they are.
     private func mergeHistory(_ messages: [D.Message]) {
-        if messages.contains(where: { Self.cost($0) > Self.windowBytes }) {
+        if messages.contains(where: { Self.cost($0) > byteLimit }) {
             stopWithError("TooLarge")
             return
         }
@@ -1938,52 +2280,86 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
-    /// The window's edge. **Not simply the oldest row**: while somebody is
-    /// reading history the oldest row is the page they just asked for. The
-    /// reader's own row and a window either side of it stay; the newest
-    /// messages stay as a tail of their own; what goes is outside both.
+    /// The window's edge. **A row leaves only with its whole block, and only
+    /// from an end** -- never one picked out of the middle.
+    ///
+    /// The old rule kept a window either side of the reader *and* a live
+    /// tail, and cut the hole between them; at 500 rows that was the only
+    /// way to hold both ends of a page the reader had just asked for, and it
+    /// drew as two lists with a missing run in between. The ceiling is now
+    /// `retainedLimit` -- a hundred screens of messages -- so the window no
+    /// longer has to be split: the block that goes is the one farthest from
+    /// the reader. That is the oldest block, **except** while the reader's
+    /// own row is inside it: then the oldest block is the page `loadOlder`
+    /// just put in front of them, and the newest block is the far one. What
+    /// is kept is one contiguous run either way, and `trimmedBefore` /
+    /// `trimmedAfter` say which end was released, so the list draws an
+    /// honest boundary rather than a false neighbour.
+    ///
+    /// **The consequence is intended**: a reader parked in history can have
+    /// the newest block evicted under them, so "back to latest" cannot lean
+    /// on the newest rows still being there -- `returnToLatest()` starts the
+    /// body again from the newest records instead.
+    ///
+    /// **The window is never emptied.** The byte ceiling can be exceeded by
+    /// a handful of huge messages while fewer than two blocks are held;
+    /// dropping the only block would leave `rows == []` under a `.ready`
+    /// state, which the view can only draw as a header over a blank list.
+    /// When the far end has nothing to give that is not the reader's own
+    /// block, the ceiling yields and the rows stay. With 64 KiB records and
+    /// the 32 MiB ceiling this is a defensive invariant rather than a path
+    /// the contract can reach, and it stays because the row ceiling alone
+    /// would allow ~312 MiB.
+    ///
     /// A dropped message takes its aliases with it.
     private func trim() {
-        while rows.count > Self.windowLimit || bytes > Self.windowBytes {
-            guard let i = trimIndex() else { break }
-            let row = rows.remove(at: i)
-            bytes -= Self.cost(row.message)
-            forget(row)
-            // The run is at one end of the kept window or at the boundary
-            // between the reading window and the live tail -- never picked
-            // out of the middle. Say so, so the list can draw the boundary
-            // and the person can reload rather than read a false neighbour.
-            if i == 0 {
-                trimmedBefore = rows.first?.id
+        while rows.count > rowLimit || bytes > byteLimit {
+            guard let gone = trimRange() else { break }
+            for row in rows[gone] {
+                bytes -= Self.cost(row.message)
+                forget(row)
+            }
+            if gone.lowerBound == 0 {
+                rows.removeFirst(gone.count)
+                // Never cleared to nil by a drop: the rows are gone
+                // whichever end they left from, and an empty window is not
+                // a boundary the list can draw.
+                if let first = rows.first?.id { trimmedBefore = first }
             } else {
-                trimmedAfter = rows[i - 1].id
+                rows.removeLast(gone.count)
+                if let last = rows.last?.id { trimmedAfter = last }
             }
         }
         if bytes < 0 { bytes = 0 }
     }
 
-    /// Which row to drop, or nil when nothing may go. Without a reader's
-    /// anchor (the view has not reported one yet) this is the oldest, as it
-    /// has always been.
-    private func trimIndex() -> Int? {
-        guard !rows.isEmpty else { return nil }
+    /// The rows one turn of `trim` may drop, or nil when the ceiling has to
+    /// give way. Whole blocks, from one end, and one row always stays.
+    private func trimRange() -> Range<Int>? {
+        guard rows.count > 1 else { return nil }
+        if trimFromFront {
+            // The reader is not in the oldest block, so that block is the
+            // far one. One row always stays.
+            return 0..<min(Self.firstChunk, rows.count - 1)
+        }
+        // The reader is in the first block: that block is what they are
+        // looking at and stays. Only what lies beyond it may go.
+        let protected = min(Self.firstChunk, rows.count)
+        guard protected < rows.count else { return nil }
+        let count = min(Self.firstChunk, rows.count - protected)
+        return (rows.count - count)..<rows.count
+    }
+
+    /// Whether the block that goes is the oldest one. It is, unless the
+    /// reader's own row sits in that first block -- then those rows are what
+    /// they are looking at, and the far end is the newest. Without a
+    /// reader's anchor (the view has not reported one yet) the oldest block
+    /// goes, as it always has.
+    private var trimFromFront: Bool {
         guard let readingAnchor,
               let reader = rows.firstIndex(where: { $0.id == readingAnchor })
-        else { return 0 }
-        // 1. Older than the window above the reader: this is the far side
-        //    of the page they are reading, not the page itself.
-        if reader > Self.keepAboveReader { return 0 }
-        // 2. Newer than the window below the reader, and before the live
-        //    tail. The live tail is kept on its own: the newest messages are
-        //    what a reader coming back to the bottom expects to find.
-        let firstLive = rows.count - Self.keepLiveTail
-        let candidate = max(reader + 1, reader + Self.keepBelowReader + 1)
-        if candidate < firstLive { return candidate }
-        // 3. Every row is inside the two windows: the oldest goes, never the
-        //    reader's own row.
-        if reader > 0 { return 0 }
-        if firstLive > 1 { return 1 }
-        return nil
+        else { return true }
+        return reader >= Self.firstChunk
     }
 
     private func forget(_ row: Row) {
