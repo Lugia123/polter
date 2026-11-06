@@ -1057,6 +1057,209 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.state == .ready)
     }
 
+    /// **A stop ends the gesture with the showing.** A stop during a drag
+    /// must not leave "the hand is on the list" standing into the next
+    /// showing: a page would then be held for a hand that is no longer
+    /// there. After a stop and a return the top edge asks again, and the
+    /// page lands without `readerIdle()`.
+    @Test func testStopDoesNotLeaveTheReaderHoldingTheNextPage() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:9")],
+                    stop: "at_end", token: nil
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+
+        rig.feed.readerActive(true)
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2) // held
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(!rig.feed.canLoadOlder)
+
+        rig.feed.stop()
+        rig.feed.start(group: "polter")
+        #expect(rig.feed.canLoadOlder)
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2)
+        // Landed without `readerIdle()`: a stale flag would have held it.
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+    }
+
+    /// **A held older page must not roll the newer cursor back.** While it
+    /// waits, a newer page can land; that page's answer is the later word
+    /// for the newer direction, so the older page's stale `newer_token` is
+    /// not written over it.
+    @Test func testAHeldContextPageDoesNotRollBackTheNewerCursor() {
+        let rig = Rig()
+        let job = String(repeating: "a", count: 32)
+        let aroundOlder = String(repeating: "b", count: 32)
+        let aroundNewer = String(repeating: "c", count: 32)
+        let olderNext = String(repeating: "d", count: 32)
+        let staleNewer = String(repeating: "e", count: 32)
+        let newerOlder = String(repeating: "f", count: 32)
+        let newerNext = String(repeating: "1", count: 32)
+        var stage = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(job: job))
+            case "chat_history_poll":
+                switch stage {
+                case 0:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 1, log: 1, anchor: "p:10"))],\
+                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
+                    "older_at_end":false,"newer_at_end":false,\
+                    "gap":false,"restarted":false,"target_index":0}
+                    """)
+                case 1:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"context","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 0, log: 0, anchor: "p:9"))],\
+                    "stop":"full","older_token":"\(olderNext)","newer_token":"\(staleNewer)",\
+                    "older_at_end":false,"newer_at_end":false,\
+                    "gap":false,"restarted":false,"direction":"older"}
+                    """)
+                default:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"context","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 2, log: 2, anchor: "p:11"))],\
+                    "stop":"full","older_token":"\(newerOlder)","newer_token":"\(newerNext)",\
+                    "older_at_end":false,"newer_at_end":true,\
+                    "gap":false,"restarted":false,"direction":"newer"}
+                    """)
+                }
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.feed.locate(anchor: "p:10", location: nil)
+        rig.scheduler.run(0.2) // the around window
+        #expect(rig.feed.context?.olderToken == aroundOlder)
+        #expect(rig.feed.context?.newerToken == aroundNewer)
+
+        rig.feed.readerActive(true)
+        rig.feed.loadOlder()
+        stage = 1
+        rig.scheduler.run(0.2) // the older page is held
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+
+        rig.feed.loadContextNewer()
+        stage = 2
+        rig.scheduler.run(0.2) // a newer page lands while the older is held
+        #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])
+
+        rig.feed.readerIdle()
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10", "p:11"])
+        // The older side advanced; the newer side kept the later word.
+        #expect(rig.feed.context?.olderToken == olderNext)
+        #expect(rig.feed.context?.newerToken == newerNext)
+        #expect(rig.feed.context?.newerAtEnd == true)
+    }
+
+    /// **A held page must not kill a newer request still out.** While an
+    /// older page waits, a newer page can already be in flight; the older
+    /// page's late landing must not clear that job's id (its polls would
+    /// stop and its answer go unread) nor its pending direction.
+    @Test func testAHeldContextPageLeavesAnOutstandingNewerJobAlive() {
+        let rig = Rig()
+        let job = String(repeating: "a", count: 32)
+        // **Distinct job ids**: the core never reuses one, and the feed's
+        // "is this my job?" test is by id. A fixture that reused one id
+        // would make the held page look like it owned the newer request.
+        let olderJob = String(repeating: "d", count: 32)
+        let newerJob = String(repeating: "e", count: 32)
+        let aroundOlder = String(repeating: "b", count: 32)
+        let aroundNewer = String(repeating: "c", count: 32)
+        var beginsSent = 0
+        var stage = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                beginsSent += 1
+                switch beginsSent {
+                case 1, 2: return .answer(self.begin(job: job))
+                case 3: return .answer(self.begin(job: olderJob))
+                default: return .answer(self.begin(job: newerJob))
+                }
+            case "chat_history_poll":
+                switch stage {
+                case 0:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 1, log: 1, anchor: "p:10"))],\
+                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
+                    "older_at_end":false,"newer_at_end":false,\
+                    "gap":false,"restarted":false,"target_index":0}
+                    """)
+                case 1:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"context","job_id":"\(olderJob)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 0, log: 0, anchor: "p:9"))],\
+                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
+                    "older_at_end":false,"newer_at_end":false,\
+                    "gap":false,"restarted":false,"direction":"older"}
+                    """)
+                default:
+                    return .answer("""
+                    {"ok":true,"state":"pending","job_id":"\(newerJob)",\
+                    "group":"polter","session":"s1"}
+                    """)
+                }
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.feed.locate(anchor: "p:10", location: nil)
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.context != nil)
+
+        rig.feed.readerActive(true)
+        rig.feed.loadOlder()
+        stage = 1
+        rig.scheduler.run(0.2) // held
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+
+        let begins = rig.door.methods("chat_history_begin").count
+        rig.feed.loadContextNewer() // begin answered; its poll is out
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
+
+        rig.feed.readerIdle() // the older page lands with the newer job out
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+
+        // **The newer job is still held.** Its pending answer schedules the
+        // next poll; a cleared id would stop the loop here.
+        stage = 2
+        #expect(rig.scheduler.run(0.2))
+        #expect(rig.scheduler.count(at: 0.2) == 1)
+    }
+
     /// **The located window is a screen and a half each way.** A 10+10 page
     /// would leave the lower half of the screen empty; the feed asks for
     /// `locateWindowRows` (1.5 x the viewport, clamped to the core's 99).

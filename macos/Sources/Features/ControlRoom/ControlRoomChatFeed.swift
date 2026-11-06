@@ -469,6 +469,13 @@ final class ControlRoomChatFeed: ObservableObject {
     private var heldContextOlder: ControlRoomChatContext.Context?
     private var heldContextJobID: String?
     private var heldContextGeneration: UInt64 = 0
+    /// The direction the request this held page answers was sent in. Read
+    /// when it lands, `pendingContextDirection` may belong to a newer
+    /// request; this is the expectation that was true when it was produced.
+    private var heldContextPending: ControlRoomChatContext.Direction?
+    /// A newer page landed while this older one was held: its `newer_*`
+    /// side predates that page and must not overwrite its cursor.
+    private var heldContextSupersededByNewer = false
     /// The locate job: around first, then one context page at a time.
     private var locateJobID: String?
     private var locateRequestID: String?
@@ -580,6 +587,11 @@ final class ControlRoomChatFeed: ObservableObject {
         // window), which does not stop the feed.
         readingAnchor = nil
         readingOffset = 0
+        // **The gesture ends with the showing.** A stop during a drag would
+        // otherwise leave "the hand is on the list" standing into the next
+        // showing, where a page would be held for a hand that is no longer
+        // there -- until the next scroll event says otherwise.
+        readerIsActive = false
         syncMarkdown()
     }
 
@@ -1112,9 +1124,18 @@ final class ControlRoomChatFeed: ObservableObject {
         if let page = heldContextOlder {
             heldContextOlder = nil
             let jobID = heldContextJobID
+            let expected = heldContextPending
+            let superseded = heldContextSupersededByNewer
             heldContextJobID = nil
+            heldContextPending = nil
+            heldContextSupersededByNewer = false
             if started, heldContextGeneration == generation, let jobID {
-                applyContext(page, jobID: jobID)
+                applyContext(
+                    page, jobID: jobID,
+                    expectedDirection: expected,
+                    clearPending: false,
+                    supersededNewer: superseded
+                )
             }
         }
         if let page = heldOlder {
@@ -1899,15 +1920,41 @@ final class ControlRoomChatFeed: ObservableObject {
             heldContextOlder = page
             heldContextJobID = jobID
             heldContextGeneration = generation
-            locateJobID = nil
+            // **The request this page answers was the one pending then.**
+            // By the time it lands, `pendingContextDirection` may belong to
+            // another request (a newer page asked for while this one was
+            // held), so the expectation is captured here, not read later.
+            heldContextPending = pendingContextDirection
+            heldContextSupersededByNewer = false
+            // The job that answered is done. A newer request may go out
+            // while this page waits, and it must keep its own id: this
+            // page's apply will not clear it later.
+            if locateJobID == jobID { locateJobID = nil }
             return
         }
-        applyContext(page, jobID: jobID)
+        applyContext(
+            page, jobID: jobID,
+            expectedDirection: pendingContextDirection,
+            clearPending: true,
+            supersededNewer: false
+        )
     }
 
     /// Land a context page: merge (older) or append (newer), take both
     /// cursors, and say which edge was released.
-    private func applyContext(_ page: ControlRoomChatContext.Context, jobID: String) {
+    ///
+    /// A held page lands late, so it must not disturb what happened while it
+    /// waited: `expectedDirection` and `clearPending: false` keep the
+    /// pending request that is outstanding now untouched, `locateJobID` is
+    /// cleared only when it is this page's own job, and a `newer` page that
+    /// landed meanwhile keeps that side of the cursor.
+    private func applyContext(
+        _ page: ControlRoomChatContext.Context,
+        jobID: String,
+        expectedDirection: ControlRoomChatContext.Direction?,
+        clearPending: Bool,
+        supersededNewer: Bool
+    ) {
         guard page.page.jobID == jobID, page.page.group == group,
               session == nil || page.page.session == session
         else {
@@ -1915,12 +1962,19 @@ final class ControlRoomChatFeed: ObservableObject {
             return
         }
         if session == nil { session = page.page.session }
-        if let pending = pendingContextDirection, pending != page.direction {
+        if let expectedDirection, expectedDirection != page.direction {
             failLocate("CursorMismatch")
             return
         }
-        pendingContextDirection = nil
-        pendingContextToken = nil
+        if clearPending {
+            pendingContextDirection = nil
+            pendingContextToken = nil
+        }
+        // A newer page landing makes a held older page's `newer_*` side a
+        // snapshot from before it.
+        if page.direction == .newer, heldContextOlder != nil {
+            heldContextSupersededByNewer = true
+        }
         let beforeFirst = rows.first?.id
         let beforeLast = rows.last?.id
         if page.direction == .older {
@@ -1928,13 +1982,25 @@ final class ControlRoomChatFeed: ObservableObject {
         } else {
             appendHistory(page.page.messages)
         }
-        context = ContextTail(
+        let previous = context
+        var next = ContextTail(
             olderToken: page.page.olderToken,
             newerToken: page.page.newerToken,
             olderAtEnd: page.page.olderAtEnd,
             newerAtEnd: page.page.newerAtEnd
         )
-        locateJobID = nil
+        if page.direction == .older, supersededNewer {
+            // **Do not go back to an already-read newer cursor.** This
+            // page's newer side was produced before a newer page that has
+            // since landed; that page's answer is the later word.
+            next.newerToken = previous?.newerToken
+            next.newerAtEnd = previous?.newerAtEnd ?? next.newerAtEnd
+        }
+        context = next
+        // **Only this page's own job.** While it was held, a newer request
+        // may have started, and clearing its id here would stop its polls
+        // and leave its answer unread.
+        if locateJobID == jobID { locateJobID = nil }
         locateTrouble = nil
         locating = false
         // **A released edge makes a cursor stale.** The page's own edge must
@@ -2091,6 +2157,8 @@ final class ControlRoomChatFeed: ObservableObject {
         heldOlder = nil
         heldContextOlder = nil
         heldContextJobID = nil
+        heldContextPending = nil
+        heldContextSupersededByNewer = false
     }
 
     private func cancelScheduling() {
