@@ -3163,6 +3163,10 @@ msgstr ""
 msgid "That message is not loaded here."
 msgstr ""
 
+#: windows/host/src/chat_native.rs:6644
+msgid "That message is not in this window."
+msgstr ""
+
 #: windows/host/src/chat_native.rs:1784
 msgid "Searching…"
 msgstr ""
@@ -3221,6 +3225,10 @@ msgstr ""
 
 #: windows/host/src/chat_native.rs:3158 windows/host/src/chat_native.rs:3184
 msgid "Earlier messages could not be read. Click to retry."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:5975 windows/host/src/chat_native.rs:5995
+msgid "Earlier messages could not be read."
 msgstr ""
 
 #: windows/host/src/chat_native.rs:3163 windows/host/src/chat_native.rs:3176

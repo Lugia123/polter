@@ -109,6 +109,11 @@ struct Chat {
     /// never a screen position or a reused block number alone.
     hfocus: Option<chat_rows::DragTarget>,
     hdrag: chat_rows::DragState,
+    /// **The vertical scrollbar's drag**: the pointer's offset from the
+    /// thumb's top while the button is held. Moving it moves the thumb and
+    /// nothing else -- no block is asked for on press, during, or on
+    /// release. Only a wheel or key near the top asks for more.
+    vbar: Option<i32>,
     /// The brief is expanded; the member popover is open. Both are the
     /// person's view state, not the group's.
     brief_open: bool,
@@ -116,6 +121,22 @@ struct Chat {
     /// The view follows new messages while it is at the bottom. Scrolling
     /// up turns this off until the person returns to the latest end.
     follow: bool,
+    /// **Entering a group always lands on the latest end** (user decision),
+    /// even when the page was left while reading history. Consumed by the
+    /// next publish, once the rows have their current heights.
+    land_bottom: bool,
+    /// **A jump's target row id, pinned until that row has been measured.**
+    /// The tick measures at most four rows, so "two corrections" is not a
+    /// promise the tick can keep: the target may still be a placeholder
+    /// height for several ticks, and it stays at the top until the row is
+    /// measured (a failed measurement counts as measured).
+    jump: Option<String>,
+    /// **The non-blocking exit for a failed or empty older block**: one
+    /// short line on the page for 2.5 s. It takes no layout height and
+    /// never turns a dead scroll into a fake "beginning of the group".
+    older_notice: Option<(String, std::time::Instant)>,
+    /// The state key already spoken, so a tick cannot repeat it.
+    older_notice_key: Option<String>,
     /// What the last tick saw, so growth can be told from a repaint.
     rows_seen: usize,
     /// New rows arrived while reading history (distinct from the feed's
@@ -315,6 +336,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONDOWN => {
             let x = (lp.0 & 0xFFFF) as i16 as i32;
             let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+            // **The bar takes its click before the page does** and never
+            // takes the keyboard with it.
+            if vbar_press(hwnd, x, y) {
+                return LRESULT(0);
+            }
             let consumed = chat_click(hwnd, x, y);
             if !consumed {
                 // **The one line a click leaves when nothing took it**:
@@ -332,23 +358,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEMOVE => {
             let x = (lp.0 & 0xFFFF) as i16 as i32;
-            if hscroll_drag(hwnd, x) {
+            let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+            if vbar_drag(hwnd, y) || hscroll_drag(hwnd, x) {
                 LRESULT(0)
             } else {
                 unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
             }
         }
         WM_LBUTTONUP => {
+            vbar_end(hwnd);
             hscroll_end(hwnd);
             LRESULT(0)
         }
         WM_CAPTURECHANGED => {
             // The mouse was taken away mid-drag: forget only our own drag
             // and focus; the other window's capture is not ours to release.
+            vbar_cancel(hwnd);
             hscroll_capture_lost(hwnd);
             LRESULT(0)
         }
         WM_CANCELMODE => {
+            vbar_cancel(hwnd);
             hscroll_cancel(hwnd);
             LRESULT(0)
         }
@@ -404,10 +434,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if search_key(hwnd, wp.0 as u16) {
                 return LRESULT(0);
             }
-            let mut client = windows::Win32::Foundation::RECT::default();
-            let _ = unsafe { GetClientRect(hwnd, &mut client) };
             let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
-            let page = (client.bottom - client.top - metrics.pad * 2).max(metrics.line);
+            // **A page is the message pane**, not the whole window: the
+            // fixed header does not scroll.
+            let page = message_page_h(hwnd, metrics.line);
             match wp.0 as u16 {
                 key if key == VK_LEFT.0 => {
                     hscroll_key(hwnd, -metrics.line * 2);
@@ -618,9 +648,14 @@ fn create(frame: HWND, group: &str, r: TreeRect) -> Option<Chat> {
         plan_font: 0,
         hfocus: None,
         hdrag: chat_rows::DragState::default(),
+        vbar: None,
         brief_open: false,
         members_open: false,
         follow: true,
+        land_bottom: true,
+        jump: None,
+        older_notice: None,
+        older_notice_key: None,
         rows_seen: 0,
         new_rows: false,
         highlight: None,
@@ -778,10 +813,31 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                     // **Entering the page starts the one feed**; a repeat
                     // sync is a no-op inside `start`.
                     if entering {
+                        // **Every entry lands on the latest end**, including
+                        // a page left while reading history: the person
+                        // asked for the newest messages, not the place they
+                        // had scrolled to last time.
+                        x.land_bottom = true;
+                        x.follow = true;
+                        x.new_rows = false;
+                        // **Land now, with the geometry already published**:
+                        // the first paint after showing must not expose the
+                        // place the page was left at. The next publish lands
+                        // again on the fresh geometry.
+                        x.scroll = x.layout.clamp(i32::MAX, x.view_h.max(1));
+                        // Entering is a fresh look at the group: a notice
+                        // from the previous visit is not this visit's.
+                        x.older_notice = None;
+                        x.older_notice_key = None;
                         if let Some(feed) = x.feed.as_mut() {
                             if let Some(id) = next_request_id() {
                                 feed.start(&x.group, id, now);
                             }
+                            // **A page left in the history comes back on the
+                            // latest end**: the reading window, its waiting
+                            // tail and the around window are all dropped so
+                            // the newest page is read again.
+                            feed.return_to_latest(now);
                         }
                         let _ = unsafe {
                             SetTimer(Some(HWND(x.hwnd as *mut c_void)), CHAT_TIMER, TICK_MS, None)
@@ -808,7 +864,7 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                         // cancelled; both requested effects come back and
                         // are executed after the borrow.
                         let action = chat_rows::cancel_input(&mut x.hdrag, &mut x.hfocus);
-                        if action.release_own_capture {
+                        if action.release_own_capture || x.vbar.take().is_some() {
                             release_input.push(x.hwnd);
                         }
                         if action.invalidate {
@@ -2006,6 +2062,7 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             new_rows,
             highlight,
             text_highlight,
+            older_notice,
             view_h: view_height,
             side: side_mode,
             search_query,
@@ -2050,36 +2107,13 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             *brief_open,
             *members_open,
         );
-        // The older-history strip stays at the top of the message pane,
-        // below the fixed header. It is the state, not a floating note.
-        let msg_top = msg.strip_top;
-        let later = later_words(feed);
-        let later_h = if later.is_some() {
-            metrics.line + metrics.gap
-        } else {
-            0
-        };
+        // **No "load earlier" strip and no later strip.** Loading is a
+        // background act: near the top the next block is asked for and
+        // nothing is drawn to say so. The message pane starts directly
+        // below the fixed header.
+        let msg_top = msg.top;
         let view_h = msg.height;
         *view_height = view_h;
-        if let Some((word, _)) = &later {
-            let _ = draw_text(
-                dc,
-                word,
-                left + metrics.pad / 2,
-                client.bottom - metrics.pad - later_h,
-                width - metrics.pad,
-                theme.text_tertiary,
-            );
-        }
-        let (boundary, _retry) = boundary_words(feed);
-        let _ = draw_text(
-            dc,
-            &boundary,
-            left + metrics.pad / 2,
-            msg_top,
-            width - metrics.pad,
-            theme.text_tertiary,
-        );
 
         let mut top = msg.top;
         // **Loading is not empty, and a raw code is not product copy.** The
@@ -2259,6 +2293,66 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
                         _ => draw_block(dc, &row.message.text, left, text_top, width, row_bottom),
                     }
                 }
+            }
+        }
+
+        // **The bar is graduated in loaded rows and nothing else.** The
+        // thumb's place is the top row's index plus its fraction; its size
+        // is the share of rows in sight. It is the only place the page
+        // says how much is loaded, and it holds no content.
+        let min_thumb = (chat_rows::THUMB_MIN_PT * metrics.scale).round().max(1.0) as i32;
+        if let Some(bar) = layout.string_bar(*scroll, view_h, msg.bar, min_thumb) {
+            let (bx, by, bw, bh) = bar.track;
+            unsafe {
+                let ground = CreateSolidBrush(crate::control_room::rgb(theme.surface_row));
+                let r = windows::Win32::Foundation::RECT {
+                    left: bx,
+                    top: by,
+                    right: bx + bw,
+                    bottom: by + bh,
+                };
+                let _ = FillRect(dc, &r, ground);
+                let _ = DeleteObject(ground.into());
+                let thumb = CreateSolidBrush(crate::control_room::rgb(theme.text_secondary));
+                let r = windows::Win32::Foundation::RECT {
+                    left: bx,
+                    top: bar.thumb_y,
+                    right: bx + bw,
+                    bottom: bar.thumb_y + bar.thumb_h,
+                };
+                let _ = FillRect(dc, &r, thumb);
+                let _ = DeleteObject(thumb.into());
+            }
+        }
+
+        // **The non-blocking exit, drawn over the rows** for a moment: a
+        // failed or empty older block must not look like a dead scroll.
+        if let Some((word, at)) = older_notice.as_ref() {
+            if at.elapsed() < std::time::Duration::from_millis(2500) {
+                let tw = measure_in(dc, font, word);
+                let h = metrics.line + metrics.gap;
+                let w = (tw + metrics.pad * 2).min(width.max(1));
+                let y = msg.top;
+                unsafe {
+                    let brush =
+                        CreateSolidBrush(crate::control_room::rgb(theme.surface_row_selected));
+                    let r = windows::Win32::Foundation::RECT {
+                        left,
+                        top: y,
+                        right: left + w,
+                        bottom: y + h,
+                    };
+                    let _ = FillRect(dc, &r, brush);
+                    let _ = DeleteObject(brush.into());
+                }
+                let _ = draw_text(
+                    dc,
+                    word,
+                    left + metrics.pad,
+                    y + metrics.gap / 2,
+                    (w - metrics.pad).max(1),
+                    theme.text_secondary,
+                );
             }
         }
 
@@ -3243,79 +3337,6 @@ fn draw_date_divider(
     let _ = draw_text(dc, &word, text_x, y, text_w.max(1), theme.text_tertiary);
 }
 
-/// The strip above the rows: what the older direction is doing. The bool
-/// says the strip may be clicked to ask again.
-fn boundary_words(feed: &Feed) -> (String, bool) {
-    use chat_feed::OlderState;
-    // **A context window is not the history chain**: its own two cursors
-    // say whether there is more in each direction.
-    if feed.context_window() {
-        return if feed.aux_busy() {
-            (crate::i18n::tr("Loading earlier messages…"), false)
-        } else if feed.aux_error().is_some() {
-            (
-                crate::i18n::tr("Earlier messages could not be read. Click to retry."),
-                true,
-            )
-        } else if feed.context_dirty(true) {
-            (
-                crate::i18n::tr("Some earlier records could not be read."),
-                false,
-            )
-        } else if feed.context_can(true) {
-            (crate::i18n::tr("Scroll up for earlier messages."), true)
-        } else {
-            (crate::i18n::tr("Beginning of the group"), false)
-        };
-    }
-    match feed.older() {
-        OlderState::Loading => (crate::i18n::tr("Loading earlier messages…"), false),
-        OlderState::End => (crate::i18n::tr("Beginning of the group"), false),
-        OlderState::Gap => (
-            crate::i18n::tr("Some earlier records could not be read."),
-            false,
-        ),
-        OlderState::Cancelled => (
-            crate::i18n::tr("Loading earlier messages was cancelled. Click to retry."),
-            true,
-        ),
-        OlderState::Failed(_) => (
-            crate::i18n::tr("Earlier messages could not be read. Click to retry."),
-            true,
-        ),
-        OlderState::Incomplete => (crate::i18n::tr("Scroll up for earlier messages."), true),
-        OlderState::Idle => {
-            if feed.tail().is_some_and(|t| t.gap) {
-                (
-                    crate::i18n::tr("Some earlier records could not be read."),
-                    false,
-                )
-            } else if feed.can_load_older() {
-                (crate::i18n::tr("Scroll up for earlier messages."), true)
-            } else if feed.tail().is_some() {
-                (crate::i18n::tr("Beginning of the group"), false)
-            } else {
-                (crate::i18n::tr("Loading"), false)
-            }
-        }
-    }
-}
-
-/// The context window's lower edge: more later neighbours, if the core
-/// gave a cursor for them.
-fn later_words(feed: &Feed) -> Option<(String, bool)> {
-    if feed.context_window() && feed.context_dirty(false) {
-        Some((
-            crate::i18n::tr("Some later records could not be read."),
-            false,
-        ))
-    } else if feed.context_window() && feed.context_can(false) {
-        Some((crate::i18n::tr("Scroll down for later messages."), true))
-    } else {
-        None
-    }
-}
-
 /// The "new messages / back to latest" words, and whether there is
 /// anything to return from.
 fn latest_words(feed: &Feed, new_rows: bool) -> Option<String> {
@@ -3372,9 +3393,9 @@ struct HSpot {
     on_bar: bool,
 }
 
-/// Where the message content starts inside the window: under the fixed
-/// header and the older-history strip. **One answer for paint, the row
-/// hit test and the horizontal hit test**, so they cannot disagree.
+/// Where the message content starts inside the window: directly under the
+/// fixed header. **One answer for paint, the row hit test and the
+/// horizontal hit test**, so they cannot disagree.
 fn page_content_top(
     dc: HDC,
     client: &windows::Win32::Foundation::RECT,
@@ -3387,11 +3408,13 @@ fn page_content_top(
         metrics,
         sidebar_of(chat.side != SidebarMode::Closed),
     );
-    let width = (messages_right - left - metrics.pad).max(1);
+    let width = message_width(messages_right, left, metrics);
     let top = client.top + metrics.pad;
     let meta = chat.feed.as_ref().and_then(|feed| feed.metadata());
     let geom = header_geom(dc, left, top, width, metrics, meta, chat.brief_open);
-    top + geom.total + metrics.line + metrics.gap
+    // **One answer with `message_rect`**: the rows start at the header's
+    // bottom, with no strip in between.
+    top + geom.total
 }
 
 /// The horizontal spot at one point. **Rails are hit first, in viewport
@@ -3414,7 +3437,7 @@ fn hspot_at(hwnd: HWND, x: i32, y: i32) -> Option<HSpot> {
             .unwrap_or(false)
     });
     let (messages_right, _) = split(&client, &metrics, sidebar_of(opened));
-    let width = (messages_right - client.left - metrics.pad * 2).max(1);
+    let width = message_width(messages_right, client.left + metrics.pad, &metrics);
     let font_id = plan_font_id(dpi);
     let handle_h = md_layout::handle_height(dpi as f64 / 96.0);
     let left = client.left + metrics.pad;
@@ -3597,6 +3620,246 @@ fn release_own_capture(hwnd: HWND) {
     }
 }
 
+/// **A press inside the vertical bar.** On the thumb it starts a drag; on
+/// the empty track it turns one page. **Neither asks for a block**: more
+/// history is asked for by a wheel or key near the top, never by the bar.
+fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+    let dc = unsafe { GetDC(Some(hwnd)) };
+    if dc.0.is_null() {
+        return false;
+    }
+    let mut capture = false;
+    let hit = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return false;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return false;
+        };
+        if !chat.shown {
+            return false;
+        }
+        let Some(feed) = chat.feed.as_ref() else {
+            return false;
+        };
+        let msg = message_rect(
+            dc,
+            &client,
+            &metrics,
+            feed,
+            chat.side != SidebarMode::Closed,
+            chat.brief_open,
+        );
+        let min_thumb = (chat_rows::THUMB_MIN_PT * metrics.scale).round().max(1.0) as i32;
+        let Some(bar) = chat
+            .layout
+            .string_bar(chat.scroll, msg.height, msg.bar, min_thumb)
+        else {
+            return false;
+        };
+        let (bx, by, bw, bh) = bar.track;
+        if x < bx || x >= bx + bw || y < by || y >= by + bh {
+            return false;
+        }
+        // **Taking the bar takes the view**: no pending jump correction may
+        // pull it back after the person has moved the thumb or a page.
+        chat.jump = None;
+        if y >= bar.thumb_y && y < bar.thumb_y + bar.thumb_h {
+            chat.vbar = Some(y - bar.thumb_y);
+            capture = true;
+        } else {
+            let page = chat.view_h.max(metrics.line);
+            let at = if y < bar.thumb_y {
+                chat.scroll.saturating_sub(page)
+            } else {
+                chat.scroll.saturating_add(page)
+            };
+            chat.scroll = chat.layout.clamp(at, msg.height);
+            chat.follow = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
+            if chat.follow {
+                chat.new_rows = false;
+            }
+            // **A page turned with the bar is reading history too.** The
+            // same two transitions as `scroll_by`: leaving the bottom
+            // enters the reading window (live rows wait aside), returning
+            // to it rejoins the latest. Without this, a drag to the top
+            // leaves `reading_history` false and the next live message
+            // trims a block the reader is looking at.
+            if let Some(feed) = chat.feed.as_mut() {
+                if chat.follow {
+                    if !feed.context_window() && feed.reading_history() {
+                        feed.return_to_latest(now_ms());
+                    }
+                } else if !feed.context_window() {
+                    feed.enter_reading();
+                }
+            }
+        }
+        true
+    });
+    unsafe {
+        ReleaseDC(Some(hwnd), dc);
+    }
+    if capture {
+        unsafe {
+            SetCapture(hwnd);
+        }
+    }
+    if hit {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    hit
+}
+
+/// **The thumb follows the pointer and nothing else.** The scroll is
+/// mapped through the loaded map's row index; no block is asked for while
+/// dragging, and none on release.
+fn vbar_drag(hwnd: HWND, y: i32) -> bool {
+    let key = hwnd.0 as isize;
+    let mut client = windows::Win32::Foundation::RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+    let dc = unsafe { GetDC(Some(hwnd)) };
+    if dc.0.is_null() {
+        return false;
+    }
+    let mut release = false;
+    let moved = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return false;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return false;
+        };
+        let Some(grab) = chat.vbar else {
+            return false;
+        };
+        chat.jump = None;
+        let Some(feed) = chat.feed.as_ref() else {
+            chat.vbar = None;
+            release = true;
+            return false;
+        };
+        let msg = message_rect(
+            dc,
+            &client,
+            &metrics,
+            feed,
+            chat.side != SidebarMode::Closed,
+            chat.brief_open,
+        );
+        let min_thumb = (chat_rows::THUMB_MIN_PT * metrics.scale).round().max(1.0) as i32;
+        let Some(bar) = chat
+            .layout
+            .string_bar(chat.scroll, msg.height, msg.bar, min_thumb)
+        else {
+            // The rows went away mid-drag: the drag is over and the
+            // capture it may hold is this window's to release -- never
+            // left behind by an early return.
+            chat.vbar = None;
+            release = true;
+            return false;
+        };
+        let (_, by, _, bh) = bar.track;
+        let span = (bh - bar.thumb_h).max(0);
+        let thumb_y = (y - grab).clamp(by, by + span);
+        let ratio = if span <= 0 {
+            0.0
+        } else {
+            (thumb_y - by) as f64 / span as f64
+        };
+        let Some(at) = chat.layout.scroll_at_ratio(ratio, msg.height) else {
+            return false;
+        };
+        chat.scroll = chat.layout.clamp(at, msg.height);
+        chat.follow = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
+        if chat.follow {
+            chat.new_rows = false;
+        }
+        // **A drag is reading history too** (the same transitions as
+        // `scroll_by`): leaving the bottom keeps live rows aside so the
+        // block the reader is on is not trimmed under them; returning to
+        // the bottom rejoins the latest.
+        if let Some(feed) = chat.feed.as_mut() {
+            if chat.follow {
+                if !feed.context_window() && feed.reading_history() {
+                    feed.return_to_latest(now_ms());
+                }
+            } else if !feed.context_window() {
+                feed.enter_reading();
+            }
+        }
+        true
+    });
+    unsafe {
+        ReleaseDC(Some(hwnd), dc);
+    }
+    if release {
+        release_own_capture(hwnd);
+    }
+    if moved {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    moved
+}
+
+/// The button came up: the drag ends. **No block is asked for here** --
+/// the bar only ever moved the view inside what was already loaded. One
+/// line records the five numbers the criterion reads.
+fn vbar_end(hwnd: HWND) {
+    let key = hwnd.0 as isize;
+    let was_dragging = CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return false;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
+            return false;
+        };
+        let Some(_) = chat.vbar.take() else {
+            return false;
+        };
+        let dpi = crate::dpi_for(hwnd) as i32;
+        let scale = Metrics::for_dpi(dpi).scale;
+        let bar_w = (chat_rows::BAR_W_PT * scale).round().max(1.0) as i32;
+        let min_thumb = (chat_rows::THUMB_MIN_PT * scale).round().max(1.0) as i32;
+        let view_h = chat.view_h.max(1);
+        if let Some(bar) = chat
+            .layout
+            .string_bar(chat.scroll, view_h, (0, 0, bar_w, view_h), min_thumb)
+        {
+            plogf!(
+                "[chat-native] vbar: rows={} thumb_y={} thumb_h={} track_h={} ticks={} scroll={}",
+                chat.layout.rows().len(),
+                bar.thumb_y,
+                bar.thumb_h,
+                bar.track.3,
+                bar.ticks,
+                chat.scroll
+            );
+        }
+        true
+    });
+    if was_dragging {
+        release_own_capture(hwnd);
+    }
+}
+
+/// The capture went somewhere else: forget the drag and touch nothing.
+fn vbar_cancel(hwnd: HWND) {
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return;
+        };
+        if let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) {
+            chat.vbar = None;
+        }
+    });
+}
+
 /// A press: the rail starts a drag (after a valid target exists) and jumps
 /// the thumb under the pointer; content only gives the keyboard a target.
 fn hscroll_press(hwnd: HWND, x: i32, y: i32) -> bool {
@@ -3648,8 +3911,8 @@ fn hscroll_drag(hwnd: HWND, x: i32) -> bool {
             .unwrap_or(false)
     });
     let (messages_right, _) = split(&client, &metrics, sidebar_of(opened));
-    let width = (messages_right - client.left - metrics.pad * 2).max(1);
     let left = client.left + metrics.pad;
+    let width = message_width(messages_right, left, &metrics);
 
     enum Step {
         None,
@@ -4208,7 +4471,7 @@ fn search_tick(hwnd: HWND, now: u64) {
 
 /// The hit at `index` and the row it names. **A target that is not in the
 /// loaded window is said out loud**, never replaced by a look-alike.
-fn locate_hit(chat: &mut Chat, index: usize) {
+fn locate_hit(chat: &mut Chat, index: usize, hwnd: HWND) {
     let Some(hit) = chat
         .feed
         .as_ref()
@@ -4247,6 +4510,9 @@ fn locate_hit(chat: &mut Chat, index: usize) {
     });
     match row_id {
         Some(id) => {
+            // **`seek_in_map`**: the target is in the loaded map, so the
+            // scroll is set directly. No request, no correction.
+            chat.jump = None;
             chat.search_missing = false;
             chat.highlight = Some((id.clone(), std::time::Instant::now()));
             chat.follow = false;
@@ -4263,20 +4529,64 @@ fn locate_hit(chat: &mut Chat, index: usize) {
             }
         }
         None => {
-            // **Direct around, not a walk through history pages.** The
-            // target is asked for by its own anchor; the row waits until
-            // the core answers with the explicit context view.
+            // **`jump_to_anchor`**: the target is outside the loaded map,
+            // so the window is replaced around it. **The range in between
+            // is never loaded** -- one around page, not a walk through
+            // history pages. The old scroll anchor and every locating
+            // state except the highlight are dropped here; a running older
+            // poll is cancelled so it cannot replace the window later.
+            chat.jump = None;
             let now = now_ms();
+            // **One and a half screens either side of the target**, so the
+            // page around it is not blank: the target is put at the top and
+            // there must be rows under it to read. Clamped to 10..=99 --
+            // the core's page size is bounded, and "a screen" is an
+            // estimate from the message pane, never from text.
+            let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+            // The rows one screen holds, from the message pane the same
+            // `message_rect` paint uses (never from text): the target goes
+            // to the top, so there must be rows *under* it to read.
+            let view_h = {
+                let mut client = windows::Win32::Foundation::RECT::default();
+                let _ = unsafe { GetClientRect(hwnd, &mut client) };
+                let dc = unsafe { GetDC(Some(hwnd)) };
+                if dc.0.is_null() {
+                    chat.view_h
+                } else {
+                    let h = chat
+                        .feed
+                        .as_ref()
+                        .map(|feed| {
+                            message_rect(
+                                dc,
+                                &client,
+                                &metrics,
+                                feed,
+                                chat.side != SidebarMode::Closed,
+                                chat.brief_open,
+                            )
+                            .height
+                        })
+                        .unwrap_or(chat.view_h);
+                    unsafe {
+                        ReleaseDC(Some(hwnd), dc);
+                    }
+                    h
+                }
+            };
+            let lines = (view_h.max(metrics.line) / metrics.line.max(1)).max(1) as f64;
+            let around = ((lines * 1.5).ceil() as i64).clamp(10, 99) as u8;
             let mut asked = false;
             if let Some(feed) = chat.feed.as_mut() {
+                feed.cancel_navigation();
                 if let Some(id) = next_request_id() {
                     // The hint goes back exactly as the core gave it; a
                     // record that carried none is not guessed at.
                     asked = feed.load_around(
                         &hit.message.anchor,
                         hit.message.location.as_deref(),
-                        10,
-                        10,
+                        around,
+                        around,
                         id,
                         now,
                     );
@@ -4290,7 +4600,8 @@ fn locate_hit(chat: &mut Chat, index: usize) {
 
 /// The around page arrived: put its target in sight once, with the same
 /// whole-row highlight a hit that was already loaded gets.
-fn apply_around(hwnd: HWND) {
+fn apply_around(hwnd: HWND) -> bool {
+    let mut release = false;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return;
@@ -4322,14 +4633,29 @@ fn apply_around(hwnd: HWND) {
             chat.highlight = Some((id.clone(), std::time::Instant::now()));
             chat.follow = false;
             chat.new_rows = false;
+            // **Land on the target's top, with no scrolling.** The map is
+            // replaced whole here: the old scroll anchor is dropped (this
+            // is a new window), and `jump` pins the target until its row
+            // has actually been measured, because the tick measures at
+            // most four rows.
             if let Some(y) = chat.layout.scroll_for(&id, 0) {
                 chat.scroll = chat.layout.clamp(y, chat.view_h.max(1));
             }
+            chat.jump = Some(id);
+            // **The window changed under any in-flight drag**: the old
+            // plan's target and focus are dead, and the capture it may
+            // hold is this window's to release.
+            let action = chat_rows::cancel_input(&mut chat.hdrag, &mut chat.hfocus);
+            // The bar's drag is a separate capture holder: clear it here
+            // and ask for the release, never only when the rail's says so.
+            let had_bar = chat.vbar.take().is_some();
+            release = release || action.release_own_capture || had_bar;
         } else {
             chat.search_missing = true;
         }
     });
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    release
 }
 
 /// A click inside the right-hand panel. **The panel takes every click in
@@ -4478,7 +4804,7 @@ fn search_click(hwnd: HWND, x: i32, y: i32) -> bool {
                 .as_ref()
                 .map_or(0, |feed| feed.search_results().len());
             if index < count {
-                locate_hit(chat, index);
+                locate_hit(chat, index, hwnd);
                 clicked = Some(());
             }
         });
@@ -4490,8 +4816,8 @@ fn search_click(hwnd: HWND, x: i32, y: i32) -> bool {
     true
 }
 
-/// The one rectangle the rows live in: message pane (side slot taken out),
-/// below the fixed header and top strip, above the bottom strip. **Every
+/// The one rectangle the rows live in: the message pane (side slot and the
+/// scrollbar's track taken out), below the fixed header. **Every
 /// measurement, paint, hit test and scroll uses this.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MessageRect {
@@ -4499,8 +4825,18 @@ struct MessageRect {
     top: i32,
     width: i32,
     height: i32,
-    /// The top strip's own top (the header ends there).
-    strip_top: i32,
+    /// The vertical scrollbar's track: `(x, y, w, h)`, in client pixels.
+    bar: (i32, i32, i32, i32),
+}
+
+/// **The one text column width**: the message pane's right edge, less the
+/// padding, the scrollbar's track and the gap to the window's edge. Paint,
+/// the row hit test and every header measurement take their width here, so
+/// a bar on the right cannot put one of them a bar's width off.
+fn message_width(messages_right: i32, left: i32, metrics: &Metrics) -> i32 {
+    let bar_w = (chat_rows::BAR_W_PT * metrics.scale).round().max(1.0) as i32;
+    let bar_gap = (chat_rows::BAR_GAP_PT * metrics.scale).round().max(0.0) as i32;
+    (messages_right - left - metrics.pad - bar_w - bar_gap).max(1)
 }
 
 fn message_rect(
@@ -4513,22 +4849,24 @@ fn message_rect(
 ) -> MessageRect {
     let left = client.left + metrics.pad;
     let (messages_right, _) = split(client, metrics, sidebar_of(open));
-    let width = (messages_right - left - metrics.pad).max(1);
+    // **The bar takes its width out of the text column**: rows never run
+    // under the thumb.
+    let width = message_width(messages_right, left, metrics);
+    let bar_w = (chat_rows::BAR_W_PT * metrics.scale).round().max(1.0) as i32;
+    let bar_gap = (chat_rows::BAR_GAP_PT * metrics.scale).round().max(0.0) as i32;
     let top = client.top + metrics.pad;
     let header = header_geom(dc, left, top, width, metrics, feed.metadata(), brief_open);
-    let strip_top = top + header.total;
-    let strip_h = metrics.line + metrics.gap;
-    let later_h = if later_words(feed).is_some() {
-        metrics.line + metrics.gap
-    } else {
-        0
-    };
+    // **The rows begin where the header ends**: there is no strip between
+    // them any more, in either direction.
+    let content_top = top + header.total;
+    let height = (client.bottom - content_top - metrics.pad).max(metrics.line);
+    let bar_x = (messages_right - bar_gap - bar_w).max(left);
     MessageRect {
         left,
-        top: strip_top + strip_h,
+        top: content_top,
         width,
-        height: (client.bottom - (strip_top + strip_h) - later_h - metrics.pad).max(metrics.line),
-        strip_top,
+        height,
+        bar: (bar_x, content_top, bar_w, height),
     }
 }
 
@@ -5407,8 +5745,8 @@ fn preview_click(hwnd: HWND, x: i32, y: i32) -> bool {
 }
 
 /// A click on the page's own furniture -- the header, its member popover,
-/// the older-history strip, the "back to latest" pill. **Consumed before
-/// the row hit test**, so a chip never becomes a table drag.
+/// the "back to latest" pill. **Consumed before the row hit test**, so a
+/// chip never becomes a table drag.
 fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
     if search_click(hwnd, x, y) {
         return true;
@@ -5431,7 +5769,7 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
             .unwrap_or(false)
     });
     let (messages_right, _) = split(&client, &metrics, sidebar_of(opened));
-    let width = (messages_right - left - metrics.pad).max(1);
+    let width = message_width(messages_right, left, &metrics);
     let top = client.top + metrics.pad;
     let dc = unsafe { GetDC(Some(hwnd)) };
     if dc.0.is_null() {
@@ -5518,41 +5856,9 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
             start_preview(chat, anchor, location, reference);
             return Hit::Yes { repaint: true };
         }
-        // The older-history strip, always the first line of the message
-        // pane; clicking it retries or asks for the next older page.
-        if y >= msg_top && y < msg_top + metrics.line + metrics.gap {
-            let now = now_ms();
-            if let Some(feed) = chat.feed.as_mut() {
-                if feed.context_window() && feed.context_can(true) {
-                    if let Some(id) = next_request_id() {
-                        let _ = feed.load_context(true, id, now);
-                    }
-                } else if feed.can_load_older() {
-                    if let Some(id) = next_request_id() {
-                        let _ = feed.load_older(id, now);
-                    }
-                }
-            }
-            return Hit::Yes { repaint: true };
-        }
-        // The context window's lower edge.
-        let has_later = chat
-            .feed
-            .as_ref()
-            .is_some_and(|feed| later_words(feed).is_some());
-        if has_later {
-            let later_h = metrics.line + metrics.gap;
-            let y0 = client.bottom - metrics.pad - later_h;
-            if y >= y0 && y < y0 + later_h {
-                let now = now_ms();
-                if let Some(feed) = chat.feed.as_mut() {
-                    if let Some(id) = next_request_id() {
-                        let _ = feed.load_context(false, id, now);
-                    }
-                }
-                return Hit::Yes { repaint: true };
-            }
-        }
+        // **No load-earlier entry and no later edge to click.** Loading is
+        // requested by scrolling near the top; the only control left in
+        // the pane is the "new messages / back to latest" pill.
         // The "new messages / back to latest" pill.
         let Some(feed) = chat.feed.as_ref() else {
             return Hit::Yes { repaint: false };
@@ -5575,13 +5881,20 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
                 let _ = DeleteObject(body.into());
             }
             if x >= x0 && x < x0 + w && y >= y0 && y < y0 + h {
+                // **"Back to latest" is a return to the latest page, not a
+                // scroll of the located map.** In an around window this
+                // clears the body and bootstraps the newest page again; in
+                // the history it joins the waiting tail. Either way the
+                // view lands at the bottom once the page has been read --
+                // `land_bottom`, never a scroll of the old map.
                 if let Some(feed) = chat.feed.as_mut() {
                     feed.return_to_latest(now_ms());
                 }
                 chat.follow = true;
                 chat.new_rows = false;
                 chat.around_seen = None;
-                chat.scroll = chat.layout.clamp(i32::MAX, chat.view_h.max(1));
+                chat.jump = None;
+                chat.land_bottom = true;
                 return Hit::Yes { repaint: true };
             }
         }
@@ -5612,6 +5925,93 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
             true
         }
     }
+}
+
+/// **A failed or empty older block gets a non-blocking exit.** One short
+/// line is shown for 2.5 s -- no strip, no height taken from the rows, no
+/// dead scroll that reads as "beginning of the group". Each state speaks
+/// once: reaching the end and failing twice are the same sentence, not a
+/// new one every tick. The retry clock lives in the feed, so this is only
+/// what the person sees.
+fn sync_older_notice(hwnd: HWND) -> bool {
+    let mut invalidate = false;
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return;
+        };
+        if !chat.shown {
+            return;
+        }
+        // **A sentence that has been up for 2.5 s is taken down here.**
+        // Paint already stops drawing it, but without this the part of
+        // the page it covered is never repainted and the sentence stays
+        // on screen until something else invalidates the window.
+        if chat.older_notice.as_ref().is_some_and(|(_, at)| {
+            at.elapsed() >= std::time::Duration::from_millis(2500)
+        }) {
+            chat.older_notice = None;
+            invalidate = true;
+        }
+        // A located-jump failure keeps the line it just put up; the older
+        // state's sentence waits until that moment is over.
+        if chat.older_notice.as_ref().is_some_and(|(_, at)| {
+            chat.older_notice_key.as_deref() == Some("jump:lost")
+                && at.elapsed() < std::time::Duration::from_millis(2500)
+        }) {
+            return;
+        }
+        let Some(feed) = chat.feed.as_ref() else {
+            return;
+        };
+        let (key, word) = if feed.context_window() {
+            if feed.aux_busy() {
+                return;
+            } else if feed.aux_error().is_some() {
+                (
+                    "ctx:failed",
+                    crate::i18n::tr("Earlier messages could not be read."),
+                )
+            } else if feed.context_dirty(true) {
+                (
+                    "ctx:gap",
+                    crate::i18n::tr("Some earlier records could not be read."),
+                )
+            } else if !feed.context_can(true) {
+                ("ctx:end", crate::i18n::tr("Beginning of the group"))
+            } else {
+                return;
+            }
+        } else {
+            match feed.older() {
+                // **Only a failure speaks here.** `Incomplete` is the state
+                // of an ordinary successful page whose tail can continue;
+                // saying "could not be read" after every loaded block would
+                // be a lie and would make loading visible.
+                chat_feed::OlderState::Failed(_) => (
+                    "hist:failed",
+                    crate::i18n::tr("Earlier messages could not be read."),
+                ),
+                chat_feed::OlderState::Gap => (
+                    "hist:gap",
+                    crate::i18n::tr("Some earlier records could not be read."),
+                ),
+                chat_feed::OlderState::End => {
+                    ("hist:end", crate::i18n::tr("Beginning of the group"))
+                }
+                _ => return,
+            }
+        };
+        if chat.older_notice_key.as_deref() == Some(key) {
+            return;
+        }
+        chat.older_notice_key = Some(key.to_owned());
+        chat.older_notice = Some((word, std::time::Instant::now()));
+        invalidate = true;
+    });
+    invalidate
 }
 
 /// Keep a following view on the bottom; a view reading history never
@@ -5698,6 +6098,23 @@ fn search_scroll_by(hwnd: HWND, by: i32) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
+/// The message pane's height, as the last paint measured it -- or
+/// `fallback` before the first paint. **The page PgUp/PgDn moves**: the
+/// fixed header is not part of it.
+fn message_page_h(hwnd: HWND, fallback: i32) -> i32 {
+    CHATS.with(|c| {
+        c.try_borrow()
+            .ok()
+            .and_then(|c| {
+                c.iter()
+                    .find(|x| x.hwnd == hwnd.0 as isize)
+                    .map(|x| x.view_h)
+            })
+            .filter(|h| *h > 0)
+            .unwrap_or(fallback)
+    })
+}
+
 fn scroll_by(hwnd: HWND, by: i32) {
     let key = hwnd.0 as isize;
     CHATS.with(|c| {
@@ -5708,6 +6125,10 @@ fn scroll_by(hwnd: HWND, by: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
+        // **The reader takes the view over**: a wheel or key move cancels a
+        // pending jump correction, so the next publish cannot pull the view
+        // back to a target the person just scrolled away from.
+        chat.jump = None;
         chat.scroll = chat.layout.clamp(chat.scroll - by, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -5726,10 +6147,13 @@ fn scroll_by(hwnd: HWND, by: i32) {
                 feed.enter_reading();
             }
         }
-        // **Scrolling at an edge asks for the next page**: the context
-        // window uses its own two directions; the history chain its token.
+        // **Scrolling near the top asks for the next block**: one screen,
+        // not only the exact top, and with no visible entry -- loading is a
+        // background act. The context window uses its own two directions;
+        // the history chain uses its token. `can_load_older` keeps this to
+        // one request at a time.
         let now = now_ms();
-        if by > 0 && chat.scroll == 0 {
+        if by > 0 && chat.scroll <= view_h {
             if let Some(feed) = chat.feed.as_mut() {
                 if let Some(id) = next_request_id() {
                     if feed.context_window() {
@@ -5762,6 +6186,7 @@ fn scroll_to(hwnd: HWND, at: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
+        chat.jump = None;
         chat.scroll = chat.layout.clamp(at, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -5916,9 +6341,9 @@ fn publish_heights(hwnd: HWND) {
             return;
         };
         // **The plan is measured for the same rectangle paint draws and
-        // the hit test uses**: the message pane, below the fixed header
-        // and between the two boundary strips, with the side panel's
-        // width already taken out.
+        // the hit test uses**: the message pane, below the fixed header,
+        // with the side panel's width and the scrollbar's track already
+        // taken out.
         let msg = message_rect(
             dc,
             &client,
@@ -6009,10 +6434,32 @@ fn publish_heights(hwnd: HWND) {
                 doc,
             });
         }
+        // **±4 screens is how far a parsed document or a measured plan is
+        // kept**; beyond that its `Arc`s are released. Parsing is preheated
+        // ±1.5 screens (see `demand_in_sight`), so the extra reach here is
+        // what makes a scroll back into the previous screens free.
+        let keep_top = chat.scroll.saturating_sub(view_h.saturating_mul(4));
+        let keep_span = view_h.saturating_mul(9);
+        let keep_range = chat.layout.visible(keep_top, keep_span);
+        let mut keep: Vec<(String, u64, usize)> = Vec::with_capacity(keep_range.len());
+        for i in keep_range {
+            let Some(row) = feed.rows().get(i) else {
+                continue;
+            };
+            let key = MdKey {
+                group: group.clone(),
+                generation,
+                anchor: row.message.anchor.clone(),
+                content_version: row.message.content_version,
+            };
+            let ptr = crate::markdown_service::document(&key)
+                .map(|d| std::sync::Arc::as_ptr(&d) as usize)
+                .unwrap_or(0);
+            keep.push((row.id.clone(), row.message.content_version, ptr));
+        }
         chat.plans.retain(|p| {
-            candidates
-                .iter()
-                .any(|c| c.id == p.row_id && c.version == p.version && c.identity.doc == p.doc_ptr)
+            keep.iter()
+                .any(|(id, version, doc)| p.row_id == *id && p.version == *version && p.doc_ptr == *doc)
         });
         // Eviction, a rebuilt plan, a new document or a vanished block
         // kills the drag/focus here, in the same pure criterion the tests
@@ -6148,17 +6595,76 @@ fn publish_heights(hwnd: HWND) {
             }
         }
 
-        let anchor = chat
-            .layout
-            .anchor(chat.scroll)
-            .map(|(id, offset)| (id.to_owned(), offset));
+        // **A jump lands on its target, and a fresh entry lands at the
+        // bottom**: neither keeps the old reading anchor. Only an ordinary
+        // publish (an older block arriving above) restores the row that was
+        // at the top, which is what makes loading older invisible.
+        let anchor = if chat.jump.is_some() || chat.land_bottom {
+            None
+        } else {
+            chat.layout
+                .anchor(chat.scroll)
+                .map(|(id, offset)| (id.to_owned(), offset))
+        };
         let changed = chat
             .layout
             .publish(&identities, &decisions, &metrics, width);
-        if let Some((id, offset)) = anchor {
-            if let Some(at) = chat.layout.scroll_for(&id, offset) {
-                chat.scroll = at;
+        // **A jump stays pinned to its target until that row is measured**,
+        // not for a fixed number of publishes: the tick measures at most
+        // four rows, so the target may still carry a placeholder height for
+        // several ticks. When the row is gone from the window, or when an
+        // ordinary anchor's row was evicted, the view falls back to the
+        // nearest measured row and says so once instead of re-anchoring in
+        // silence.
+        if let Some(id) = chat.jump.clone() {
+            match chat.layout.scroll_for(&id, 0) {
+                Some(at) => {
+                    chat.scroll = at;
+                    let measured = chat
+                        .layout
+                        .rows()
+                        .iter()
+                        .find(|r| r.id == id)
+                        .is_some_and(|r| !r.placeholder);
+                    if measured {
+                        chat.jump = None;
+                    }
+                }
+                None => {
+                    if let Some(at) = chat.layout.nearest_measured(chat.scroll) {
+                        chat.scroll = at;
+                    }
+                    plogf!(
+                        "[chat-native] jump target {:?} left the window; fell back to the nearest measured row",
+                        id
+                    );
+                    // **The person sees it too**: a jump that cannot land
+                    // says so for 2.5 s on the page, never only in the log.
+                    chat.older_notice = Some((
+                        crate::i18n::tr("That message is not in this window."),
+                        std::time::Instant::now(),
+                    ));
+                    chat.older_notice_key = Some("jump:lost".to_owned());
+                    chat.jump = None;
+                }
             }
+        } else if let Some((id, offset)) = anchor {
+            match chat.layout.scroll_for(&id, offset) {
+                Some(at) => chat.scroll = at,
+                None => {
+                    if let Some(at) = chat.layout.nearest_measured(chat.scroll) {
+                        chat.scroll = at;
+                    }
+                    plogf!(
+                        "[chat-native] anchor row {:?} was evicted; fell back to the nearest measured row",
+                        id
+                    );
+                }
+            }
+        }
+        if chat.land_bottom {
+            chat.scroll = chat.layout.clamp(i32::MAX, view_h);
+            chat.land_bottom = false;
         }
         chat.scroll = chat.layout.clamp(chat.scroll, view_h);
         invalidate = invalidate || changed;
@@ -6198,7 +6704,15 @@ fn demand_in_sight(hwnd: HWND) {
         let group = chat.group.clone();
         let generation = feed.generation();
         let view_h = chat.view_h.max(1);
-        let range = chat.layout.visible(chat.scroll, view_h);
+        // **1.5 screens above the view and 1.5 below it.** `visible` takes
+        // a top and a span, so the span is the viewport plus both margins:
+        // 4 × the view's height, starting 1.5 screens above the scroll.
+        // Markdown is parsed before it is scrolled into sight; the plan
+        // itself is still built only for the viewport (`publish_heights`).
+        let preheat = view_h.saturating_mul(3) / 2;
+        let range = chat
+            .layout
+            .visible(chat.scroll.saturating_sub(preheat), view_h.saturating_mul(4));
         let mut items = Vec::new();
         for i in range {
             let Some(row) = feed.rows().get(i) else {
@@ -6320,8 +6834,15 @@ fn tick(hwnd: HWND) {
     publish_heights(hwnd);
     // A following view stays on the bottom; a reading view keeps its place.
     sync_follow(hwnd);
+    // A failed or empty older block says so once, without moving anything;
+    // the line is taken down again after 2.5 s.
+    if sync_older_notice(hwnd) {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
     search_tick(hwnd, now);
-    apply_around(hwnd);
+    if apply_around(hwnd) {
+        release_own_capture(hwnd);
+    }
     apply_reference(hwnd);
     drain_orphan_reference(hwnd);
     discard_unwanted_reference(hwnd);

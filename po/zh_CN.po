@@ -3198,6 +3198,10 @@ msgstr "搜索当前群"
 msgid "That message is not loaded here."
 msgstr "该消息不在当前已载入的范围内。"
 
+#: windows/host/src/chat_native.rs:6644
+msgid "That message is not in this window."
+msgstr "该消息不在当前窗口中。"
+
 #: windows/host/src/chat_native.rs:1784
 msgid "Searching…"
 msgstr "正在搜索…"
@@ -3257,6 +3261,10 @@ msgstr "正在加载更早的记录…"
 #: windows/host/src/chat_native.rs:3158 windows/host/src/chat_native.rs:3184
 msgid "Earlier messages could not be read. Click to retry."
 msgstr "无法读取更早的记录。点击重试。"
+
+#: windows/host/src/chat_native.rs:5975 windows/host/src/chat_native.rs:5995
+msgid "Earlier messages could not be read."
+msgstr "无法读取更早的记录。"
 
 #: windows/host/src/chat_native.rs:3163 windows/host/src/chat_native.rs:3176
 #: windows/host/src/chat_native.rs:3191

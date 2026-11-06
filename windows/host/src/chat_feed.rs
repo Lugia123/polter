@@ -28,9 +28,19 @@ use crate::chat_read::{
 };
 
 /// The most rows one feed keeps. Older rows go first.
-pub const WINDOW_LIMIT: usize = 500;
-/// The text and identity budget those rows may use, in bytes.
-pub const WINDOW_BYTES: usize = 4 * 1024 * 1024;
+///
+/// **The whole session, not one screenful**: the reading window keeps what
+/// the person has loaded (5000 rows) and evicts a block at a time, so a
+/// page that was just read is not trimmed away one row at a time.
+pub const WINDOW_LIMIT: usize = 5_000;
+/// The text and identity budget those rows may use, in bytes. Raised with
+/// the row limit: 5000 rows at a few kilobytes each would otherwise hit
+/// the byte budget long before the row limit and silently keep far fewer.
+pub const WINDOW_BYTES: usize = 32 * 1024 * 1024;
+/// Rows dropped at once when the window is over its limit. **A block, not
+/// one row**: evicting one row per tick would make every scroll past the
+/// limit re-lay out the page.
+pub const EVICT_ROWS: usize = 100;
 
 /// How often a visible feed reads live, and how soon it catches up while
 /// the core says there is more.
@@ -38,15 +48,32 @@ pub const LIVE_PERIOD_MS: u64 = 2_000;
 pub const CATCH_UP_MS: u64 = 200;
 /// How soon a pending history scan is asked again.
 pub const HISTORY_POLL_MS: u64 = 200;
+/// **How long a failed or empty block is not asked for again.** Without
+/// this, every wheel notch at the top would re-ask the page that just
+/// failed; the host still shows the failure, but once.
+pub const AUX_RETRY_MS: u64 = 2_000;
 
-/// The page size a bootstrap asks for.
-pub const BEGIN_LIMIT: u16 = 50;
+// **Four doors, four sizes.** They are separate constants even where two
+// values happen to agree today: the first screen, an older block, a page
+// of search results and a context window's direction are different
+// questions, and one number used in four places makes changing any of
+// them change all of them.
+/// The first screen: 100 rows.
+pub const FIRST_CHUNK: u16 = 100;
+/// One older block: 50 rows each time the reader comes near the top.
+pub const OLDER_CHUNK: u16 = 50;
+/// One page of search results: its own value, unchanged from before.
+pub const SEARCH_CHUNK: u16 = 50;
+/// One page in a context window's direction: its own value.
+pub const CONTEXT_CHUNK: u16 = 50;
 /// Empty budget pages stepped past in one ask. Each step is a different
 /// physical range; the cap only stops a runaway scan from spinning here.
 pub const AUTO_ADVANCE_LIMIT: u8 = 8;
 /// New messages kept while the reader is in the history, apart from the
-/// reading window. Bounded like the body.
-pub const TAIL_LIMIT: usize = 200;
+/// reading window. **Ten eviction blocks**, so the waiting tail is always
+/// smaller than the window it rejoins and a return to the latest cannot
+/// drop more than it keeps.
+pub const TAIL_LIMIT: usize = EVICT_ROWS * 10;
 /// Hits kept for the right-hand panel. The core pages; the host's list is
 /// bounded like the body.
 pub const SEARCH_RESULTS_LIMIT: usize = 500;
@@ -169,7 +196,12 @@ enum TrimEnd {
 /// The bounded body and its alias indexes. **One owner per row**: the
 /// indexes map a core identity to the row's display id, and a row removed
 /// from the front takes every alias that pointed at it.
-#[derive(Debug, Default)]
+///
+/// **The two bounds are instance fields**, not the constants read directly:
+/// a test lowers them to a few rows and a few bytes and drives the real
+/// trimming code. Reading `WINDOW_LIMIT`/`WINDOW_BYTES` directly made the
+/// "never empties" invariant impossible to test with a fixture.
+#[derive(Debug)]
 struct Body {
     rows: Vec<Row>,
     /// Canonical `anchor` -> display id.
@@ -177,6 +209,23 @@ struct Body {
     /// `live_anchor` -> display id.
     live_anchors: HashMap<String, String>,
     bytes: usize,
+    /// The most rows this body keeps (default `WINDOW_LIMIT`).
+    limit: usize,
+    /// The text and identity budget (default `WINDOW_BYTES`).
+    bytes_limit: usize,
+}
+
+impl Default for Body {
+    fn default() -> Body {
+        Body {
+            rows: Vec::new(),
+            anchors: HashMap::new(),
+            live_anchors: HashMap::new(),
+            bytes: 0,
+            limit: WINDOW_LIMIT,
+            bytes_limit: WINDOW_BYTES,
+        }
+    }
 }
 
 impl Body {
@@ -244,15 +293,30 @@ impl Body {
         self.trim_keeping(TrimEnd::Newest)
     }
 
+    /// **Evict a block, not a row.** The window is bounded at 5000 rows (or
+    /// 32 MiB); when it goes over, one whole block of `EVICT_ROWS` leaves
+    /// the chosen end. Dropping a single row would make every new message
+    /// past the limit renumber and re-lay out the whole page; a block makes
+    /// the discontinuity rare and explicit, and the bool returned is what
+    /// says it happened.
     fn trim_keeping(&mut self, end: TrimEnd) -> bool {
         let mut dropped = false;
-        while self.rows.len() > WINDOW_LIMIT || self.bytes > WINDOW_BYTES {
-            if self.rows.is_empty() {
-                break;
-            }
-            match end {
-                TrimEnd::Oldest => self.drop_oldest(),
-                TrimEnd::Newest => self.drop_newest(),
+        // **Never empty the body**: a single over-budget row is kept (the
+        // page says the block too large rather than showing nothing), even
+        // when that row alone is over the byte limit.
+        while self.rows.len() > 1
+            && (self.rows.len() > self.limit || self.bytes > self.bytes_limit)
+        {
+            // **Always leave one row.** `len > 1` is the entry condition,
+            // but the block itself must also stop short of emptying the
+            // body: with a byte bound and a body of 100 rows or fewer, a
+            // whole-block eviction would take every row at once.
+            let block = EVICT_ROWS.min(self.rows.len() - 1);
+            for _ in 0..block {
+                match end {
+                    TrimEnd::Oldest => self.drop_oldest(),
+                    TrimEnd::Newest => self.drop_newest(),
+                }
             }
             dropped = true;
         }
@@ -264,7 +328,7 @@ impl Body {
     /// `TooLarge`, not a truncation).
     fn absorb(&mut self, message: Message) -> bool {
         let cost = Self::cost(&message);
-        if cost > WINDOW_BYTES {
+        if cost > self.bytes_limit {
             return false;
         }
 
@@ -406,7 +470,7 @@ impl Body {
     /// budget rather than silently drop the newest rows it just added.
     fn try_absorb_back(&mut self, message: Message) -> bool {
         let cost = Self::cost(&message);
-        if self.bytes.saturating_add(cost) > WINDOW_BYTES || self.rows.len() >= WINDOW_LIMIT {
+        if self.bytes.saturating_add(cost) > self.bytes_limit || self.rows.len() >= self.limit {
             return false;
         }
         // Aliases are kept in one place by `absorb`; here the rows are
@@ -735,6 +799,14 @@ pub struct Feed {
     context_remainder: Vec<Message>,
     aux_error: Option<String>,
     older: OlderState,
+    /// When the current older ask was made, and the earliest moment a new
+    /// one may be made after a failure or an empty block. **Both ends use
+    /// their own clock**: a context window and the history chain are
+    /// different doors and one must not cool the other.
+    older_asked_ms: u64,
+    older_retry_at: u64,
+    context_asked_ms: u64,
+    context_retry_at: u64,
     /// Empty budget pages stepped past for the current ask. Bounded so a
     /// long run of them cannot spin the scan for ever.
     auto_advances: u8,
@@ -818,6 +890,10 @@ impl Feed {
             context_remainder: Vec::new(),
             aux_error: None,
             older: OlderState::Idle,
+            older_asked_ms: 0,
+            older_retry_at: 0,
+            context_asked_ms: 0,
+            context_retry_at: 0,
             auto_advances: 0,
             reading_history: false,
             context_mode: false,
@@ -907,12 +983,19 @@ impl Feed {
     /// Returns false when there is nothing to ask, so a scroll edge cannot
     /// start a second scan.
     pub fn load_older(&mut self, request_id: String, now_ms: u64) -> bool {
+        // **A failed or empty block is not asked for again on every wheel
+        // notch.** The state still says what happened; the clock is what
+        // stops a scroll edge from becoming a retry storm.
+        if now_ms < self.older_retry_at {
+            return false;
+        }
         if !self.can_load_older() || !valid_request_id(&request_id) {
             return false;
         }
         let Some(token) = self.tail.as_ref().and_then(|t| t.next_token.clone()) else {
             return false;
         };
+        self.older_asked_ms = now_ms;
         self.older = OlderState::Loading;
         self.auto_advances = 0;
         self.reading_history = true;
@@ -1107,6 +1190,13 @@ impl Feed {
         if !self.active || !self.context_mode || !valid_request_id(&request_id) {
             return false;
         }
+        // **The context door has its own retry clock**: a gap or a failed
+        // page in a located window must not be asked for on every wheel
+        // notch either.
+        if now_ms < self.context_retry_at {
+            return false;
+        }
+        self.context_asked_ms = now_ms;
         // **A trimmed edge is recovered by re-anchoring, not by paging
         // across the gap**: ask for an around window ending at the message
         // still on screen, which restores a real four-way cursor set.
@@ -1727,7 +1817,7 @@ impl Feed {
         let request = Request::Begin {
             group: group.to_owned(),
             request_id: request_id.to_owned(),
-            limit: BEGIN_LIMIT,
+            limit: FIRST_CHUNK,
             resume_token: None,
         }
         .encode()
@@ -2315,7 +2405,15 @@ impl Feed {
             Some(AuxKind::Around) | Some(AuxKind::Reference) => {
                 self.aux_error = Some(code.to_owned())
             }
-            _ => self.older = OlderState::Failed(code.to_owned()),
+            Some(AuxKind::Context) => {
+                self.aux_error = Some(code.to_owned());
+                self.older = OlderState::Failed(code.to_owned());
+                self.context_retry_at = self.context_asked_ms.saturating_add(AUX_RETRY_MS);
+            }
+            _ => {
+                self.older = OlderState::Failed(code.to_owned());
+                self.older_retry_at = self.older_asked_ms.saturating_add(AUX_RETRY_MS);
+            }
         }
         self.aux = None;
     }
@@ -2479,16 +2577,35 @@ impl Feed {
                             }
                             Stop::Budget | Stop::Full if empty => {
                                 // **A budget page with no rows is progress.**
-                                if let Some(next) = token {
-                                    if self.auto_advances < AUTO_ADVANCE_LIMIT {
+                                match token {
+                                    Some(next) if self.auto_advances < AUTO_ADVANCE_LIMIT => {
                                         self.auto_advances += 1;
                                         self.start_older_with_token(next, now_ms);
-                                    } else {
+                                    }
+                                    Some(_) => {
+                                        // Eight empty pages in a row: stop
+                                        // stepping, but **not as "beginning
+                                        // of the group"** -- the core has not
+                                        // said there is nothing older, only
+                                        // that these pages held nothing.
+                                        self.auto_advances = 0;
                                         self.older = OlderState::Incomplete;
+                                        self.older_retry_at =
+                                            now_ms.saturating_add(AUX_RETRY_MS);
+                                    }
+                                    None => {
+                                        // An empty page with no continuation:
+                                        // this really is the beginning.
+                                        self.auto_advances = 0;
+                                        self.older = OlderState::End;
                                     }
                                 }
                             }
                             _ => {
+                                // **A normal successful page.** `Incomplete`
+                                // here means rows arrived and the tail can
+                                // be continued -- not a failure, and not a
+                                // reason to cool the door.
                                 self.auto_advances = 0;
                                 self.older = OlderState::Incomplete;
                             }
@@ -2566,6 +2683,12 @@ impl Feed {
                                     self.context_remainder.clear();
                                 }
                             }
+                        }
+                        // **A gap or restart in a located window cools its
+                        // own door**: the missing range is not asked for
+                        // again on every wheel notch.
+                        if page.gap || page.restarted {
+                            self.context_retry_at = now_ms.saturating_add(AUX_RETRY_MS);
                         }
                         self.load = if self.body.rows.is_empty() {
                             Load::Empty
@@ -2786,7 +2909,7 @@ impl Feed {
             group: group.to_owned(),
             request_id: job.request_id.clone(),
             query: job.query.clone(),
-            limit: BEGIN_LIMIT,
+            limit: SEARCH_CHUNK,
             resume_token: job.token.clone(),
         }
         .encode()
@@ -2825,7 +2948,8 @@ impl Feed {
             AuxKind::Older => Request::Begin {
                 group: group.to_owned(),
                 request_id: aux.request_id.clone(),
-                limit: BEGIN_LIMIT,
+                // One older block, not a first screen: 50.
+                limit: OLDER_CHUNK,
                 resume_token: aux.token.clone(),
             },
             AuxKind::Around => Request::AroundBegin {
@@ -2847,7 +2971,8 @@ impl Feed {
                 group: group.to_owned(),
                 request_id: aux.request_id.clone(),
                 resume_token: aux.token.clone()?,
-                limit: BEGIN_LIMIT,
+                // The around window's own continuation keeps its own size.
+                limit: CONTEXT_CHUNK,
             },
         }
         .encode()
@@ -3705,6 +3830,114 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_older_block_cools_before_it_is_asked_again() {
+        let (mut feed, job) = started("g");
+        let token = "cccccccccccccccccccccccccccccccc";
+        // **A non-empty full page**, not an empty budget one: an empty
+        // budget page steps to its continuation by itself, which would
+        // leave an ask in flight and make the first assertion a different
+        // question.
+        let first = ready(
+            "g",
+            &job,
+            "s1",
+            &[message(10, 10, "p:10", None)],
+            "full",
+            Some(token),
+        );
+        feed.accept_poll(
+            &envelope(Kind::Poll, feed.generation(), "g"),
+            body(first),
+            10,
+        );
+        assert!(feed.load_older("r-older".to_owned(), 20));
+        // The block fails (an unreadable answer is a failure, not a page).
+        feed.accept_aux_poll(
+            &envelope(Kind::AuxPoll, feed.generation(), "g"),
+            body(String::new()),
+            30,
+        );
+        assert!(matches!(feed.older(), OlderState::Failed(_)));
+        // **Not on every wheel notch**: the same block is refused by the
+        // clock, not asked again, and the person still sees the failure
+        // once (the page's notice reads the state).
+        assert!(!feed.load_older("r-again".to_owned(), 31));
+        // After the cooling period the block may be asked for again.
+        assert!(feed.load_older(
+            "r-later".to_owned(),
+            20 + AUX_RETRY_MS
+        ));
+    }
+
+    #[test]
+    fn two_successful_blocks_in_a_row_are_not_cooled() {
+        let (mut feed, job) = started("g");
+        let token = "cccccccccccccccccccccccccccccccc";
+        let first = ready(
+            "g",
+            &job,
+            "s1",
+            &[message(10, 10, "p:10", None)],
+            "full",
+            Some(token),
+        );
+        feed.accept_poll(
+            &envelope(Kind::Poll, feed.generation(), "g"),
+            body(first),
+            10,
+        );
+        assert!(feed.load_older("r-one".to_owned(), 20));
+        // The block completes normally. **`Incomplete` is success, not a
+        // failure**: the next block may be asked for at once, and the
+        // cooling clock was never set.
+        let older_job = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        feed.accept_aux_begin(
+            &envelope(Kind::AuxBegin, feed.generation(), "g"),
+            body(begin("g", older_job, "s1", 5, &[])),
+            20,
+        );
+        let older = [message(0, 6, "p:6", None)];
+        feed.accept_aux_poll(
+            &envelope(Kind::AuxPoll, feed.generation(), "g"),
+            body(ready("g", older_job, "s1", &older, "full", Some(token))),
+            30,
+        );
+        assert_eq!(feed.older(), &OlderState::Incomplete);
+        assert_eq!(feed.older_retry_at, 0);
+        assert!(feed.load_older("r-two".to_owned(), 31));
+    }
+
+    #[test]
+    fn eight_empty_pages_stop_auto_advancing_without_calling_it_the_end() {
+        let (mut feed, job) = started("g");
+        let token = "cccccccccccccccccccccccccccccccc";
+        feed.accept_poll(
+            &envelope(Kind::Poll, feed.generation(), "g"),
+            body(ready("g", &job, "s1", &[], "budget", Some(token))),
+            10,
+        );
+        let aux_job = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        for _ in 0..AUTO_ADVANCE_LIMIT {
+            feed.accept_aux_begin(
+                &envelope(Kind::AuxBegin, feed.generation(), "g"),
+                body(begin("g", aux_job, "s1", 5, &[])),
+                20,
+            );
+            feed.accept_aux_poll(
+                &envelope(Kind::AuxPoll, feed.generation(), "g"),
+                body(ready("g", aux_job, "s1", &[], "budget", Some(token))),
+                30,
+            );
+        }
+        // **Not "beginning of the group"**: the budget pages held nothing
+        // but the core never said there is nothing older, so the state is
+        // `Incomplete` and the door is cooled, not closed.
+        assert_eq!(feed.older(), &OlderState::Incomplete);
+        assert!(feed.older_retry_at > 0);
+        assert!(!feed.load_older("r-again".to_owned(), 31));
+    }
+
+    #[test]
     fn more_that_does_not_advance_stops_the_catch_up_and_keeps_the_body() {
         let (mut feed, _job) = started("g");
         let reply = live("g", "s1", 5, 5, true, &[message(5, 0, "l:s1:5", None)]);
@@ -3874,6 +4107,27 @@ mod tests {
     }
 
     #[test]
+    fn the_byte_bound_never_empties_the_window() {
+        let mut body = Body::default();
+        for i in 0..3 {
+            assert!(body.absorb(msg(&format!("p:{i}"))));
+        }
+        // **The bound is under a three-row body**, so one whole block is
+        // the whole body: the trim must still leave exactly one row --
+        // the newest -- and say that it trimmed.
+        body.bytes_limit = 1;
+        assert!(body.trim_keeping(TrimEnd::Oldest));
+        assert_eq!(body.rows.len(), 1);
+        assert_eq!(body.rows[0].id, "p:2");
+
+        // The row bound has the same floor: a limit of zero still keeps
+        // one row, and nothing was trimmed at that point.
+        body.limit = 0;
+        assert!(!body.trim_keeping(TrimEnd::Oldest));
+        assert_eq!(body.rows.len(), 1);
+    }
+
+    #[test]
     fn an_older_page_survives_the_window_limit_while_reading_history() {
         let mut body = Body::default();
         for i in 0..WINDOW_LIMIT {
@@ -3883,12 +4137,16 @@ mod tests {
         // (oldest first) would delete exactly this page.
         let older: Vec<Message> = (0..20).map(|i| msg(&format!("old:{i}"))).collect();
         body.absorb_front(older, true);
-        assert_eq!(body.rows.len(), WINDOW_LIMIT);
+        // **A block leaves the far end, not one row**: 5000 + 20 rows is
+        // over the limit by 20, and the oldest-first rule would delete the
+        // page just loaded, so one whole block (100) goes from the newest
+        // end instead.
+        assert_eq!(body.rows.len(), WINDOW_LIMIT - EVICT_ROWS + 20);
         // The page just loaded is still there, at the front.
         assert_eq!(body.rows[0].id, "old:0");
         assert_eq!(body.rows[19].id, "old:19");
         // What was trimmed is the newest end, not the reading end.
-        assert_eq!(body.rows.last().map(|r| r.id.as_str()), Some("p:479"));
+        assert_eq!(body.rows.last().map(|r| r.id.as_str()), Some("p:4899"));
     }
 
     #[test]
