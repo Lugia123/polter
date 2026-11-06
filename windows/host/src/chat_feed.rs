@@ -60,12 +60,16 @@ pub const AUX_RETRY_MS: u64 = 2_000;
 // them change all of them.
 /// The first screen: 100 rows.
 pub const FIRST_CHUNK: u16 = 100;
-/// One older block: 50 rows each time the reader comes near the top.
-pub const OLDER_CHUNK: u16 = 50;
+/// One older block: **100 rows**, asked for three screens before the edge
+/// (task 3017). The lead is what makes the edge unreachable while a read is
+/// in flight; a bigger block halves how often one has to be in flight.
+pub const OLDER_CHUNK: u16 = 100;
 /// One page of search results: its own value, unchanged from before.
 pub const SEARCH_CHUNK: u16 = 50;
-/// One page in a context window's direction: its own value.
-pub const CONTEXT_CHUNK: u16 = 50;
+/// One page in a context window's direction: its own value. **100, like an
+/// older block**: a located window is prefetched by the same three-screen
+/// lead, in both directions (task 3017).
+pub const CONTEXT_CHUNK: u16 = 100;
 /// Empty budget pages stepped past in one ask. Each step is a different
 /// physical range; the cap only stops a runaway scan from spinning here.
 pub const AUTO_ADVANCE_LIMIT: u8 = 8;

@@ -28,6 +28,12 @@ pub const PAD_PT: f64 = 12.0;
 pub const ROW_GAP_PT: f64 = 6.0;
 /// A line's height as a multiple of the body size.
 pub const LINE_FACTOR: f64 = 1.35;
+/// **How close to a loaded edge the view must come, in viewports, before
+/// the next block is asked for.** Three screens, not the exact edge: the
+/// read is in flight while the person keeps scrolling, so with a lead of
+/// three screens the edge is never reached -- that is what makes scrolling
+/// not stop to load.
+pub const PREFETCH_SCREENS: i32 = 3;
 /// The scrollbar's three shared numbers, **from the look table**: the mac
 /// host draws the same bar and reads the same values from
 /// `ControlRoomLook.swift`. They keep one spelling in this module, but the
@@ -107,6 +113,69 @@ pub struct Measured {
 /// `Ok(0, 0)` would be cached and a row would silently collapse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeasureError;
+
+/// One camera reading, exactly as the per-tick instrument records it.
+/// **A record is written only when this differs** from the last one, or
+/// when the tick is about to merge rows and the pair is the reading the
+/// criterion wants (B2 W4: two records every 200 ms was ~86 MB/day per
+/// open chat).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraReading {
+    pub top_id: String,
+    pub top_offset: i32,
+    pub scroll: i32,
+    pub rows: usize,
+    pub pinned: bool,
+}
+
+/// Whether this reading is worth a record.
+///
+/// **`scroll` is printed but not part of the key** (A2 S3): within one row
+/// the offset already moves with the pixels, so a one-pixel scroll with an
+/// unchanged `id`/`off` is nothing new; the merge tick is forced anyway.
+pub fn camera_log_due(
+    last: Option<&CameraReading>,
+    now: &CameraReading,
+    force: bool,
+) -> bool {
+    if force {
+        return true;
+    }
+    match last {
+        None => true,
+        Some(last) => {
+            last.top_id != now.top_id
+                || last.top_offset != now.top_offset
+                || last.rows != now.rows
+                || last.pinned != now.pinned
+        }
+    }
+}
+
+/// **The context window's newer direction is asked for by an input event**,
+/// and only when the view is near the window's bottom.
+///
+/// The tick used to ask again as soon as the previous page landed: a reader
+/// parked at the bottom of a located window (where `pinned` is true) was
+/// carried to the latest at ~500 rows/s, 100 rows every 200 ms, until the
+/// core said `at_end` (B2 W3).
+pub fn context_newer_due(wants_newer: bool, from_input: bool) -> bool {
+    wants_newer && from_input
+}
+
+/// **The camera: what the view is looking at.** The row at the view's top
+/// edge and how far into that row the view starts -- the truth of which
+/// the pixel scroll is only a projection. A row **id**, never an index:
+/// an older block is inserted above the reader and the far end is trimmed,
+/// and an index quietly starts naming a different row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Camera {
+    pub top_id: String,
+    /// **Pixels**, the same unit as `RowBox::top`, `height` and the host's
+    /// scroll -- a distance into the row, never a 0..1 ratio (a ratio would
+    /// land in a different line once a long message is re-measured).
+    pub top_offset: i32,
+}
 
 /// One row's place in the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -910,6 +979,12 @@ impl Layout {
 
     /// The row at the top of the view and how far into it the view starts:
     /// **the row id the contract anchors on**, never an index.
+    ///
+    /// **This is the rule both hosts use** (R2-3 修正): the last row whose
+    /// `top <= scroll`, and `scroll - top` as the offset -- lossless, including
+    /// the row's own trailing gap, which is part of its height here. A
+    /// "first row whose bottom is below `scroll`" rule would pick the next
+    /// row inside a gap and lose that distance.
     pub fn anchor(&self, scroll: i32) -> Option<(&str, i32)> {
         let row = self
             .rows
@@ -952,33 +1027,159 @@ impl Layout {
         scroll.clamp(0, max)
     }
 
-    /// **Where a view landing on the latest end goes, and whether it has
-    /// got there.** `None` is "there is no bottom to land on yet": no rows,
-    /// a page no taller than the view (the top *is* the bottom), or a page
-    /// whose rows are **all** one-line placeholders -- those heights are
-    /// not the page's, so the "bottom" of that map is somewhere in the
-    /// middle of the real one.
+    /// **Where a camera lands in pixels -- the projection.** `None` while
+    /// the row is not in the map or is still a placeholder: a placeholder
+    /// height is not the page's, so there is no honest pixel to land on
+    /// yet, and the caller projects again when the next heights arrive. A
+    /// **failed** measurement is not a placeholder (see `publish`), so its
+    /// row does project.
+    pub fn y_for(&self, id: &str, offset: i32) -> Option<i32> {
+        let row = self.rows.iter().find(|r| r.id == id)?;
+        if row.placeholder {
+            return None;
+        }
+        Some(row.top.saturating_add(offset))
+    }
+
+    /// **Truth -> pixels.** `pinned` is the other truth and needs no camera
+    /// row at all -- which is what makes the first frame of a cold start
+    /// land on the latest end before anything has been measured.
     ///
-    /// `settled` is false while a row in sight at that bottom is still a
-    /// placeholder. The caller lands anyway (so the bottom rows are what
-    /// the next tick measures) and keeps the flag, because the map grows
-    /// under the view as those heights arrive: landing once and forgetting
-    /// stops short of the bottom by exactly the heights still missing.
-    pub fn land(&self, viewport: i32) -> Option<Landing> {
-        if viewport <= 0 || self.rows.is_empty() || self.total() <= viewport {
+    /// **It is projected again on every publish** (R2-7): `total - view` is
+    /// recomputed each time, so rows that grow as their heights arrive keep
+    /// the view at the bottom instead of stopping half way (the defect 3013
+    /// fixed). A page no taller than the view has its top as its bottom,
+    /// which is 0. Only an empty map has nothing to project.
+    ///
+    /// `None` also covers a camera whose row has no honest height yet; the
+    /// caller leaves the projection alone and projects again on the next
+    /// change.
+    pub fn project(&self, camera: Option<&Camera>, pinned: bool, viewport: i32) -> Option<i32> {
+        if self.rows.is_empty() {
             return None;
         }
-        if self.rows.iter().all(|r| r.placeholder) {
-            return None;
+        let viewport = viewport.max(1);
+        if pinned {
+            return Some(self.clamp(i32::MAX, viewport));
         }
-        let scroll = self.clamp(i32::MAX, viewport);
-        let bottom = scroll.saturating_add(viewport);
-        let settled = self
-            .rows
-            .iter()
-            .filter(|r| r.top.saturating_add(r.height) > scroll && r.top < bottom)
-            .all(|r| !r.placeholder);
-        Some(Landing { scroll, settled })
+        let camera = camera?;
+        self.y_for(&camera.top_id, camera.top_offset)
+            .map(|y| self.clamp(y, viewport))
+    }
+
+    /// **Pixels -> truth**: where the view's top edge is, in the map's own
+    /// terms, for a pixel scroll the person moved to. The inverse of
+    /// `project`, and the only way a move becomes a camera.
+    ///
+    /// `None` means **"this frame has nothing to compute with"**, not "the
+    /// position is unknown" (R2-4): the caller keeps the camera and
+    /// `pinned` exactly as they were and waits for the next map.
+    pub fn camera_at(&self, scroll: i32) -> Option<Camera> {
+        let (id, offset) = self.anchor(scroll)?;
+        Some(Camera {
+            top_id: id.to_owned(),
+            top_offset: offset,
+        })
+    }
+
+    /// **The camera's row when it must be measured out of turn**: the feed
+    /// holds it, but the published map does not yet have this exact row
+    /// with a real height -- it is missing (a window swap lands one tick
+    /// before `publish` rebuilds the map) or still a placeholder.
+    ///
+    /// **The ids come from the feed, not from `rows()`** (B2 W1): looking
+    /// in the layout would miss exactly the tick that needs it after an
+    /// `around` swaps the window, which is the tick the jump has to land
+    /// on.
+    pub fn waiting_camera_row<'a>(
+        &self,
+        camera: Option<&Camera>,
+        feed_ids: impl Iterator<Item = &'a str>,
+    ) -> Option<usize> {
+        let camera = camera?;
+        feed_ids.enumerate().find_map(|(i, id)| {
+            let measured = self
+                .rows
+                .get(i)
+                .is_some_and(|r| r.id == camera.top_id && !r.placeholder);
+            (id == camera.top_id.as_str() && !measured).then_some(i)
+        })
+    }
+
+    /// **Which rows the Markdown service is asked to parse**: one and a
+    /// half screens either side of the viewport, **plus the camera's row
+    /// when it is still waiting for a real height**.
+    ///
+    /// The camera's row can be far outside the viewport -- a jump to a row
+    /// that was loaded but never parsed, or a row an `around` just brought
+    /// in. Without it in the demand that row keeps its placeholder height
+    /// for ever, so `y_for` and `project` stay `None` and the jump never
+    /// lands: the Windows form of the deadlock the mac host avoids by
+    /// making its list instantiate the row. Parsing is what makes the row
+    /// real.
+    ///
+    /// Indices into the **feed's** rows (the two are index-aligned once the
+    /// publish below has run), ascending, no duplicates.
+    pub fn demand_rows<'a>(
+        &self,
+        scroll: i32,
+        viewport: i32,
+        camera: Option<&Camera>,
+        feed_ids: impl Iterator<Item = &'a str>,
+    ) -> Vec<usize> {
+        let viewport = viewport.max(1);
+        let preheat = viewport.saturating_mul(3) / 2;
+        let mut out: Vec<usize> = self
+            .visible(scroll.saturating_sub(preheat), viewport.saturating_mul(4))
+            .collect();
+        if let Some(i) = self.waiting_camera_row(camera, feed_ids) {
+            if !out.contains(&i) {
+                out.push(i);
+                out.sort_unstable();
+            }
+        }
+        out
+    }
+
+    /// Whether the view is near enough to the loaded top to ask for the
+    /// block before it: **three viewports of lead, measured from the view's
+    /// own top edge**. An empty map is always near an edge.
+    pub fn wants_older(&self, scroll: i32, viewport: i32) -> bool {
+        if self.rows.is_empty() || viewport <= 0 {
+            return true;
+        }
+        scroll < viewport.saturating_mul(PREFETCH_SCREENS)
+    }
+
+    /// Whether the older block should be **asked for now**: within the
+    /// three-screen lead, and not while the view is pinned to the latest
+    /// end -- **except when the map is no taller than the view**.
+    ///
+    /// `max == 0` is the case where "pinned" says nothing about following
+    /// the latest: the wheel cannot move the pixels at all (they clamp to
+    /// 0), so requiring `!pinned` there is a dead end -- a first page
+    /// shorter than the view, with older rows still on the core, would
+    /// never be extended by any gesture (B2 W2, a regression from the
+    /// pre-camera code that asked on every up-scroll).
+    ///
+    /// **`max == 0` also makes the tick ask again** (prefetch runs every
+    /// publish), so a short first page with more history on the core is a
+    /// bounded background scan -- the feed's own cooldown (2 s) and its
+    /// `Loading` gate cap it. That is the shape this rule exists for, not
+    /// a storm, and not a person's gesture.
+    pub fn wants_older_block(&self, scroll: i32, viewport: i32, pinned: bool) -> bool {
+        let max = self.clamp(i32::MAX, viewport.max(1));
+        self.wants_older(scroll, viewport) && (!pinned || max == 0)
+    }
+
+    /// Whether the view is near enough to the loaded bottom to ask for the
+    /// rows after it.
+    pub fn wants_newer(&self, scroll: i32, viewport: i32) -> bool {
+        if self.rows.is_empty() || viewport <= 0 {
+            return true;
+        }
+        self.clamp(i32::MAX, viewport).saturating_sub(scroll)
+            < viewport.saturating_mul(PREFETCH_SCREENS)
     }
 
     /// How many rows the viewport covers at `scroll`, at least one.
@@ -1057,16 +1258,6 @@ impl Layout {
             ticks: self.rows.len(),
         })
     }
-}
-
-/// Where a view landing on the latest end goes, and whether the bottom it
-/// puts in sight carries every height it needs. See `Layout::land`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Landing {
-    pub scroll: i32,
-    /// Every row in sight at `scroll` has a measured height, so the bottom
-    /// will not move when the next heights arrive.
-    pub settled: bool,
 }
 
 /// One vertical scrollbar's geometry. **Graduated in loaded rows**: the
@@ -2465,22 +2656,18 @@ mod tests {
         assert_eq!(bottom.thumb_y, track.1 + track.3 - bottom.thumb_h);
     }
 
-    /// **A map with no measured rows is not a bottom, however tall it
-    /// looks.** This is the tick the entry lands on if the flag is spent
-    /// too early: the window clamps to 0, and the page it was waiting for
-    /// arrives with nothing left to land it.
+    /// **Pinned is re-projected on every tick, not consumed once** (R2-7).
+    /// The first frame lands at the bottom of the map it has -- placeholders
+    /// and all -- and every later publish recomputes `total - view`, so the
+    /// view keeps up as rows grow instead of stopping half way. That is the
+    /// defect (3013) a one-shot flag had.
     #[test]
-    fn an_empty_or_all_placeholder_map_is_no_bottom_to_land_on() {
+    fn a_pinned_view_projects_to_the_bottom_on_every_tick() {
         let m = Metrics::for_dpi(96);
         let view_h = 534;
-        // Nothing loaded at all: the state of the first tick after entry.
-        let empty = Layout::new();
-        let empty_landing: Option<Landing> = empty.land(view_h);
-        assert_eq!(empty_landing, None);
-        // Every row present and every row a one-line placeholder: the map
-        // is taller than the view, and its "bottom" is still not the page's
-        // -- landing there puts the view in the middle once the heights
-        // arrive. The placeholder map here is 840 px against a 534 px view.
+        let ident = identity("g", "a", 1, 0, 300);
+        // Every row present and every one a placeholder: the first tick of
+        // a cold entry, already at the bottom of that map.
         let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
         let rows: Vec<RowIdentity> = ids
             .iter()
@@ -2492,25 +2679,16 @@ mod tests {
             .collect();
         let mut layout = Layout::new();
         layout.publish(&rows, &[], &m, 300);
-        let placeholder_total = layout.total();
-        let placeholders_are_taller = placeholder_total > view_h;
-        assert!(placeholders_are_taller, "total {placeholder_total}");
-        let placeholder_landing: Option<Landing> = layout.land(view_h);
-        assert_eq!(placeholder_landing, None);
-        // A viewport that has not been laid out yet has no bottom either.
-        let unlaid_out: Option<Landing> = empty.land(0);
-        assert_eq!(unlaid_out, None);
-    }
-
-    /// **A measured page lands on its last row**: the bottom of the map
-    /// less one view, and there is nothing left to wait for.
-    #[test]
-    fn a_measured_page_lands_on_the_bottom_and_settles() {
-        let m = Metrics::for_dpi(96);
-        let view_h = 534;
-        let ident = identity("g", "a", 1, 0, 300);
-        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
-        let rows: Vec<RowIdentity> = ids
+        assert!(layout.rows().iter().all(|r| r.placeholder));
+        let first = layout.project(None, true, view_h).expect("a bottom");
+        assert_eq!(first, (layout.total() - view_h).max(0));
+        // The same tick, twice: idempotent, and nothing has to be consumed.
+        assert_eq!(layout.project(None, true, view_h), Some(first));
+        // **More placeholder rows arrive**: the projection is *recomputed*
+        // from the map it has, not frozen at the first estimate -- that is
+        // the 3013 regression this pins.
+        let more: Vec<String> = (0..40).map(|i| format!("r{i}")).collect();
+        let more_rows: Vec<RowIdentity> = more
             .iter()
             .map(|id| RowIdentity {
                 id,
@@ -2518,89 +2696,61 @@ mod tests {
                 date: false,
             })
             .collect();
-        let decisions: Vec<Decision> = ids
-            .iter()
-            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
-            .collect();
-        let mut layout = Layout::new();
-        layout.publish(&rows, &decisions, &m, 300);
-        let total = layout.total();
-        let bottom = total - view_h;
-        assert_eq!(
-            layout.land(view_h),
-            Some(Landing {
-                scroll: bottom,
-                settled: true
-            })
+        layout.publish(&more_rows, &[], &m, 300);
+        assert!(layout.rows().iter().all(|r| r.placeholder));
+        let taller = layout.project(None, true, view_h).expect("a bottom");
+        assert!(taller > first, "the bottom followed the map: {taller} vs {first}");
+        assert_eq!(taller, layout.total() - view_h);
+        // Heights arrive for the last rows first (what the tick measures):
+        // the bottom moves down, and the same truth follows it on the very
+        // next tick -- no landing flag to have been spent.
+        layout.publish(
+            &more_rows,
+            &[replace("r39", 1, Source::Raw, &ident, 100)],
+            &m,
+            300,
         );
-    }
-
-    /// **The bottom keeps moving while its own rows are being measured**:
-    /// the landing happens on the placeholders so the next tick measures
-    /// the rows that are actually there, and it is landed again until none
-    /// of them is a placeholder -- otherwise the view stops short of the
-    /// latest by exactly the heights still missing.
-    #[test]
-    fn a_bottom_still_measured_lands_again_on_the_next_tick() {
-        let m = Metrics::for_dpi(96);
-        let view_h = 534;
-        let ident = identity("g", "a", 1, 0, 300);
-        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
-        let rows: Vec<RowIdentity> = ids
-            .iter()
-            .map(|id| RowIdentity {
-                id,
-                version: 1,
-                date: false,
-            })
-            .collect();
-        // Four measured, the rest still placeholders -- what the tick's
-        // measurement budget leaves behind.
-        let first_four: Vec<Decision> = ids
-            .iter()
-            .take(4)
-            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
-            .collect();
-        let mut layout = Layout::new();
-        layout.publish(&rows, &first_four, &m, 300);
-        let partly = layout.total();
-        let partly_bottom = partly - view_h;
-        let first: Option<Landing> = layout.land(view_h);
-        assert_eq!(
-            first,
-            Some(Landing {
-                scroll: partly_bottom,
-                settled: false
-            })
-        );
-        // The rows in sight at that bottom are measured, and the map grows
-        // under the view: a second landing is lower than the first, and now
-        // there is nothing left to wait for.
-        let decisions: Vec<Decision> = ids
-            .iter()
-            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
-            .collect();
-        layout.publish(&rows, &decisions, &m, 300);
-        let settled = layout.land(view_h).expect("a landing");
-        let settled_bottom = layout.total() - view_h;
+        let after = layout.project(None, true, view_h).expect("a bottom");
         assert!(
-            settled.scroll > partly_bottom,
-            "{} vs {partly_bottom}",
-            settled.scroll
+            after > taller,
+            "the bottom moved down: {after} vs {taller}"
         );
-        assert_eq!(settled.scroll, settled_bottom);
-        assert!(settled.settled);
+        assert_eq!(after, layout.total() - view_h);
+        // **Pinned is the only thing that moves the pixels here**: without
+        // a camera and without it, there is nothing to project.
+        assert_eq!(layout.project(None, false, view_h), None);
+        // An empty map has no bottom at all.
+        assert_eq!(Layout::new().project(None, true, view_h), None);
+        // A page shorter than the view: the top is the bottom.
+        let two = ["a", "b"];
+        let two_rows: Vec<RowIdentity> = two
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let two_decisions: Vec<Decision> = two
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut short = Layout::new();
+        short.publish(&two_rows, &two_decisions, &m, 300);
+        assert!(short.total() <= view_h, "total {}", short.total());
+        assert_eq!(short.project(None, true, view_h), Some(0));
     }
 
-    /// **A page shorter than the view keeps the flag set**: the top is the
-    /// bottom, so there is nowhere to land, and a message arriving later
-    /// still brings the view with it.
+    /// **A block arriving above moves the pixels, not the view.** The
+    /// camera names a row, so re-projecting after older rows are inserted
+    /// puts that same row back at the top -- the pure half of "taking a
+    /// block does not change the camera".
     #[test]
-    fn a_page_shorter_than_the_view_has_nowhere_to_land() {
+    fn a_camera_lands_on_its_row_and_rows_above_only_move_the_pixels() {
         let m = Metrics::for_dpi(96);
-        let view_h = 534;
+        let view_h = 300;
         let ident = identity("g", "a", 1, 0, 300);
-        let ids = ["a", "b", "c"];
+        let ids: Vec<String> = (0..30).map(|i| format!("r{i}")).collect();
         let rows: Vec<RowIdentity> = ids
             .iter()
             .map(|id| RowIdentity {
@@ -2615,11 +2765,378 @@ mod tests {
             .collect();
         let mut layout = Layout::new();
         layout.publish(&rows, &decisions, &m, 300);
-        let total = layout.total();
-        let shorter_than_the_view = total <= view_h;
-        assert!(shorter_than_the_view, "total {total}");
-        let nowhere: Option<Landing> = layout.land(view_h);
-        assert_eq!(nowhere, None);
+        let camera = Camera {
+            top_id: "r20".to_owned(),
+            top_offset: 10,
+        };
+        let before = layout
+            .project(Some(&camera), false, view_h)
+            .expect("a projection");
+        assert_eq!(before, layout.scroll_for("r20", 10).expect("still kept"));
+        // Fifty measured rows arrive above, older than everything loaded.
+        let older: Vec<String> = (0..50).map(|i| format!("o{i}")).collect();
+        let mut all_rows: Vec<RowIdentity> = older
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        all_rows.extend(rows.iter().map(|r| RowIdentity {
+            id: r.id,
+            version: r.version,
+            date: r.date,
+        }));
+        let all_decisions: Vec<Decision> = all_rows
+            .iter()
+            .map(|r| replace(r.id, 1, Source::Raw, &ident, 100))
+            .collect();
+        layout.publish(&all_rows, &all_decisions, &m, 300);
+        let after = layout
+            .project(Some(&camera), false, view_h)
+            .expect("a projection");
+        // **The same row is still at the top**, and the inverse names it:
+        // the view did not slide when the map grew above it.
+        assert_eq!(layout.camera_at(after), Some(camera.clone()));
+        assert!(after > before, "the row moved down: {after} vs {before}");
+    }
+
+    /// **The inverse and the projection agree everywhere** (R2-2: a
+    /// programmatic scroll writes the camera first, and the next projection
+    /// returns the same pixels): exact at every row boundary, inside every
+    /// row -- including its trailing gap, which is part of its height -- and
+    /// at the bottom.
+    #[test]
+    fn the_camera_round_trips_at_every_position() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 300;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..30).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &decisions, &m, 300);
+        let max = layout.clamp(i32::MAX, view_h);
+        let mut points: Vec<i32> = vec![0, max];
+        for row in layout.rows() {
+            points.push(row.top);
+            points.push(row.top + 1);
+            points.push(row.top + row.height - 1);
+        }
+        for y in points {
+            let y = layout.clamp(y, view_h);
+            let camera = layout.camera_at(y).expect("a camera");
+            assert_eq!(
+                layout.project(Some(&camera), false, view_h),
+                Some(y),
+                "at {y}"
+            );
+        }
+    }
+
+    /// **Three screens of lead, on both edges.** One screen before the edge
+    /// is too late: the read is in flight while the person keeps scrolling,
+    /// which is the "stops to load" this replaces.
+    #[test]
+    fn prefetch_starts_three_screens_before_an_edge() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 300;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..300).map(|i| format!("t{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &decisions, &m, 300);
+        let max = layout.clamp(i32::MAX, view_h);
+        // **The three screens are written out here, not derived from the
+        // constant**: a floor that changes `PREFETCH_SCREENS` must move the
+        // boundary the test checks, not the boundary the test computes.
+        let lead = 3 * view_h;
+        assert_eq!(lead, 900);
+        assert!(lead < max, "the map is taller than the lead");
+        // The last pixel before the lead is near; the lead itself is not.
+        assert!(layout.wants_older(lead - 1, view_h));
+        assert!(!layout.wants_older(lead, view_h));
+        assert!(layout.wants_newer(max - lead + 1, view_h));
+        assert!(!layout.wants_newer(max - lead, view_h));
+        // Nothing loaded is always near an edge, and so is an unlaid view.
+        assert!(Layout::new().wants_older(0, view_h));
+        assert!(Layout::new().wants_newer(0, 0));
+    }
+
+    /// **A first page shorter than the view still asks for older rows**
+    /// (B2 W2). `total <= view` makes `max == 0`, so `scroll` is 0 and
+    /// `pinned` is true however the person wheels; requiring `!pinned`
+    /// there would be a dead end for a short page whose history is not
+    /// finished. The ordinary case -- a tall page, pinned at the bottom --
+    /// still does not prefetch.
+    #[test]
+    fn a_short_first_page_still_asks_for_older_rows() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 534;
+        let ident = identity("g", "a", 1, 0, 300);
+        // Two measured rows: 2 * (21 + 100 + 6) = 254 px, shorter than the
+        // 534 px view, so `max == 0` and the pixels cannot move.
+        let ids = ["a", "b"];
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut short = Layout::new();
+        short.publish(&rows, &decisions, &m, 300);
+        let max = short.clamp(i32::MAX, view_h);
+        assert_eq!(max, 0, "the map is shorter than the view");
+        // Pinned, at the clamp, and still wants the older block.
+        assert!(short.wants_older_block(0, view_h, true));
+        // A tall page at its bottom is pinned and stays quiet.
+        let many: Vec<String> = (0..300).map(|i| format!("t{i}")).collect();
+        let many_rows: Vec<RowIdentity> = many
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let many_decisions: Vec<Decision> = many
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut tall = Layout::new();
+        tall.publish(&many_rows, &many_decisions, &m, 300);
+        let bottom = tall.clamp(i32::MAX, view_h);
+        assert!(!tall.wants_older_block(bottom, view_h, true));
+        // Off the bottom and within the lead, the older block is wanted;
+        // **the pinned gate applies on a scrollable map wherever the pixels
+        // are** -- only `max == 0` is let through.
+        assert!(tall.wants_older_block(0, view_h, false));
+        assert!(tall.wants_older_block(900 - 1, view_h, false));
+        assert!(!tall.wants_older_block(900 - 1, view_h, true));
+    }
+
+    /// **The per-tick instrument writes only a change** (B2 W4): the same
+    /// reading twice is one record, any field moving is another, and a
+    /// forced pair (the tick about to merge rows) is written even when it
+    /// repeats the previous line -- that pair is criterion 3's reading.
+    #[test]
+    fn a_camera_reading_is_written_only_when_it_changes() {
+        let reading = CameraReading {
+            top_id: "r7".to_owned(),
+            top_offset: 3,
+            scroll: 900,
+            rows: 120,
+            pinned: false,
+        };
+        assert!(camera_log_due(None, &reading, false));
+        assert!(!camera_log_due(Some(&reading), &reading, false));
+        assert!(camera_log_due(Some(&reading), &reading, true));
+        let taller = CameraReading {
+            rows: 220,
+            ..reading.clone()
+        };
+        assert!(camera_log_due(Some(&reading), &taller, false));
+        // **`scroll` moves but the view did not**: the line is quiet (A2
+        // S3) -- the offset moves with the pixels, so there is nothing new
+        // for `id`/`off`, and a merge tick is forced anyway.
+        let scrolled = CameraReading {
+            scroll: 901,
+            ..reading.clone()
+        };
+        assert!(!camera_log_due(Some(&reading), &scrolled, false));
+        let held = CameraReading {
+            pinned: true,
+            ..reading.clone()
+        };
+        assert!(camera_log_due(Some(&reading), &held, false));
+        let other = CameraReading {
+            top_id: "r8".to_owned(),
+            ..reading.clone()
+        };
+        assert!(camera_log_due(Some(&reading), &other, false));
+    }
+
+    /// **A context window's newer page is asked for by an event, not by
+    /// the tick** (B2 W3): parked at the window's bottom, only a new input
+    /// asks; the clock alone must not chain pages.
+    #[test]
+    fn the_context_newer_page_is_asked_for_by_an_event_only() {
+        assert!(context_newer_due(true, true));
+        assert!(!context_newer_due(true, false));
+        assert!(!context_newer_due(false, true));
+        assert!(!context_newer_due(false, false));
+    }
+
+    /// **A jump waits for its row's height, then lands exactly.** While the
+    /// target is a placeholder there is no honest pixel, so the projection
+    /// is `None` and the pixels do not move; once the row is measured the
+    /// projection is that row's own top. This is what replaces "the jump
+    /// stays pinned until the row is measured".
+    #[test]
+    fn an_unmeasured_camera_has_no_projection_until_its_row_is_measured() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 300;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..30).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &[], &m, 300);
+        let camera = Camera {
+            top_id: "r12".to_owned(),
+            top_offset: 0,
+        };
+        assert_eq!(layout.y_for("r12", 0), None);
+        assert_eq!(layout.project(Some(&camera), false, view_h), None);
+        // The tick measured exactly that row; now the same camera projects.
+        layout.publish(
+            &rows,
+            &[replace("r12", 1, Source::Raw, &ident, 100)],
+            &m,
+            300,
+        );
+        let landed = layout
+            .project(Some(&camera), false, view_h)
+            .expect("a projection");
+        assert_eq!(landed, layout.scroll_for("r12", 0).expect("still kept"));
+        // A row that is not in the map at all has no projection either.
+        assert_eq!(layout.y_for("gone", 0), None);
+    }
+
+    /// **A camera row outside the viewport is still demanded for parsing.**
+    /// A jump to a row that is loaded but has never been parsed would
+    /// otherwise keep its placeholder height for ever (`y_for`/`project`
+    /// stay `None`), so the jump never lands -- the Windows form of the
+    /// deadlock the mac host avoids with `ScrollViewReader`.
+    #[test]
+    fn a_camera_row_outside_the_viewport_is_still_demanded() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 300;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..120).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        // Every row measured except r60, which is twenty screens down.
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .filter(|id| id.as_str() != "r60")
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &decisions, &m, 300);
+        assert!(layout.rows()[60].placeholder);
+        let camera = Camera {
+            top_id: "r60".to_owned(),
+            top_offset: 0,
+        };
+        // The viewport is at the top; the camera's row is nowhere near it.
+        let feed_ids = ids.clone();
+        let without = layout.demand_rows(0, view_h, None, feed_ids.iter().map(|s| s.as_str()));
+        assert!(!without.contains(&60), "not in sight: {without:?}");
+        let with = layout.demand_rows(
+            0,
+            view_h,
+            Some(&camera),
+            feed_ids.iter().map(|s| s.as_str()),
+        );
+        assert!(
+            with.contains(&60),
+            "the camera row must be parsed or the jump can never land: {with:?}"
+        );
+        // Ascending, no duplicates, and the ordinary rows are still there.
+        assert!(with.windows(2).all(|w| w[0] < w[1]), "{with:?}");
+        assert!(with.contains(&0));
+        // **A measured camera row is not appended**: it needs no parsing,
+        // and the demand is exactly what it was.
+        let measured = Camera {
+            top_id: "r59".to_owned(),
+            top_offset: 0,
+        };
+        assert_eq!(
+            layout.demand_rows(0, view_h, Some(&measured), feed_ids.iter().map(|s| s.as_str())),
+            without
+        );
+        // **The ids are the feed's, and the layout may be the previous
+        // window** (B2 W1): an `around` swaps the feed one tick before the
+        // map is rebuilt, so a camera row that is not in the layout at all
+        // -- or whose index in the layout holds a *different* measured row
+        // -- is still waiting and still demanded.
+        let old_ids: Vec<String> = (0..120).map(|i| format!("o{i}")).collect();
+        let old_rows: Vec<RowIdentity> = old_ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let old_decisions: Vec<Decision> = old_ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut swapped = Layout::new();
+        swapped.publish(&old_rows, &old_decisions, &m, 300);
+        assert!(!swapped.rows()[60].placeholder);
+        let swapped_camera = Camera {
+            top_id: "r60".to_owned(),
+            top_offset: 0,
+        };
+        assert_eq!(
+            swapped.waiting_camera_row(
+                Some(&swapped_camera),
+                feed_ids.iter().map(|s| s.as_str())
+            ),
+            Some(60),
+            "the feed holds r60; the layout still holds the previous window"
+        );
+        assert!(swapped
+            .demand_rows(
+                0,
+                view_h,
+                Some(&swapped_camera),
+                feed_ids.iter().map(|s| s.as_str())
+            )
+            .contains(&60));
     }
 
     #[test]

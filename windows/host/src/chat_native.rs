@@ -91,7 +91,9 @@ struct Chat {
     /// The measured rows, kept across paints: a paint measures nothing
     /// unless the body, width or DPI changed.
     layout: chat_rows::Layout,
-    /// Pixels scrolled down from the first row.
+    /// **A projection of `camera` and `pinned`, never a truth.** Pixels
+    /// scrolled down from the first row; written only by `project`, read by
+    /// paint and the scrollbar.
     scroll: i32,
     /// **This view's own identity**, not its HWND: a handle can be reused,
     /// and a late Markdown answer must not land in whatever holds it next.
@@ -118,19 +120,28 @@ struct Chat {
     /// person's view state, not the group's.
     brief_open: bool,
     members_open: bool,
-    /// The view follows new messages while it is at the bottom. Scrolling
-    /// up turns this off until the person returns to the latest end.
-    follow: bool,
-    /// **Entering a group always lands on the latest end** (user decision),
-    /// even when the page was left while reading history. Consumed by the
-    /// next publish, once the rows have their current heights.
-    land_bottom: bool,
-    /// **A jump's target row id, pinned until that row has been measured.**
-    /// The tick measures at most four rows, so "two corrections" is not a
-    /// promise the tick can keep: the target may still be a placeholder
-    /// height for several ticks, and it stays at the top until the row is
-    /// measured (a failed measurement counts as measured).
-    jump: Option<String>,
+    /// **Truth: what the view is looking at.** The row at its top edge and
+    /// how far into that row the view starts. `None` with `pinned` false
+    /// means no camera yet; a camera whose row is not measured projects to
+    /// nothing until it is (see `chat_rows::Layout::y_for`).
+    camera: Option<chat_rows::Camera>,
+    /// **Truth: the view is at the latest end and follows new messages.**
+    /// A first entry and "back to latest" set it; any move off the bottom
+    /// clears it. It is never spent by a tick: every publish projects it
+    /// again, which is what keeps a cold entry at the bottom while the
+    /// first heights arrive.
+    pinned: bool,
+    /// The last camera reading written, so the per-tick instrument is
+    /// **only for a change** rather than two records every 200 ms (B2 W4).
+    logged_camera: Option<chat_rows::CameraReading>,
+    /// **The block this view is waiting for**: when it was asked and how
+    /// many rows the map had then. Spent by the publish that merges rows,
+    /// which is the request -> merge reading criterion 2 asks for.
+    block_asked: Option<(u64, usize)>,
+    /// **How many up-scrolls found the view already at the loaded top
+    /// while more history existed** -- criterion 2's "top hits". Logged
+    /// once per hit, and reset on entry.
+    top_hits: u64,
     /// **The non-blocking exit for a failed or empty older block**: one
     /// short line on the page for 2.5 s. It takes no layout height and
     /// never turns a dead scroll into a fake "beginning of the group".
@@ -651,9 +662,13 @@ fn create(frame: HWND, group: &str, r: TreeRect) -> Option<Chat> {
         vbar: None,
         brief_open: false,
         members_open: false,
-        follow: true,
-        land_bottom: true,
-        jump: None,
+        camera: None,
+        // **A first entry is the latest end**, and it stays so until the
+        // person moves: there is no one-shot landing to be spent early.
+        pinned: true,
+        logged_camera: None,
+        block_asked: None,
+        top_hits: 0,
         older_notice: None,
         older_notice_key: None,
         rows_seen: 0,
@@ -813,18 +828,22 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                     // **Entering the page starts the one feed**; a repeat
                     // sync is a no-op inside `start`.
                     if entering {
-                        // **Every entry lands on the latest end**, including
-                        // a page left while reading history: the person
-                        // asked for the newest messages, not the place they
-                        // had scrolled to last time.
-                        x.land_bottom = true;
-                        x.follow = true;
+                        // **Every entry is pinned to the latest end**,
+                        // including a page left while reading history: the
+                        // person asked for the newest messages, not the
+                        // place they had scrolled to last time. `pinned`
+                        // needs no row height and is never consumed, so it
+                        // is projected once now and again on every publish.
+                        x.camera = None;
+                        x.pinned = true;
                         x.new_rows = false;
-                        // **Land now, with the geometry already published**:
-                        // the first paint after showing must not expose the
-                        // place the page was left at. The next publish lands
-                        // again on the fresh geometry.
-                        x.scroll = x.layout.clamp(i32::MAX, x.view_h.max(1));
+                        // **The instruments start from zero for this
+                        // visit**: a hit count or a block wait from the
+                        // previous look is not this look's.
+                        x.logged_camera = None;
+                        x.block_asked = None;
+                        x.top_hits = 0;
+                        project(x, x.view_h.max(1));
                         // Entering is a fresh look at the group: a notice
                         // from the previous visit is not this visit's.
                         x.older_notice = None;
@@ -2056,6 +2075,8 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             feed,
             layout,
             scroll,
+            camera,
+            pinned,
             plans,
             brief_open,
             members_open,
@@ -2113,7 +2134,15 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
         // below the fixed header.
         let msg_top = msg.top;
         let view_h = msg.height;
-        *view_height = view_h;
+        // **A viewport change is a projection trigger**: the camera is the
+        // truth and the pixels follow it, so a resize lands where the
+        // person was looking rather than wherever the old pixels fall.
+        if *view_height != view_h {
+            *view_height = view_h;
+            if let Some(at) = layout.project(camera.as_ref(), *pinned, view_h.max(1)) {
+                *scroll = at;
+            }
+        }
 
         let mut top = msg.top;
         // **Loading is not empty, and a raw code is not product copy.** The
@@ -3633,6 +3662,9 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
         return false;
     }
     let mut capture = false;
+    // A page turned back to the bottom rejoins the waiting tail: the map
+    // must be rebuilt before the next frame (A2 MF2).
+    let mut rows_changed = false;
     let hit = CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return false;
@@ -3665,11 +3697,9 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
         if x < bx || x >= bx + bw || y < by || y >= by + bh {
             return false;
         }
-        // **Taking the bar takes the view**: no pending jump correction and
-        // no pending landing may pull it back after the person has moved
-        // the thumb or a page.
-        chat.jump = None;
-        chat.land_bottom = false;
+        // **Taking the bar takes the view**: the pixels become the camera,
+        // so no projection of an older truth may pull it back after the
+        // person has moved the thumb or a page.
         if y >= bar.thumb_y && y < bar.thumb_y + bar.thumb_h {
             chat.vbar = Some(y - bar.thumb_y);
             capture = true;
@@ -3681,8 +3711,9 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
                 chat.scroll.saturating_add(page)
             };
             chat.scroll = chat.layout.clamp(at, msg.height);
-            chat.follow = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
-            if chat.follow {
+            chat.pinned = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
+            absorb_camera(chat);
+            if chat.pinned {
                 chat.new_rows = false;
             }
             // **A page turned with the bar is reading history too.** The
@@ -3692,17 +3723,22 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
             // leaves `reading_history` false and the next live message
             // trims a block the reader is looking at.
             if let Some(feed) = chat.feed.as_mut() {
-                if chat.follow {
+                if chat.pinned {
                     if !feed.context_window() && feed.reading_history() {
                         feed.return_to_latest(now_ms());
+                        rows_changed = true;
                     }
                 } else if !feed.context_window() {
                     feed.enter_reading();
                 }
             }
+            prefetch(chat, now_ms(), true);
         }
         true
     });
+    if rows_changed {
+        republish(hwnd);
+    }
     unsafe {
         ReleaseDC(Some(hwnd), dc);
     }
@@ -3730,6 +3766,9 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         return false;
     }
     let mut release = false;
+    // A drag that returns to the bottom rejoins the waiting tail: the map
+    // must be rebuilt before the next frame (A2 MF2).
+    let mut rows_changed = false;
     let moved = CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return false;
@@ -3740,10 +3779,9 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         let Some(grab) = chat.vbar else {
             return false;
         };
-        // **A dragged view is the reader's**: it cancels a pending landing
-        // as it cancels a pending jump.
-        chat.jump = None;
-        chat.land_bottom = false;
+        // **A dragged view is the reader's**: every step is an inverse
+        // projection below, so there is no pending truth left to pull it
+        // back.
         let Some(feed) = chat.feed.as_ref() else {
             chat.vbar = None;
             release = true;
@@ -3781,8 +3819,9 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
             return false;
         };
         chat.scroll = chat.layout.clamp(at, msg.height);
-        chat.follow = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
-        if chat.follow {
+        chat.pinned = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
+        absorb_camera(chat);
+        if chat.pinned {
             chat.new_rows = false;
         }
         // **A drag is reading history too** (the same transitions as
@@ -3790,18 +3829,23 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         // block the reader is on is not trimmed under them; returning to
         // the bottom rejoins the latest.
         if let Some(feed) = chat.feed.as_mut() {
-            if chat.follow {
+            if chat.pinned {
                 if !feed.context_window() && feed.reading_history() {
                     feed.return_to_latest(now_ms());
+                    rows_changed = true;
                 }
             } else if !feed.context_window() {
                 feed.enter_reading();
             }
         }
+        prefetch(chat, now_ms(), true);
         true
     });
     unsafe {
         ReleaseDC(Some(hwnd), dc);
+    }
+    if rows_changed {
+        republish(hwnd);
     }
     if release {
         release_own_capture(hwnd);
@@ -4503,105 +4547,96 @@ fn locate_hit(chat: &mut Chat, index: usize, hwnd: HWND) {
         })
         .collect();
     chat.text_highlight = Some((hit.message.anchor.clone(), text_hits));
-    let row_id = chat.feed.as_ref().and_then(|feed| {
-        feed.rows()
-            .iter()
-            .find(|row| {
-                row.message.anchor == hit.message.anchor
-                    || row.id == hit.message.anchor
-                    || hit.message.live_anchor.as_deref() == Some(row.message.anchor.as_str())
-            })
-            .map(|row| row.id.clone())
-    });
-    match row_id {
-        Some(id) => {
-            // **`seek_in_map`**: the target is in the loaded map, so the
-            // scroll is set directly. No request, no correction -- and no
-            // pending landing, which is a correction.
-            chat.jump = None;
-            chat.land_bottom = false;
-            chat.search_missing = false;
-            chat.highlight = Some((id.clone(), std::time::Instant::now()));
-            chat.follow = false;
-            chat.new_rows = false;
-            // **A loaded target is still a navigation**: the old unloaded
-            // request must not replace the window later, and the feed
-            // treats what is on screen as a reading window.
-            if let Some(feed) = chat.feed.as_mut() {
-                feed.cancel_navigation();
-                feed.enter_reading();
+    // **The one teleport primitive decides this**: a target in the loaded
+    // map moves the camera; a target outside it asks the feed for the page
+    // around it, and that arrival lands through `jump_to` again.
+    let in_map = jump_to_anchor(
+        chat,
+        &hit.message.anchor,
+        hit.message.live_anchor.as_deref(),
+    );
+    if in_map {
+        chat.search_missing = false;
+        let id = chat
+            .camera
+            .as_ref()
+            .map(|c| c.top_id.clone())
+            .unwrap_or_default();
+        chat.highlight = Some((id, std::time::Instant::now()));
+        chat.new_rows = false;
+        // **A loaded target is still a navigation**: the old unloaded
+        // request must not replace the window later, and the feed treats
+        // what is on screen as a reading window.
+        if let Some(feed) = chat.feed.as_mut() {
+            feed.cancel_navigation();
+            feed.enter_reading();
+        }
+    } else {
+        // **Outside the loaded map**: the window is replaced around the
+        // target. **The range in between is never loaded** -- one
+        // around page, not a walk through history pages. Every locating
+        // state except the highlight is dropped here; a running older
+        // poll is cancelled so it cannot replace the window later.
+        chat.camera = None;
+        chat.pinned = false;
+        let now = now_ms();
+        // **One and a half screens either side of the target**, so the
+        // page around it is not blank: the target is put at the top and
+        // there must be rows under it to read. Clamped to 10..=99 --
+        // the core's page size is bounded, and "a screen" is an
+        // estimate from the message pane, never from text.
+        let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+        // The rows one screen holds, from the message pane the same
+        // `message_rect` paint uses (never from text): the target goes
+        // to the top, so there must be rows *under* it to read.
+        let view_h = {
+            let mut client = windows::Win32::Foundation::RECT::default();
+            let _ = unsafe { GetClientRect(hwnd, &mut client) };
+            let dc = unsafe { GetDC(Some(hwnd)) };
+            if dc.0.is_null() {
+                chat.view_h
+            } else {
+                let h = chat
+                    .feed
+                    .as_ref()
+                    .map(|feed| {
+                        message_rect(
+                            dc,
+                            &client,
+                            &metrics,
+                            feed,
+                            chat.side != SidebarMode::Closed,
+                            chat.brief_open,
+                        )
+                        .height
+                    })
+                    .unwrap_or(chat.view_h);
+                unsafe {
+                    ReleaseDC(Some(hwnd), dc);
+                }
+                h
             }
-            if let Some(y) = chat.layout.scroll_for(&id, 0) {
-                chat.scroll = chat.layout.clamp(y, chat.view_h.max(1));
+        };
+        let lines = (view_h.max(metrics.line) / metrics.line.max(1)).max(1) as f64;
+        let around = ((lines * 1.5).ceil() as i64).clamp(10, 99) as u8;
+        let mut asked = false;
+        if let Some(feed) = chat.feed.as_mut() {
+            feed.cancel_navigation();
+            if let Some(id) = next_request_id() {
+                // The hint goes back exactly as the core gave it; a
+                // record that carried none is not guessed at.
+                asked = feed.load_around(
+                    &hit.message.anchor,
+                    hit.message.location.as_deref(),
+                    around,
+                    around,
+                    id,
+                    now,
+                );
             }
         }
-        None => {
-            // **`jump_to_anchor`**: the target is outside the loaded map,
-            // so the window is replaced around it. **The range in between
-            // is never loaded** -- one around page, not a walk through
-            // history pages. The old scroll anchor and every locating
-            // state except the highlight are dropped here; a running older
-            // poll is cancelled so it cannot replace the window later.
-            chat.jump = None;
-            let now = now_ms();
-            // **One and a half screens either side of the target**, so the
-            // page around it is not blank: the target is put at the top and
-            // there must be rows under it to read. Clamped to 10..=99 --
-            // the core's page size is bounded, and "a screen" is an
-            // estimate from the message pane, never from text.
-            let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
-            // The rows one screen holds, from the message pane the same
-            // `message_rect` paint uses (never from text): the target goes
-            // to the top, so there must be rows *under* it to read.
-            let view_h = {
-                let mut client = windows::Win32::Foundation::RECT::default();
-                let _ = unsafe { GetClientRect(hwnd, &mut client) };
-                let dc = unsafe { GetDC(Some(hwnd)) };
-                if dc.0.is_null() {
-                    chat.view_h
-                } else {
-                    let h = chat
-                        .feed
-                        .as_ref()
-                        .map(|feed| {
-                            message_rect(
-                                dc,
-                                &client,
-                                &metrics,
-                                feed,
-                                chat.side != SidebarMode::Closed,
-                                chat.brief_open,
-                            )
-                            .height
-                        })
-                        .unwrap_or(chat.view_h);
-                    unsafe {
-                        ReleaseDC(Some(hwnd), dc);
-                    }
-                    h
-                }
-            };
-            let lines = (view_h.max(metrics.line) / metrics.line.max(1)).max(1) as f64;
-            let around = ((lines * 1.5).ceil() as i64).clamp(10, 99) as u8;
-            let mut asked = false;
-            if let Some(feed) = chat.feed.as_mut() {
-                feed.cancel_navigation();
-                if let Some(id) = next_request_id() {
-                    // The hint goes back exactly as the core gave it; a
-                    // record that carried none is not guessed at.
-                    asked = feed.load_around(
-                        &hit.message.anchor,
-                        hit.message.location.as_deref(),
-                        around,
-                        around,
-                        id,
-                        now,
-                    );
-                }
-            }
-            chat.search_missing = !asked;
-            chat.around_seen = None;
-        }
+        chat.search_missing = !asked;
+        chat.around_seen = None;
     }
 }
 
@@ -4616,42 +4651,31 @@ fn apply_around(hwnd: HWND) -> bool {
         let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
             return;
         };
-        let Some(page) = chat.feed.as_ref().and_then(|feed| feed.around()) else {
-            return;
-        };
-        let Some(target) = page.messages.get(page.target_index) else {
-            return;
-        };
-        if chat.around_seen.as_deref() == Some(target.anchor.as_str()) {
-            return;
-        }
-        chat.around_seen = Some(target.anchor.clone());
-        let row_id = chat.feed.as_ref().and_then(|feed| {
-            feed.rows()
-                .iter()
-                .find(|row| {
-                    row.message.anchor == target.anchor
-                        || target.live_anchor.as_deref() == Some(row.message.anchor.as_str())
-                })
-                .map(|row| row.id.clone())
-        });
-        if let Some(id) = row_id {
-            chat.search_missing = false;
-            chat.highlight = Some((id.clone(), std::time::Instant::now()));
-            chat.follow = false;
-            chat.new_rows = false;
-            // **Land on the target's top, with no scrolling.** The map is
-            // replaced whole here: the old scroll anchor is dropped (this
-            // is a new window), and `jump` pins the target until its row
-            // has actually been measured, because the tick measures at
-            // most four rows.
-            if let Some(y) = chat.layout.scroll_for(&id, 0) {
-                chat.scroll = chat.layout.clamp(y, chat.view_h.max(1));
+        let target = {
+            let Some(page) = chat.feed.as_ref().and_then(|feed| feed.around()) else {
+                return;
+            };
+            let Some(target) = page.messages.get(page.target_index) else {
+                return;
+            };
+            if chat.around_seen.as_deref() == Some(target.anchor.as_str()) {
+                return;
             }
-            // A landing still owed from the entry would move the view off
-            // the row the search just landed on.
-            chat.land_bottom = false;
-            chat.jump = Some(id);
+            (target.anchor.clone(), target.live_anchor.clone())
+        };
+        chat.around_seen = Some(target.0.clone());
+        // **The page is in the map now, so this is the ordinary teleport**:
+        // the map was replaced whole, and the camera names the target's own
+        // row -- it waits for that row's height rather than for a tick.
+        if jump_to_anchor(chat, &target.0, target.1.as_deref()) {
+            let id = chat
+                .camera
+                .as_ref()
+                .map(|c| c.top_id.clone())
+                .unwrap_or_default();
+            chat.search_missing = false;
+            chat.highlight = Some((id, std::time::Instant::now()));
+            chat.new_rows = false;
             // **The window changed under any in-flight drag**: the old
             // plan's target and focus are dead, and the capture it may
             // hold is this window's to release.
@@ -5791,6 +5815,10 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
         No,
         Yes { repaint: bool },
     }
+    // **A click can change `feed.rows()`** ("back to latest" clears the
+    // body or joins the waiting tail): the map has to be rebuilt before
+    // the next frame, or that frame is blank/misplaced (A2 MF2).
+    let mut rows_changed = false;
     let hit = CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return Hit::No;
@@ -5892,19 +5920,21 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
             }
             if x >= x0 && x < x0 + w && y >= y0 && y < y0 + h {
                 // **"Back to latest" is a return to the latest page, not a
-                // scroll of the located map.** In an around window this
-                // clears the body and bootstraps the newest page again; in
-                // the history it joins the waiting tail. Either way the
-                // view lands at the bottom once the page has been read --
-                // `land_bottom`, never a scroll of the old map.
+                // scroll of the located map** (R1-8, R2-8 #7). In an around
+                // window this clears the body and bootstraps the newest
+                // page again; in the history it joins the waiting tail.
+                // Either way `pinned` is the truth: it projects to whatever
+                // bottom exists now and again when the new page lands.
+                // **It is not a jump** -- there is no row id to name.
                 if let Some(feed) = chat.feed.as_mut() {
                     feed.return_to_latest(now_ms());
+                    rows_changed = true;
                 }
-                chat.follow = true;
+                chat.camera = None;
+                chat.pinned = true;
                 chat.new_rows = false;
                 chat.around_seen = None;
-                chat.jump = None;
-                chat.land_bottom = true;
+                project(chat, chat.view_h.max(1));
                 return Hit::Yes { repaint: true };
             }
         }
@@ -5912,6 +5942,10 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
     });
     unsafe {
         ReleaseDC(Some(hwnd), dc);
+    }
+    if rows_changed {
+        // Outside the `CHATS` borrow: `publish_heights` takes it again.
+        republish(hwnd);
     }
     match hit {
         Hit::No => false,
@@ -6024,9 +6058,10 @@ fn sync_older_notice(hwnd: HWND) -> bool {
     invalidate
 }
 
-/// Keep a following view on the bottom; a view reading history never
-/// follows, and says so through the pill.
-fn sync_follow(hwnd: HWND) {
+/// **A pinned view is on the bottom by definition**, and every row change
+/// projects it there again; a view that is not pinned keeps its camera and
+/// only marks that new messages are waiting, which the pill says.
+fn sync_pinned(hwnd: HWND) {
     let mut invalidate = false;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
@@ -6043,8 +6078,9 @@ fn sync_follow(hwnd: HWND) {
         };
         let len = feed.rows().len();
         if len != chat.rows_seen {
-            if chat.follow {
-                chat.scroll = chat.layout.clamp(i32::MAX, chat.view_h.max(1));
+            if chat.pinned {
+                let view_h = chat.view_h.max(1);
+                project(chat, view_h);
                 chat.new_rows = false;
             } else {
                 chat.new_rows = true;
@@ -6127,6 +6163,9 @@ fn message_page_h(hwnd: HWND, fallback: i32) -> i32 {
 
 fn scroll_by(hwnd: HWND, by: i32) {
     let key = hwnd.0 as isize;
+    // **Rejoining the latest changes `feed.rows()`** (the waiting tail is
+    // absorbed): the map must be rebuilt before the next frame (A2 MF2).
+    let mut rows_changed = false;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return;
@@ -6135,61 +6174,72 @@ fn scroll_by(hwnd: HWND, by: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
-        // **The reader takes the view over**: a wheel or key move cancels a
-        // pending jump correction and a pending landing, so the next
-        // publish cannot pull the view back to a target or to the bottom
-        // the person just scrolled away from.
-        chat.jump = None;
-        chat.land_bottom = false;
+        // **The reader takes the view over**: the pixels they moved to
+        // become the camera (R2-2) -- a projection of an older truth must
+        // not pull the view back. Reaching the bottom *is* following
+        // (R1-7): `pinned` is derived from where they landed, never a
+        // third flag.
         chat.scroll = chat.layout.clamp(chat.scroll - by, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
-        chat.follow = chat.scroll >= max;
-        if chat.follow {
+        chat.pinned = chat.scroll >= max;
+        absorb_camera(chat);
+        if chat.pinned {
             chat.new_rows = false;
+        }
+        // **Criterion 2's "top hits"**: an up-scroll that cannot move
+        // because the view is already at the loaded top, while more history
+        // is still there or still coming. One line per hit; the count is
+        // reset on entry, so a run's reading is the last `count=`. A view
+        // at the true beginning (the older chain has said `End`) is not a
+        // hit -- there is nothing to be waiting for.
+        if by > 0 && chat.scroll == 0 {
+            let more = chat.feed.as_ref().is_some_and(|feed| {
+                if feed.context_window() {
+                    feed.context_can(true) || feed.aux_busy()
+                } else {
+                    !matches!(feed.older(), chat_feed::OlderState::End)
+                }
+            });
+            if more {
+                chat.top_hits = chat.top_hits.saturating_add(1);
+                wlogf!(
+                    HWND(chat.hwnd as *mut c_void),
+                    "[chat-native] top-hit: count={} view_h={} rows={} scroll=0",
+                    chat.top_hits,
+                    view_h,
+                    chat.layout.rows().len()
+                );
+            }
         }
         // **Leaving the bottom is a reading state, and coming back is a
         // return to the latest** -- not just a paint flag. A context
         // window uses its own directions and never becomes "latest".
         if let Some(feed) = chat.feed.as_mut() {
-            if chat.follow {
+            if chat.pinned {
                 if !feed.context_window() && feed.reading_history() {
                     feed.return_to_latest(now_ms());
+                    rows_changed = true;
                 }
             } else if !feed.context_window() {
                 feed.enter_reading();
             }
         }
-        // **Scrolling near the top asks for the next block**: one screen,
-        // not only the exact top, and with no visible entry -- loading is a
-        // background act. The context window uses its own two directions;
-        // the history chain uses its token. `can_load_older` keeps this to
-        // one request at a time.
-        let now = now_ms();
-        if by > 0 && chat.scroll <= view_h {
-            if let Some(feed) = chat.feed.as_mut() {
-                if let Some(id) = next_request_id() {
-                    if feed.context_window() {
-                        let _ = feed.load_context(true, id, now);
-                    } else if feed.can_load_older() {
-                        let _ = feed.load_older(id, now);
-                    }
-                }
-            }
-        } else if by < 0 && chat.scroll >= max {
-            if let Some(feed) = chat.feed.as_mut() {
-                if feed.context_window() {
-                    if let Some(id) = next_request_id() {
-                        let _ = feed.load_context(false, id, now);
-                    }
-                }
-            }
-        }
+        // **The next block is asked for three screens before the edge**,
+        // in both directions -- not one screen, and not only at the exact
+        // top. The context window has its own two doors; the history chain
+        // has its token. Loading stays a background act.
+        prefetch(chat, now_ms(), true);
     });
+    if rows_changed {
+        republish(hwnd);
+    }
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 fn scroll_to(hwnd: HWND, at: i32) {
     let key = hwnd.0 as isize;
+    // Home/End can rejoin the latest, which changes `feed.rows()`.
+    let mut rows_changed = false;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return;
@@ -6198,24 +6248,31 @@ fn scroll_to(hwnd: HWND, at: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
-        chat.jump = None;
-        chat.land_bottom = false;
+        // **Every programmatic scroll writes the camera first** (R2-2):
+        // the pixels are set, then the same position is read back as the
+        // truth, so the next projection cannot move it.
         chat.scroll = chat.layout.clamp(at, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
-        chat.follow = chat.scroll >= max;
-        if chat.follow {
+        chat.pinned = chat.scroll >= max;
+        absorb_camera(chat);
+        if chat.pinned {
             chat.new_rows = false;
         }
         if let Some(feed) = chat.feed.as_mut() {
-            if chat.follow {
+            if chat.pinned {
                 if !feed.context_window() && feed.reading_history() {
                     feed.return_to_latest(now_ms());
+                    rows_changed = true;
                 }
             } else if !feed.context_window() {
                 feed.enter_reading();
             }
         }
+        prefetch(chat, now_ms(), true);
     });
+    if rows_changed {
+        republish(hwnd);
+    }
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
@@ -6327,6 +6384,183 @@ fn plan_font_id(dpi: i32) -> u64 {
 /// plan for a row no longer in sight is dropped together with its document
 /// `Arc`, so this cache never keeps an old document alive outside the
 /// host's 200-entry parse cache.
+/// **Truth -> pixels.** The only writer of `scroll`: a camera whose row has
+/// no honest height yet leaves the projection alone (the row is measured
+/// this tick, and the projection is made again). Nothing else assigns the
+/// pixels except `absorb_camera`'s inverse.
+fn project(chat: &mut Chat, view_h: i32) {
+    if let Some(at) = chat
+        .layout
+        .project(chat.camera.as_ref(), chat.pinned, view_h.max(1))
+    {
+        chat.scroll = at;
+    }
+}
+
+/// **Pixels -> truth**: the person moved the view, so what they moved to
+/// becomes the camera. Called from every input that writes the pixels, and
+/// from nowhere else.
+fn absorb_camera(chat: &mut Chat) {
+    if chat.pinned {
+        chat.camera = None;
+    } else if let Some(cam) = chat.layout.camera_at(chat.scroll) {
+        chat.camera = Some(cam);
+    }
+    // **Nothing to compute is not "the position is unknown"** (R2-4): an
+    // empty map leaves the camera and `pinned` exactly as they were.
+}
+
+/// **The one teleport primitive**: put the camera on `id`'s top. A row in
+/// the loaded map moves the camera and the pixels follow; a row that is not
+/// loaded is the caller's to fetch (`load_around`), and its arrival lands
+/// here again. Nothing else may move the view to a message.
+fn jump_to(chat: &mut Chat, id: &str, view_h: i32) {
+    chat.camera = Some(chat_rows::Camera {
+        top_id: id.to_owned(),
+        top_offset: 0,
+    });
+    chat.pinned = false;
+    project(chat, view_h);
+}
+
+/// `jump_to`, addressed the way the core names a message: by its anchor,
+/// with the live alias a search hit may still carry. `false` means the row
+/// is not in the loaded map -- the caller asks the feed for the page around
+/// it, and that arrival comes back through `jump_to`.
+fn jump_to_anchor(chat: &mut Chat, anchor: &str, live: Option<&str>) -> bool {
+    let row_id = chat.feed.as_ref().and_then(|feed| {
+        feed.rows()
+            .iter()
+            .find(|row| {
+                row.message.anchor == anchor
+                    || row.id == anchor
+                    || live == Some(row.message.anchor.as_str())
+            })
+            .map(|row| row.id.clone())
+    });
+    match row_id {
+        Some(id) => {
+            let view_h = chat.view_h.max(1);
+            jump_to(chat, &id, view_h);
+            true
+        }
+        None => false,
+    }
+}
+
+/// **Ask for rows before the edge is reached.** Three viewports of lead on
+/// each side of the view, one chunk at a time (the feed keeps one request
+/// outstanding). Nothing is drawn and nothing moves: the block is merged
+/// into the map and the camera is re-projected, so the reader never meets
+/// the edge and the scroll never stops to load.
+fn prefetch(chat: &mut Chat, now: u64, from_input: bool) {
+    if chat.view_h <= 0 {
+        return;
+    }
+    let view_h = chat.view_h.max(1);
+    let scroll = chat.layout.clamp(chat.scroll, view_h);
+    // **Three screens of lead on the older side; `max == 0` is let through**
+    // (B2 W2): a first page shorter than the view cannot be scrolled, so
+    // "pinned" there does not mean "following the latest" and requiring
+    // `!pinned` would make every up-scroll a dead end.
+    let older_near = chat.layout.wants_older_block(scroll, view_h, chat.pinned);
+    // **A context window's newer direction is asked for by the person, not
+    // by the clock** (B2 W3): the tick used to ask again as soon as the
+    // previous page landed, so a reader parked at the window's bottom was
+    // carried to the latest at ~500 rows/s. `pinned` no longer triggers it
+    // either: at the bottom it would be true every tick.
+    let newer_near = chat.layout.wants_newer(scroll, view_h);
+    let context = chat.feed.as_ref().is_some_and(|feed| feed.context_window());
+    let rows_before = chat.layout.rows().len();
+    let Some(feed) = chat.feed.as_mut() else {
+        return;
+    };
+    if feed.rows().is_empty() {
+        return;
+    }
+    let mut asked = false;
+    if context {
+        if older_near && feed.context_can(true) {
+            if let Some(id) = next_request_id() {
+                asked = feed.load_context(true, id, now);
+            }
+        }
+        if !asked
+            && chat_rows::context_newer_due(newer_near, from_input)
+            && feed.context_can(false)
+        {
+            if let Some(id) = next_request_id() {
+                asked = feed.load_context(false, id, now);
+            }
+        }
+    } else if older_near && feed.can_load_older() {
+        if let Some(id) = next_request_id() {
+            asked = feed.load_older(id, now);
+        }
+    }
+    if asked {
+        // **The request -> merge clock starts here** (criterion 2): the
+        // publish that sees the row count change spends it.
+        chat.block_asked = Some((now, rows_before));
+    }
+}
+
+/// **Rebuild the map from `feed.rows()` and draw.** Every path that
+/// changes the rows synchronously -- an answer, "back to latest", a wheel
+/// that rejoins the waiting tail -- must go through this: `paint` indexes
+/// `feed.rows()` and `layout.rows()` with the same index, so a frame drawn
+/// against the previous layout shows one block at the wrong place, or
+/// nothing at all when the body was cleared (B2 M2).
+fn republish(hwnd: HWND) {
+    publish_heights(hwnd);
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// **The instrument criterion 3 reads on Windows** (R1-11): the camera and
+/// its projection, once before a block is merged and once after. The top
+/// row is `id`, so "the row at the top edge did not move" is `id` and
+/// `off` being the same on the two lines, not an impression.
+/// Takes the pieces, not `&mut Chat`: `publish_heights` holds the feed
+/// borrowed while it calls this, and borrowing the whole chat would clash
+/// with that (the fields are disjoint).
+fn log_camera(
+    hwnd: isize,
+    logged: &mut Option<chat_rows::CameraReading>,
+    camera: Option<&chat_rows::Camera>,
+    scroll: i32,
+    rows: usize,
+    pinned: bool,
+    phase: &str,
+    force: bool,
+) {
+    let now = chat_rows::CameraReading {
+        top_id: camera
+            .map(|c| c.top_id.clone())
+            .unwrap_or_else(|| "-".to_owned()),
+        top_offset: camera.map_or(0, |c| c.top_offset),
+        scroll,
+        rows,
+        pinned,
+    };
+    // **Only a change is written** (B2 W4). `force` is for the tick that
+    // is about to merge rows: its "before" is by definition equal to the
+    // last line of the previous tick, and criterion 3 needs that pair.
+    if !chat_rows::camera_log_due(logged.as_ref(), &now, force) {
+        return;
+    }
+    *logged = Some(now.clone());
+    wlogf!(
+        HWND(hwnd as *mut c_void),
+        "[chat-native] camera: id={} off={} scroll={} rows={} pinned={} phase={}",
+        now.top_id,
+        now.top_offset,
+        now.scroll,
+        now.rows,
+        now.pinned,
+        phase
+    );
+}
+
 fn publish_heights(hwnd: HWND) {
     let key = hwnd.0 as isize;
     let mut client = windows::Win32::Foundation::RECT::default();
@@ -6369,7 +6603,14 @@ fn publish_heights(hwnd: HWND) {
         let view_h = msg.height;
         let group = chat.group.clone();
         let generation = feed.generation();
-        if chat.plan_width != width || chat.plan_dpi != dpi || chat.plan_font != font_id {
+        // **The map is still in the old width/DPI's geometry until the
+        // publish below.** Projecting into it first would move the view to
+        // an old pixel and then again to the new one -- two visible moves
+        // (R1-12) -- so the projection before the merge is skipped on that
+        // tick and only the one after it runs.
+        let geometry_changed =
+            chat.plan_width != width || chat.plan_dpi != dpi || chat.plan_font != font_id;
+        if geometry_changed {
             chat.plans.clear();
             // A drag or focus on the old plans is dead: clear the state
             // here and **accumulate** both requested effects, never
@@ -6400,7 +6641,38 @@ fn publish_heights(hwnd: HWND) {
                 }
             })
             .collect();
-        let range = chat.layout.visible(chat.scroll, view_h);
+        // **Project before measuring.** The rows to measure are the ones in
+        // sight, and "in sight" is the projection of the camera. A camera
+        // whose row is still a placeholder has no projection (`y_for` is
+        // `None`), so its own row is put in the measuring range: that is
+        // what lets a jump wait for its row's height without waiting for a
+        // tick that never comes.
+        if !geometry_changed {
+            // Field-level, not `project(chat, ..)`: the feed is borrowed for
+            // the whole measurement below, and this touches only the
+            // layout, the camera and the projection.
+            if let Some(at) = chat
+                .layout
+                .project(chat.camera.as_ref(), chat.pinned, view_h.max(1))
+            {
+                chat.scroll = at;
+            }
+        }
+        let mut range = chat.layout.visible(chat.scroll, view_h);
+        if let Some(i) = chat
+            .layout
+            .waiting_camera_row(chat.camera.as_ref(), feed.rows().iter().map(|r| r.id.as_str()))
+        {
+            // **Only the camera's row is measured this tick, not the
+            // viewport's.** That is temporary and lasts exactly until the
+            // camera's row has a real height -- the ordinary range is back
+            // on the next tick. It is here because a jump cannot wait on a
+            // row that is never in sight.
+            // **The upper bound is the feed's length** (A2 S1): `i` comes
+            // from the feed's ids, and after a merge the feed can be longer
+            // than the map until the publish below rebuilds it.
+            range = i..(i + 1).min(feed.rows().len());
+        }
 
         struct Candidate {
             index: usize,
@@ -6608,90 +6880,111 @@ fn publish_heights(hwnd: HWND) {
             }
         }
 
-        // **A jump lands on its target, and a fresh entry lands at the
-        // bottom**: neither keeps the old reading anchor. Only an ordinary
-        // publish (an older block arriving above) restores the row that was
-        // at the top, which is what makes loading older invisible.
-        let anchor = if chat.jump.is_some() || chat.land_bottom {
-            None
-        } else {
-            chat.layout
-                .anchor(chat.scroll)
-                .map(|(id, offset)| (id.to_owned(), offset))
+        // **There is no anchor to restore and no landing to consume.** The
+        // camera is the truth, so rows inserted above move the pixels under
+        // it, never the view; a pinned view projects to the bottom after
+        // every publish and stays there while heights arrive.
+        //
+        // **The instrument for criterion 3**: the same line before and
+        // after the merge, so "the row at the view's top edge did not move"
+        // is a reading rather than a claim. A tick that is about to change
+        // the map's row count says its "before" even though that state was
+        // already printed on the previous tick: the pair is the reading.
+        // **Compared by the map's ends, not its length** (A2 MF4): at the
+        // 5000-row window limit one block is added while another is
+        // trimmed from the far end, so `len()` does not move even though
+        // the map did -- which would drop criterion 3's pair and the
+        // `block:` reading at exactly the fixture that criterion uses.
+        let merging = {
+            let old = chat.layout.rows();
+            old.first().map(|r| r.id.as_str()) != identities.first().map(|r| r.id)
+                || old.last().map(|r| r.id.as_str()) != identities.last().map(|r| r.id)
         };
+        log_camera(
+            chat.hwnd,
+            &mut chat.logged_camera,
+            chat.camera.as_ref(),
+            chat.scroll,
+            chat.layout.rows().len(),
+            chat.pinned,
+            "before",
+            merging,
+        );
         let changed = chat
             .layout
             .publish(&identities, &decisions, &metrics, width);
-        // **A jump stays pinned to its target until that row is measured**,
-        // not for a fixed number of publishes: the tick measures at most
-        // four rows, so the target may still carry a placeholder height for
-        // several ticks. When the row is gone from the window, or when an
-        // ordinary anchor's row was evicted, the view falls back to the
-        // nearest measured row and says so once instead of re-anchoring in
-        // silence.
-        if let Some(id) = chat.jump.clone() {
-            match chat.layout.scroll_for(&id, 0) {
-                Some(at) => {
+        // **A block that arrived is one reading** (criterion 2): from the
+        // request the person's scroll caused to the publish that merged it.
+        if merging && !identities.is_empty() {
+            if let Some((asked, rows)) = chat.block_asked.take() {
+                let merged = now_ms();
+                wlogf!(
+                    HWND(chat.hwnd as *mut c_void),
+                    "[chat-native] block: asked={} merged={} took={}ms rows={}->{}",
+                    asked,
+                    merged,
+                    merged.saturating_sub(asked),
+                    rows,
+                    identities.len()
+                );
+            }
+        } else if chat.block_asked.is_some() {
+            // **"Still in flight" is not only the aux slot** (A2 MF3): a
+            // history page reports `older == Loading` from the ask until it
+            // lands, while the aux slot can already be free after the begin
+            // acknowledgement -- clearing on `aux_busy()` alone dropped the
+            // clock before the poll that merges, so the ordinary history
+            // path printed no `block:` at all.
+            let in_flight = feed.aux_busy()
+                || matches!(feed.older(), chat_feed::OlderState::Loading);
+            if !in_flight {
+                // **A block that ended without adding rows** (failed, gap,
+                // end) is no merge: drop the clock so a later live message
+                // cannot be reported as that block's merge time.
+                chat.block_asked = None;
+            }
+        }
+        // **A camera whose row left the map** (the window was replaced or
+        // trimmed at the reading end): fall back to the nearest measured
+        // row and say so once, instead of re-anchoring in silence.
+        if let Some(cam) = chat.camera.clone() {
+            if !chat.layout.rows().iter().any(|r| r.id == cam.top_id) {
+                if let Some(at) = chat.layout.nearest_measured(chat.scroll) {
+                    chat.camera = chat.layout.camera_at(at);
                     chat.scroll = at;
-                    let measured = chat
-                        .layout
-                        .rows()
-                        .iter()
-                        .find(|r| r.id == id)
-                        .is_some_and(|r| !r.placeholder);
-                    if measured {
-                        chat.jump = None;
-                    }
+                } else {
+                    chat.camera = None;
                 }
-                None => {
-                    if let Some(at) = chat.layout.nearest_measured(chat.scroll) {
-                        chat.scroll = at;
-                    }
-                    plogf!(
-                        "[chat-native] jump target {:?} left the window; fell back to the nearest measured row",
-                        id
-                    );
-                    // **The person sees it too**: a jump that cannot land
-                    // says so for 2.5 s on the page, never only in the log.
-                    chat.older_notice = Some((
-                        crate::i18n::tr("That message is not in this window."),
-                        std::time::Instant::now(),
-                    ));
-                    chat.older_notice_key = Some("jump:lost".to_owned());
-                    chat.jump = None;
-                }
-            }
-        } else if let Some((id, offset)) = anchor {
-            match chat.layout.scroll_for(&id, offset) {
-                Some(at) => chat.scroll = at,
-                None => {
-                    if let Some(at) = chat.layout.nearest_measured(chat.scroll) {
-                        chat.scroll = at;
-                    }
-                    plogf!(
-                        "[chat-native] anchor row {:?} was evicted; fell back to the nearest measured row",
-                        id
-                    );
-                }
+                plogf!(
+                    "[chat-native] camera row {:?} left the window; fell back to the nearest measured row",
+                    cam.top_id
+                );
+                // **The person sees it too**: a jump that cannot land says
+                // so for 2.5 s on the page, never only in the log.
+                chat.older_notice = Some((
+                    crate::i18n::tr("That message is not in this window."),
+                    std::time::Instant::now(),
+                ));
+                chat.older_notice_key = Some("jump:lost".to_owned());
             }
         }
-        // **A fresh entry lands on the latest end -- and only when there
-        // is a bottom to land on.** Spent on a tick whose map is still
-        // empty (the read is only in flight) or made entirely of one-line
-        // placeholders, the flag lands the view at 0, which is the
-        // "opened at the top" it exists to prevent, and it is gone before
-        // the real rows arrive. So it stays set until the map says where
-        // the bottom is, and until the rows in sight there are measured:
-        // the map grows under the view as their heights arrive, and a
-        // landing that forgot does stop short of the latest.
-        if chat.land_bottom {
-            if let Some(at) = chat.layout.land(view_h) {
-                chat.scroll = at.scroll;
-                chat.land_bottom = !at.settled;
-            }
-        }
+        project(chat, view_h);
         chat.scroll = chat.layout.clamp(chat.scroll, view_h);
+        log_camera(
+            chat.hwnd,
+            &mut chat.logged_camera,
+            chat.camera.as_ref(),
+            chat.scroll,
+            chat.layout.rows().len(),
+            chat.pinned,
+            "after",
+            false,
+        );
         invalidate = invalidate || changed;
+        // **A block is asked for while it is still three screens away**:
+        // the projection above is where the person is, and that is what
+        // decides which edge is near.
+        prefetch(chat, now_ms(), false);
     });
     unsafe {
         ReleaseDC(Some(hwnd), dc);
@@ -6728,15 +7021,18 @@ fn demand_in_sight(hwnd: HWND) {
         let group = chat.group.clone();
         let generation = feed.generation();
         let view_h = chat.view_h.max(1);
-        // **1.5 screens above the view and 1.5 below it.** `visible` takes
-        // a top and a span, so the span is the viewport plus both margins:
-        // 4 × the view's height, starting 1.5 screens above the scroll.
-        // Markdown is parsed before it is scrolled into sight; the plan
+        // **1.5 screens above the view and 1.5 below it, plus the camera's
+        // own row** (see `Layout::demand_rows`). A camera row that is in the
+        // map but has never been parsed keeps a placeholder height for
+        // ever -- `y_for` stays `None`, `project` stays `None`, and a jump
+        // to it never lands. Parsing is what makes the row real; the plan
         // itself is still built only for the viewport (`publish_heights`).
-        let preheat = view_h.saturating_mul(3) / 2;
-        let range = chat
-            .layout
-            .visible(chat.scroll.saturating_sub(preheat), view_h.saturating_mul(4));
+        let range = chat.layout.demand_rows(
+            chat.scroll,
+            view_h,
+            chat.camera.as_ref(),
+            feed.rows().iter().map(|r| r.id.as_str()),
+        );
         let mut items = Vec::new();
         for i in range {
             let Some(row) = feed.rows().get(i) else {
@@ -6851,22 +7147,26 @@ fn tick(hwnd: HWND) {
     for completion in completions {
         repaint_completions(&completion);
     }
+    // **A page that has just replaced the window lands before anything
+    // reads the map this tick** (B2 W1): the camera is set here, so the
+    // parse demand and the measuring range below can take the target row
+    // in the same tick instead of the next one.
+    if apply_around(hwnd) {
+        release_own_capture(hwnd);
+    }
     // **Every tick, whatever the core is doing**: what is in sight is what
     // wants parsing. An idle core (no action ready) must not stop it.
     demand_in_sight(hwnd);
     // And the tick -- not the paint -- publishes the heights it consumes.
     publish_heights(hwnd);
     // A following view stays on the bottom; a reading view keeps its place.
-    sync_follow(hwnd);
+    sync_pinned(hwnd);
     // A failed or empty older block says so once, without moving anything;
     // the line is taken down again after 2.5 s.
     if sync_older_notice(hwnd) {
         let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     }
     search_tick(hwnd, now);
-    if apply_around(hwnd) {
-        release_own_capture(hwnd);
-    }
     apply_reference(hwnd);
     drain_orphan_reference(hwnd);
     discard_unwanted_reference(hwnd);
@@ -6939,6 +7239,11 @@ fn tick(hwnd: HWND) {
     // **A window that is gone has no tick**: the ticket a late reference
     // answer minted is closed here, through the owner-checked ledger.
     let mut late_ticket: Option<String> = None;
+    // The answer below may have changed `feed.rows()`; the map is rebuilt
+    // after the borrow ends, before anything is drawn. **Compared by the
+    // map's ends, not its length** (A2 MF4): at the 5000-row steady state a
+    // block is added and another trimmed, and the length does not move.
+    let mut answer_changed = false;
     CHATS.with(|c| {
         let mut c = c.borrow_mut();
         let Some(chat) = c.iter_mut().find(|x| x.hwnd == key) else {
@@ -6959,6 +7264,10 @@ fn tick(hwnd: HWND) {
             job_id: job_id.clone(),
             nav,
         };
+        let before = (
+            feed.rows().first().map(|r| r.id.clone()),
+            feed.rows().last().map(|r| r.id.clone()),
+        );
         let owed = match kind {
             Kind::Begin => feed.accept_begin(&envelope, transport, now),
             Kind::Live => feed.accept_live(&envelope, transport, now),
@@ -6970,6 +7279,11 @@ fn tick(hwnd: HWND) {
             Kind::AuxPoll => feed.accept_aux_poll(&envelope, transport, now),
             Kind::Cancel => None,
         };
+        answer_changed = before
+            != (
+                feed.rows().first().map(|r| r.id.clone()),
+                feed.rows().last().map(|r| r.id.clone()),
+            );
         if let Some(Action::Cancel { request }) = owed {
             // **A hidden page has no tick to owe it to.** The timer was
             // killed when it left, so a cancel the stale reply produced is
@@ -6981,8 +7295,20 @@ fn tick(hwnd: HWND) {
                 late = Some(request);
             }
         }
-        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     });
+    if answer_changed {
+        // **The page that just landed is applied before the map is
+        // rebuilt** (A2 MF1): an `around` answer is accepted at the end of
+        // a tick, and without this the camera would only be set at the
+        // *next* tick's top -- the frame drawn in between is the around
+        // window's top rather than the target. With it, the same tick sets
+        // the camera, measures the target row (`waiting_camera_row` on the
+        // feed's ids) and projects.
+        if apply_around(hwnd) {
+            release_own_capture(hwnd);
+        }
+        republish(hwnd);
+    }
     if let Some(request) = late {
         let _ = send_request(&request);
     }
@@ -6993,7 +7319,7 @@ fn tick(hwnd: HWND) {
     // ticket in this very dispatch (the `!active` guard after `place`
     // stopped the feed); drain it now, while the borrow is released.
     drain_orphan_reference(hwnd);
-    sync_follow(hwnd);
+    sync_pinned(hwnd);
 }
 
 /// The request id the host itself put in a begin, so a reply can be held
