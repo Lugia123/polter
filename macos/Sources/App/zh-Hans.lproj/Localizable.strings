@@ -1563,6 +1563,8 @@
 "Reading group info…" = "正在读取群信息…";
 "Showing the first %d members." = "仅显示前 %d 位成员。";
 "Some earlier records could not be read." = "部分更早记录无法读取。";
+/* 总控台：群聊页，索引条上的失败提示（任务 3002） */
+"Earlier records could not be read." = "更早的记录无法读取。";
 "You" = "你";
 "You have reached the earliest message." = "已到最早记录。";
 
