@@ -196,7 +196,12 @@ enum TrimEnd {
 /// The bounded body and its alias indexes. **One owner per row**: the
 /// indexes map a core identity to the row's display id, and a row removed
 /// from the front takes every alias that pointed at it.
-#[derive(Debug, Default)]
+///
+/// **The two bounds are instance fields**, not the constants read directly:
+/// a test lowers them to a few rows and a few bytes and drives the real
+/// trimming code. Reading `WINDOW_LIMIT`/`WINDOW_BYTES` directly made the
+/// "never empties" invariant impossible to test with a fixture.
+#[derive(Debug)]
 struct Body {
     rows: Vec<Row>,
     /// Canonical `anchor` -> display id.
@@ -204,6 +209,23 @@ struct Body {
     /// `live_anchor` -> display id.
     live_anchors: HashMap<String, String>,
     bytes: usize,
+    /// The most rows this body keeps (default `WINDOW_LIMIT`).
+    limit: usize,
+    /// The text and identity budget (default `WINDOW_BYTES`).
+    bytes_limit: usize,
+}
+
+impl Default for Body {
+    fn default() -> Body {
+        Body {
+            rows: Vec::new(),
+            anchors: HashMap::new(),
+            live_anchors: HashMap::new(),
+            bytes: 0,
+            limit: WINDOW_LIMIT,
+            bytes_limit: WINDOW_BYTES,
+        }
+    }
 }
 
 impl Body {
@@ -282,12 +304,14 @@ impl Body {
         // **Never empty the body**: a single over-budget row is kept (the
         // page says the block too large rather than showing nothing), even
         // when that row alone is over the byte limit.
-        while self.rows.len() > 1 && (self.rows.len() > WINDOW_LIMIT || self.bytes > WINDOW_BYTES)
+        while self.rows.len() > 1
+            && (self.rows.len() > self.limit || self.bytes > self.bytes_limit)
         {
-            if self.rows.is_empty() {
-                break;
-            }
-            let block = EVICT_ROWS.min(self.rows.len());
+            // **Always leave one row.** `len > 1` is the entry condition,
+            // but the block itself must also stop short of emptying the
+            // body: with a byte bound and a body of 100 rows or fewer, a
+            // whole-block eviction would take every row at once.
+            let block = EVICT_ROWS.min(self.rows.len() - 1);
             for _ in 0..block {
                 match end {
                     TrimEnd::Oldest => self.drop_oldest(),
@@ -304,7 +328,7 @@ impl Body {
     /// `TooLarge`, not a truncation).
     fn absorb(&mut self, message: Message) -> bool {
         let cost = Self::cost(&message);
-        if cost > WINDOW_BYTES {
+        if cost > self.bytes_limit {
             return false;
         }
 
@@ -446,7 +470,7 @@ impl Body {
     /// budget rather than silently drop the newest rows it just added.
     fn try_absorb_back(&mut self, message: Message) -> bool {
         let cost = Self::cost(&message);
-        if self.bytes.saturating_add(cost) > WINDOW_BYTES || self.rows.len() >= WINDOW_LIMIT {
+        if self.bytes.saturating_add(cost) > self.bytes_limit || self.rows.len() >= self.limit {
             return false;
         }
         // Aliases are kept in one place by `absorb`; here the rows are
@@ -4080,6 +4104,27 @@ mod tests {
         assert_eq!(feed.rows()[1].id, "l:s1:12");
         assert_eq!(feed.new_messages(), 0);
         assert!(!feed.reading_history());
+    }
+
+    #[test]
+    fn the_byte_bound_never_empties_the_window() {
+        let mut body = Body::default();
+        for i in 0..3 {
+            assert!(body.absorb(msg(&format!("p:{i}"))));
+        }
+        // **The bound is under a three-row body**, so one whole block is
+        // the whole body: the trim must still leave exactly one row --
+        // the newest -- and say that it trimmed.
+        body.bytes_limit = 1;
+        assert!(body.trim_keeping(TrimEnd::Oldest));
+        assert_eq!(body.rows.len(), 1);
+        assert_eq!(body.rows[0].id, "p:2");
+
+        // The row bound has the same floor: a limit of zero still keeps
+        // one row, and nothing was trimmed at that point.
+        body.limit = 0;
+        assert!(!body.trim_keeping(TrimEnd::Oldest));
+        assert_eq!(body.rows.len(), 1);
     }
 
     #[test]
