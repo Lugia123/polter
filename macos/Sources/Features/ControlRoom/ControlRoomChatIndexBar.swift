@@ -21,6 +21,12 @@ import SwiftUI
 /// place, which row a drag lands on, how many rows one drawn tick stands for,
 /// and which page a click on the bare track moves.
 enum ControlRoomChatIndexBar {
+    /// **The look table, named at this scope.** The three numbers below are
+    /// read from it, and the alias every other file writes lives inside its
+    /// own type -- a file-scope `Look` does not exist, and this enum is at
+    /// file scope.
+    typealias Look = ControlRoomLook
+
     /// **A thumb shorter than this is not grabbable**, whatever the ratio
     /// says. Below it the bar stops being draggable by hand and a night's
     /// worth of messages could not be navigated. **From the shared look
