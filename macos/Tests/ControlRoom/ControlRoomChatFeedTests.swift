@@ -657,6 +657,489 @@ struct ControlRoomChatFeedTests {
         #expect(!rig.feed.canLoadOlder)
     }
 
+    /// **The chunk sizes are the request's, not the drawing's.** The first
+    /// screen asks for 100, each upward page for 50, and the upward page
+    /// still carries the resume token and no mode.
+    @Test func testTheFirstScreenAsksForAHundredAndEachOlderPageForFifty() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.status("pending"))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        #expect(rig.door.methods("chat_history_begin").count == 1)
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == Feed.firstChunk)
+        #expect(Feed.firstChunk == 100)
+
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.canLoadOlder)
+
+        rig.feed.loadOlder()
+        #expect(rig.door.methods("chat_history_begin").count == 2)
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == Feed.olderChunk)
+        #expect(rig.door.last("chat_history_begin")?["resume_token"] as? String == olderToken)
+        #expect(Feed.olderChunk == 50)
+    }
+
+    /// **Loading older is only rows.** A window of more than a thousand
+    /// messages is built by paging back one chunk at a time: `rows.count`
+    /// grows by exactly one chunk per page, `state` never leaves `.ready`,
+    /// and nothing is trimmed.
+    @Test func testPagingBackGrowsTheRowsWithoutTouchingTheStateOrTheGap() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    let first = (0..<Feed.firstChunk).map {
+                        self.message(anchor: "p:\(1000 + $0)")
+                    }
+                    return .answer(self.ready(
+                        messages: first, stop: "full", token: self.olderToken
+                    ))
+                }
+                let base = 1000 - (polls - 1) * Feed.olderChunk
+                let page = (0..<Feed.olderChunk).map {
+                    self.message(anchor: "p:\(base + $0)")
+                }
+                return .answer(self.ready(
+                    messages: page, stop: "full", token: self.olderToken
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.count == Feed.firstChunk)
+        #expect(rig.feed.state == .ready)
+
+        var lastCount = rig.feed.rows.count
+        for _ in 0..<23 {
+            rig.feed.loadOlder()
+            // The state belongs to the first screen; loading older is not a
+            // UI event and never turns it back to `.loading`.
+            #expect(rig.feed.state == .ready)
+            rig.scheduler.run(0.2)
+            #expect(rig.feed.state == .ready)
+            #expect(rig.feed.rows.count == lastCount + Feed.olderChunk)
+            lastCount = rig.feed.rows.count
+        }
+        #expect(rig.feed.rows.count >= 1000)
+        #expect(rig.feed.trimmedBefore == nil)
+        #expect(rig.feed.trimmedAfter == nil)
+    }
+
+    /// An older page still on its way leaves a body that already has rows
+    /// `.ready` -- the placeholder's spinner belongs to a first screen that
+    /// has nothing to draw.
+    @Test func testAnOlderPageOnItsWayLeavesTheStateReady() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                switch polls {
+                case 1:
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                case 2:
+                    return .answer(self.status("pending"))
+                default:
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:9")],
+                        stop: "at_end", token: nil
+                    ))
+                }
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.state == .ready)
+
+        rig.feed.loadOlder()
+        #expect(rig.feed.state == .ready)
+        rig.scheduler.run(0.2) // still pending
+        #expect(rig.feed.state == .ready)
+        #expect(rig.feed.older == .loading)
+
+        rig.scheduler.run(0.2) // the page lands
+        #expect(rig.feed.state == .ready)
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+    }
+
+    /// Five calls while a page is out are **one** request; a page that
+    /// failed may be asked for again from the same token.
+    @Test func testFiveLoadOlderCallsSendOneRequestAndAFailureMayBeRetried() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.failure("Reader"))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        let begins = rig.door.methods("chat_history_begin").count
+
+        for _ in 0..<5 { rig.feed.loadOlder() }
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
+        #expect(rig.feed.older == .loading)
+
+        // The page fails: the token stays, but the top edge is held back for
+        // one cooldown -- the view asks on every scroll event near the top,
+        // and a failure that is re-askable at once is a request storm.
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.older == .failed("Reader"))
+        #expect(!rig.feed.canLoadOlder)
+        for _ in 0..<5 { rig.feed.loadOlder() }
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
+
+        // The live read is the other 2 s item, hence two steps to the
+        // cooldown's expiry.
+        #expect(rig.scheduler.run(2))
+        #expect(rig.scheduler.run(2))
+        #expect(rig.feed.canLoadOlder)
+        rig.feed.loadOlder()
+        #expect(rig.door.methods("chat_history_begin").count == begins + 2)
+        #expect(rig.door.last("chat_history_begin")?["resume_token"] as? String == olderToken)
+    }
+
+    /// **A damaged empty page is not carried on.** The scan stops instead of
+    /// following the token, `settleOlder` records the gap, and the token
+    /// stays in `historyTail` for a fresh ask.
+    @Test func testAnEmptyBudgetPageWithAGapIsNotAdvanced() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.ready(
+                    messages: [], stop: "budget", token: self.nextOlderToken,
+                    gap: true
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2)
+
+        #expect(rig.scheduler.count(at: 0.05) == 0)
+        #expect(rig.feed.older == .idle)
+        #expect(rig.feed.historyTail?.gap == true)
+        #expect(rig.feed.historyTail?.nextToken == nextOlderToken)
+    }
+
+    /// **Empty pages are followed only so far.** A core that keeps answering
+    /// "empty, here is another token" is left alone after
+    /// `maxAutomaticAdvances`; the scan stops with a reason and the token
+    /// stays for the person's next ask.
+    @Test func testTooManyEmptyPagesStopTheAutomaticScan() {
+        let rig = Rig()
+        var polls = 0
+        var tokenSeq = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                tokenSeq += 1
+                let token = String(repeating: String(tokenSeq % 10), count: 32)
+                return .answer(self.ready(
+                    messages: [], stop: "budget", token: token
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2) // the first empty page schedules an advance
+
+        for _ in 0..<Feed.maxAutomaticAdvances {
+            #expect(rig.scheduler.run(0.05))
+            rig.scheduler.run(0.2)
+        }
+        #expect(rig.feed.older
+            == .failed("the history scan kept advancing over empty pages"))
+        #expect(rig.scheduler.count(at: 0.05) == 0)
+        #expect(rig.feed.historyTail?.nextToken != nil)
+    }
+
+    /// **An older page is not inserted under a moving hand.** While the view
+    /// reports the reader active, the page's rows, its tail and its `older`
+    /// word all wait; `canLoadOlder` is false so the top edge cannot send a
+    /// second request; `readerIdle()` lands the whole page in one step.
+    @Test func testAnOlderPageIsHeldWhileTheReaderMoves() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:9")],
+                    stop: "at_end", token: nil
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+
+        rig.feed.readerActive(true)
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2) // the page arrives while the hand is on
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(!rig.feed.canLoadOlder)
+        #expect(rig.feed.older == .loading)
+        #expect(rig.feed.historyTail?.nextToken == olderToken)
+
+        rig.feed.readerIdle()
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+        #expect(rig.feed.older == .atEnd)
+        #expect(rig.feed.historyTail?.nextToken == nil)
+        #expect(!rig.feed.canLoadOlder)
+    }
+
+    /// `readerIdle()` with nothing held changes nothing at all.
+    @Test func testReaderIdleWithNothingHeldIsANoOp() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll": return .answer(self.status("pending"))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        let requests = rig.door.requests.count
+        rig.feed.readerIdle()
+        #expect(rig.door.requests.count == requests)
+        #expect(rig.feed.rows.isEmpty)
+    }
+
+    /// **A located window has its own older cursor.** `locate` clears
+    /// `historyTail`, so the plain resume page has nothing to continue from;
+    /// the top edge still has to work, through the context cursor -- once
+    /// per page, with the context page's own size, and with `state` left
+    /// alone. The upward context page is held like every other one.
+    @Test func testLoadOlderInALocatedWindowUsesTheContextCursorOnce() {
+        let rig = Rig()
+        let job = String(repeating: "a", count: 32)
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(job: job))
+            case "chat_history_poll":
+                polls += 1
+                switch polls {
+                case 1:
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "at_end", token: nil, job: job
+                    ))
+                case 2:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 1, log: 1, anchor: "p:10"))],\
+                    "stop":"full","older_token":"\(self.olderToken)","newer_token":null,\
+                    "older_at_end":false,"newer_at_end":true,\
+                    "gap":false,"restarted":false,"target_index":0}
+                    """)
+                default:
+                    return .answer("""
+                    {"ok":true,"state":"ready","mode":"context","job_id":"\(job)",\
+                    "group":"polter","session":"s1",\
+                    "messages":[\(self.message(seq: 0, log: 0, anchor: "p:9"))],\
+                    "stop":"full","older_token":"\(self.nextOlderToken)","newer_token":null,\
+                    "older_at_end":false,"newer_at_end":true,\
+                    "gap":false,"restarted":false,"direction":"older"}
+                    """)
+                }
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.locate(anchor: "p:10", location: nil)
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.context != nil)
+        #expect(rig.feed.state == .ready)
+
+        let begins = rig.door.methods("chat_history_begin").count
+        rig.feed.readerActive(true)
+        for _ in 0..<5 { rig.feed.loadOlder() }
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
+        let sent = rig.door.last("chat_history_begin")
+        #expect(sent?["mode"] as? String == "context")
+        #expect(sent?["limit"] as? Int == Feed.contextChunk)
+        #expect(sent?["resume_token"] as? String == olderToken)
+        #expect(rig.feed.state == .ready)
+
+        // Held while the hand is on; landed in one step on idle.
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(!rig.feed.canLoadOlder)
+        rig.feed.readerIdle()
+        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+        #expect(rig.feed.context?.olderToken == nextOlderToken)
+        #expect(rig.feed.state == .ready)
+    }
+
+    /// **The located window is a screen and a half each way.** A 10+10 page
+    /// would leave the lower half of the screen empty; the feed asks for
+    /// `locateWindowRows` (1.5 x the viewport, clamped to the core's 99).
+    @Test func testALocatedWindowAsksForMoreThanOneScreenEachWay() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll": return .answer(self.status("pending"))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.feed.locate(anchor: "p:1", location: nil)
+        let sent = rig.door.last("chat_history_begin")
+        #expect(sent?["mode"] as? String == "around")
+        #expect(sent?["before"] as? Int == 24)
+        #expect(sent?["after"] as? Int == 24)
+        #expect(Feed.defaultViewportRows == 16)
+
+        rig.feed.viewportRows = 80
+        #expect(rig.feed.locateWindowRows == 99)
+        rig.feed.viewportRows = 2
+        #expect(rig.feed.locateWindowRows == 10)
+    }
+
+    /// **Every locate is an event, and only a locate is.** The view keys its
+    /// land effect on `locateEpoch`: the same anchor located twice must move
+    /// it twice, a failed locate must move it, and a stop or a reload -- which
+    /// move `generation` for their own reasons -- must not.
+    @Test func testLocateEpochMovesForEveryLocateAndEveryFailedLocateOnly() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll": return .answer(self.status("pending"))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        let born = rig.feed.locateEpoch
+        rig.feed.locate(anchor: "p:1", location: nil)
+        let first = rig.feed.locateEpoch
+        #expect(first != born)
+        rig.feed.locate(anchor: "p:1", location: nil)
+        #expect(rig.feed.locateEpoch != first)
+
+        let afterLocates = rig.feed.locateEpoch
+        rig.feed.stop()
+        rig.feed.start(group: "polter")
+        rig.feed.reload()
+        #expect(rig.feed.locateEpoch == afterLocates)
+    }
+
+    /// **A failed locate is an event and brings the live read back.** The
+    /// failure itself must be visible even when the anchor was already nil,
+    /// and `locate()` cancelled the live schedule at its first line -- a
+    /// failure that leaves it cancelled means this group never shows a new
+    /// message again, which reads as "nobody is talking".
+    @Test func testAFailedLocateMovesTheEpochAndRestoresTheLiveRead() {
+        let rig = Rig()
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll": return .answer("not a poll answer")
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        let born = rig.feed.locateEpoch
+        rig.feed.locate(anchor: "p:2", location: nil)
+        let located = rig.feed.locateEpoch
+        #expect(located != born)
+
+        #expect(rig.scheduler.run(0.2))
+        #expect(rig.feed.locateTrouble == "malformed locate reply")
+        #expect(rig.feed.locateEpoch != located)
+
+        let reads = rig.door.methods("group_read").count
+        #expect(rig.scheduler.run(2))
+        #expect(rig.door.methods("group_read").count == reads + 1)
+    }
+
     /// An empty older budget page schedules one more look; a token that
     /// repeats is not asked again (the scan made no progress), so a quiet or
     /// broken range cannot become a loop.
@@ -818,64 +1301,80 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
     }
 
-    /// **The page just asked for must not be trimmed away the moment it is
-    /// merged.** With 500 rows and the reader at the top, an older page goes
-    /// in front; the window then drops from the other side of the reader,
-    /// keeping both the new page and the live tail.
-    @Test func testTheWindowKeepsTheOlderPageTheReaderJustAskedFor() {
+    /// **The page just asked for must not be evicted the moment it is
+    /// merged.** Past the ceiling, one whole block leaves from the end
+    /// farthest from the reader. With the reader at the top -- where
+    /// `loadOlder` has just put the new page -- the oldest block is what
+    /// they are looking at, so the newest block goes instead, and the kept
+    /// rows stay one contiguous run.
+    @Test func testPastTheCeilingTheFarBlockGoesAndTheLoadedPageStays() {
         let rig = Rig()
         var polls = 0
         rig.door.reply = { request in
             switch Door.method(request) {
             case "chat_history_begin":
-                let snapshot = (1...500).map {
-                    self.message(seq: UInt64($0), log: UInt64($0), anchor: "p:\($0)")
-                }
-                return .answer(self.begin(snapshot: snapshot))
+                return .answer(self.begin(snapshot: []))
             case "chat_history_poll":
                 polls += 1
                 if polls == 1 {
-                    return .answer(self.ready(messages: [], stop: "full", token: self.olderToken))
+                    // The first screen: exactly the ceiling.
+                    let first = (1...Feed.retainedLimit).map {
+                        self.message(
+                            seq: UInt64($0), log: UInt64($0),
+                            anchor: "p:\($0)", liveAnchor: "lp:\($0)")
+                    }
+                    return .answer(
+                        self.ready(messages: first, stop: "full", token: self.olderToken))
                 }
                 let older = (1...50).map {
-                    self.message(seq: 0, log: UInt64($0), anchor: "h:\($0)")
+                    self.message(seq: 0, log: UInt64($0), anchor: "h:\($0)", liveAnchor: "lh:\($0)")
                 }
-                return .answer(self.ready(messages: older, stop: "at_end", token: nil))
+                return .answer(self.ready(messages: older, stop: "full", token: self.nextOlderToken))
             default:
                 return .notReady
             }
         }
         rig.feed.start(group: "polter")
         rig.scheduler.run(0.2)
-        #expect(rig.feed.rows.count == Feed.windowLimit)
+        #expect(rig.feed.rows.count == Feed.retainedLimit)
+        // The view is looking at the oldest row it holds: the top edge.
         rig.feed.reading(anchor: "p:1")
 
         rig.feed.loadOlder()
         rig.scheduler.run(0.2)
 
-        #expect(rig.feed.rows.count == Feed.windowLimit)
+        // 5050 rows in, one block of 100 out from the newest end: 4950 kept.
+        #expect(rig.feed.rows.count == Feed.retainedLimit + 50 - Feed.firstChunk)
         #expect(rig.feed.rows.first?.id == "h:1")
         #expect(rig.feed.rows.contains { $0.id == "h:50" })
         #expect(rig.feed.rows.contains { $0.id == "p:1" })
-        #expect(rig.feed.rows.last?.id == "p:500")
+        #expect(rig.feed.rows.last?.id == "p:\(Feed.retainedLimit - Feed.firstChunk)")
 
-        // **What went is one contiguous run at the boundary between the
-        // reading window and the live tail**, not a hole picked out of the
-        // middle, and it is said out loud.
+        // **What went is one contiguous run at the far end**, never a hole
+        // dug out of the middle, and it is said out loud.
         let kept = Set(rig.feed.rows.map(\.id))
-        let missing = (102...151).map { "p:\($0)" }.filter { !kept.contains($0) }
-        #expect(missing.count == 50)
-        #expect(rig.feed.trimmedAfter == "p:101")
+        #expect(rig.feed.trimmedAfter == "p:\(Feed.retainedLimit - Feed.firstChunk)")
         #expect(rig.feed.trimmedBefore == nil)
+        #expect(((Feed.retainedLimit - Feed.firstChunk + 1)...Feed.retainedLimit)
+            .allSatisfy { !kept.contains("p:\($0)") })
+        // The released rows' aliases went with them.
+        #expect(rig.feed.aliasCount == rig.feed.rows.count)
 
-        // The released run can be read again: the list's gap boundary offers
-        // this, and it starts the body again from the newest records.
+        // **Back to the newest is a fresh bootstrap, not a scroll.** The
+        // block that went was the newest one, so the newest rows may simply
+        // not be there any more; the list's gap boundary offers the same
+        // recovery.
         let beginsBefore = rig.door.methods("chat_history_begin").count
-        rig.feed.reloadClearingGap()
+        rig.feed.returnToLatest()
         #expect(rig.feed.trimmedAfter == nil)
         #expect(rig.feed.trimmedBefore == nil)
         #expect(rig.door.methods("chat_history_begin").count == beginsBefore + 1)
-        #expect(rig.feed.rows.count == Feed.windowLimit)
+
+        let again = rig.door.methods("chat_history_begin").count
+        rig.feed.reloadClearingGap()
+        #expect(rig.feed.trimmedAfter == nil)
+        #expect(rig.feed.trimmedBefore == nil)
+        #expect(rig.door.methods("chat_history_begin").count == again + 1)
     }
 
     /// **`at_end` alone is not completeness.** A page that reached the end
@@ -1189,58 +1688,155 @@ struct ControlRoomChatFeedTests {
 
     // MARK: - The window's edge
 
-    /// The list keeps the newest 500, and a dropped message takes its live
-    /// aliases with it.
-    @Test func testTheWindowKeepsTheNewestFiveHundredAndDropsTheirAliases() {
+    /// Live messages past the ceiling: whole blocks leave from the oldest
+    /// end (no reader has reported an anchor), a dropped message takes its
+    /// live aliases with it, and the amount that left is a multiple of the
+    /// block size.
+    @Test func testLiveMessagesPastTheCeilingDropWholeOldBlocksWithTheirAliases() {
         let rig = Rig()
+        let count = Feed.retainedLimit + 1
         rig.door.reply = { request in
             switch Door.method(request) {
             case "chat_history_begin": return .answer(self.begin(snapshot: []))
             case "chat_history_poll": return .answer(self.status("pending"))
             case "group_read":
-                let messages = (1...501).map { i in
+                let messages = (1...count).map { i in
                     self.message(seq: UInt64(i), log: UInt64(i), anchor: "p:\(i)", liveAnchor: "l:s1:\(i)")
                 }
-                return .answer(self.live(next: 501, messages: messages))
+                return .answer(self.live(next: UInt64(count), messages: messages))
             default: return .notReady
             }
         }
         rig.feed.start(group: "polter")
         rig.scheduler.run(2)
-        #expect(rig.feed.rows.count == Feed.windowLimit)
-        #expect(rig.feed.rows.first?.id == "p:2")
-        #expect(rig.feed.aliasCount == Feed.windowLimit)
+
+        let kept = Feed.retainedLimit + 1 - Feed.firstChunk
+        #expect(rig.feed.rows.count == kept)
+        #expect(count - rig.feed.rows.count == Feed.firstChunk)
+        #expect(rig.feed.rows.first?.id == "p:\(Feed.firstChunk + 1)")
+        #expect(rig.feed.trimmedBefore == "p:\(Feed.firstChunk + 1)")
+        #expect(rig.feed.trimmedAfter == nil)
+        #expect(rig.feed.aliasCount == kept)
+    }
+
+    /// **The memory bound is not a reason to draw nothing.** The ceiling is
+    /// lowered so a few small messages reach it: over it, the window keeps
+    /// at least one row, says where the rest went, and stays a body the view
+    /// can draw -- an empty `rows` under `.ready` is the header over a blank
+    /// list. This is a **defensive invariant** (a 64 KiB record cannot fill
+    /// 32 MiB with fewer than a hundred rows); it stays because the row
+    /// ceiling alone would allow ~312 MiB.
+    @Test func testTheByteBoundNeverEmptiesTheWindow() {
+        let rig = Rig()
+        // Rows are ~29 bytes each: three are over a 100-byte ceiling.
+        rig.feed.byteLimit = 100
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                // Settle the first screen first: `.loading` belongs to a
+                // screen with nothing to draw.
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:0")],
+                    stop: "at_end", token: nil
+                ))
+            case "group_read":
+                let messages = (1...3).map { i in
+                    self.message(seq: UInt64(i), log: UInt64(i), anchor: "p:\(i)")
+                }
+                return .answer(self.live(next: 3, messages: messages))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.state == .ready)
+        // The view has not reported a reader, so no block stands in as one.
+        rig.feed.reading(anchor: nil)
+
+        rig.scheduler.run(2)
+        #expect(rig.feed.rows.count >= 1)
+        #expect(rig.feed.trimmedBefore != nil)
+        #expect(rig.feed.state == .ready)
+        #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
+    }
+
+    /// **A window smaller than one block is not cut into.** The old
+    /// `trimIndex` computed `rows.count - keepLiveTail`, which is negative
+    /// below the live-tail size, so its middle-hole branch never fired;
+    /// this model protects the reader's first block outright. With a tiny
+    /// byte ceiling and fewer rows than a block, nothing goes at all and the
+    /// reader's own row is still there.
+    @Test func testASmallWindowWithTheReaderInItsOnlyBlockDropsNothing() {
+        let rig = Rig()
+        rig.feed.byteLimit = 60
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:0")],
+                    stop: "at_end", token: nil
+                ))
+            case "group_read":
+                let messages = (1...2).map { i in
+                    self.message(seq: UInt64(i), log: UInt64(i), anchor: "p:\(i)")
+                }
+                return .answer(self.live(next: 2, messages: messages))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.reading(anchor: "p:0")
+
+        rig.scheduler.run(2)
+        // Three rows are over 60 bytes; the reader is in the only block, so
+        // the ceiling yields and every row stays.
+        #expect(rig.feed.rows.map(\.id) == ["p:0", "p:1", "p:2"])
+        #expect(rig.feed.trimmedBefore == nil)
+        #expect(rig.feed.trimmedAfter == nil)
     }
 
     /// The byte bound is the contract's own (text and identity strings), and
     /// a single message bigger than the whole budget is said out loud
-    /// instead of being cut.
+    /// instead of being cut. The ceiling is lowered for the test: with 64 KiB
+    /// records the production one cannot be reached with a hundred rows.
     @Test func testTheByteBoundAndAWholeMessageTooLarge() {
         let rig = Rig()
+        rig.feed.byteLimit = 25_000
         rig.door.reply = { request in
             switch Door.method(request) {
             case "chat_history_begin": return .answer(self.begin(snapshot: []))
             case "chat_history_poll": return .answer(self.status("pending"))
             case "group_read":
-                let big = String(repeating: "x", count: 9000)
-                let messages = (1...500).map { i in
+                // 400 rows of ~130 bytes are well over 25,000, with enough
+                // rows that whole blocks are what goes.
+                let big = String(repeating: "x", count: 100)
+                let messages = (1...400).map { i in
                     self.message(seq: UInt64(i), log: 0, anchor: "l:s1:\(i)", text: big)
                 }
-                return .answer(self.live(next: 500, messages: messages))
+                return .answer(self.live(next: 400, messages: messages))
             default: return .notReady
             }
         }
         rig.feed.start(group: "polter")
         rig.scheduler.run(2)
-        #expect(rig.feed.retainedBytes <= Feed.windowBytes)
-        #expect(rig.feed.rows.count < Feed.windowLimit)
+        #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
+        // Whole blocks left, never rows picked out of the middle.
+        #expect(rig.feed.rows.count % Feed.firstChunk == 0)
+        #expect(rig.feed.rows.count < 400)
 
         // One message over the whole budget: refused, not truncated.
         rig.door.reply = { request in
             guard Door.method(request) == "group_read" else { return .notReady }
-            let huge = String(repeating: "y", count: Feed.windowBytes + 1)
-            return .answer(self.live(next: 501, messages: [
-                self.message(seq: 501, log: 0, anchor: "l:s1:501", text: huge),
+            let huge = String(repeating: "y", count: rig.feed.byteLimit + 1)
+            return .answer(self.live(next: 401, messages: [
+                self.message(seq: 401, log: 0, anchor: "l:s1:401", text: huge),
             ]))
         }
         let before = rig.feed.rows.count
@@ -1292,8 +1888,9 @@ struct ControlRoomChatFeedTests {
     @Test func testATargetTheWindowDroppedIsSaid() {
         let rig = Rig()
         let job = String(repeating: "a", count: 32)
-        // 501 messages, the target first: the window keeps 500.
-        let messages = (0...500).map {
+        // One more than the ceiling, the target first: the oldest block goes,
+        // and the target goes with it.
+        let messages = (0...Feed.retainedLimit).map {
             self.message(seq: UInt64($0), log: UInt64($0), anchor: "p:\($0)")
         }
         rig.door.reply = { request in
