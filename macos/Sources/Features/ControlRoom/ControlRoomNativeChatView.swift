@@ -68,10 +68,6 @@ struct ControlRoomNativeChatView: View {
     /// Bumped when the map is replaced rather than extended. The index bar
     /// reads it to abandon a drag that was aimed at the old map.
     @State private var mapEpoch: UInt64 = 0
-    /// When the view last asked for more records, on the monotonic clock.
-    /// **A failed page must not be re-sent on every bounds callback**: near
-    /// the top there is one per scroll event.
-    @State private var olderAskedAt: TimeInterval = 0
     /// Invalidates the "the hand has left the list" restore attempts queued
     /// by earlier wheel events.
     @State private var quietToken: UInt64 = 0
@@ -290,11 +286,19 @@ struct ControlRoomNativeChatView: View {
                                 if attached {
                                     performFollowIfPossible()
                                     restoreSoon()
+                                    // **A probe that has just found its
+                                    // scroll view** is one of the moments the
+                                    // blank list came from (a return to the
+                                    // tab, a rebuilt host): the place is put
+                                    // back once the frames are known.
+                                    DispatchQueue.main.async {
+                                        recoverVisiblePlace("attach")
+                                    }
                                 }
                             },
                             onVisible: { _ in },
                             onUserScroll: userTookScroll,
-                        onUserScrollEnd: handLeftTheList,
+                            onUserScrollEnd: handLeftTheList,
                             report: scrolled
                         ))
                     }
@@ -354,23 +358,13 @@ struct ControlRoomNativeChatView: View {
             activeToken &+= 1
             lifecycleEpoch &+= 1
         }
-        // **Every locate is an event, including one for the same anchor**
-        // (task 3002 review A). `onChange(of: locatedAnchor)` alone did
-        // nothing when the same result was picked twice. The durable key is
-        // the feed's `locateEpoch`, which it bumps on `locate()` and on a
-        // failed locate; **it is 3003's field and does not exist in this
-        // tree yet**, so the two edges that exist today drive it: a new
-        // anchor, and a locate starting. ⚠️ Replace both with
-        // `.onChange(of: feed.locateEpoch)` when the feed has it -- the pair
-        // can miss a second locate issued while the first is still out.
-        .onChange(of: feed.locatedAnchor) { _ in landOnLocate() }
-        .onChange(of: feed.locating) { locating in
-            // Only the start: the answer re-lands through the anchor above,
-            // and re-landing when a locate *ends* would pull a reader who has
-            // already scrolled away back to the target.
-            guard locating else { return }
-            landOnLocate()
-        }
+        // **The locate's own epoch drives the landing** (task 3002 review A).
+        // The anchor's value could not: picking the same search result twice
+        // changes nothing about it, so nothing happened. The feed bumps
+        // `locateEpoch` on `locate()` and on a locate's own failure -- and
+        // **not** on a stop, a reload or a session change, which are not
+        // locates and must not pull the reader anywhere.
+        .onChange(of: feed.locateEpoch) { _ in landOnLocate() }
         .onChange(of: feed.rows) { rows in
             lifecycleEpoch &+= 1
             // The rows changed, so the frames will too: history freezes the
@@ -780,35 +774,23 @@ struct ControlRoomNativeChatView: View {
         case newer
     }
 
-    /// **Asking for more is silent and rate-limited.** With no loading row,
-    /// the records either side of the frame are the background's business.
-    /// What must not happen is one request per bounds callback -- near an
-    /// edge there is one per scroll event -- or a failed page re-sent on
-    /// every one of them, which looks exactly like "at the end" and costs a
-    /// core call each time. Two seconds between asks.
-    ///
-    /// A located window has **two** tails and no `historyTail` at all, so
-    /// the direction decides which one is asked; asking the live one there
-    /// would do nothing at all.
+    /// **Asking for more is silent, and the feed owns both gates.** With no
+    /// loading row the records either side of the frame are the background's
+    /// business. `canLoadOlder` is the single question -- false while a page
+    /// is out, held for the reader's hand, or cooling down after a failure --
+    /// so this can be asked on every bounds callback without a request storm
+    /// and without a second cooldown of the view's own. `loadOlder` routes to
+    /// the context cursor by itself when a located window has no
+    /// `historyTail`; only the newer direction is a separate call, because
+    /// that edge belongs to a located window alone.
     private func askForMore(_ direction: AskDirection) {
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - olderAskedAt >= 2 else { return }
-        if let context = feed.context {
-            switch direction {
-            case .older:
-                guard !context.olderAtEnd, !feed.contextOlderStale else { return }
-                olderAskedAt = now
-                feed.loadContextOlder()
-            case .newer:
-                guard !context.newerAtEnd, !feed.contextNewerStale else { return }
-                olderAskedAt = now
-                feed.loadContextNewer()
-            }
-            return
+        switch direction {
+        case .older:
+            guard feed.canLoadOlder else { return }
+            feed.loadOlder()
+        case .newer:
+            feed.loadContextNewer()
         }
-        guard direction == .older, feed.canLoadOlder else { return }
-        olderAskedAt = now
-        feed.loadOlder()
     }
 
     /// **The page that could not be read has to say so somewhere.** The
@@ -918,7 +900,8 @@ struct ControlRoomNativeChatView: View {
     /// ⚠️ **Not a promise that every repeat locate moves the list**: a target
     /// row that is in the window but has never been instantiated has no
     /// frame, and this view cannot make the lazy stack make it. The locate's
-    /// own window replacement is what gives the row a frame.
+    /// own window replacement is what gives the row a frame. The measuring
+    /// that proves "the second click landed too" is a real-app reading.
     private func landOnLocate() {
         guard let target = feed.locatedAnchor else {
             // **A failed or cleared locate leaves no place to land on.** The
@@ -1029,10 +1012,11 @@ struct ControlRoomNativeChatView: View {
         }
         toldReaderActive = false
         // **Freeze first, against the rows as they are**: nothing has been
-        // merged into them while the hand was on the list.
+        // merged into them while the hand was on the list. `readerIdle()`
+        // merges synchronously, so the freeze must be in place before it.
         let rowsAtFreeze = feed.rows.count
         freezeForRestore()
-        readerActive(false)
+        feed.readerIdle()
         restoreSoon()
         // **A freeze that nothing answered is not left standing.** If the
         // feed had no page to merge, the keeper would stay "restoring" and
@@ -1069,14 +1053,14 @@ struct ControlRoomNativeChatView: View {
         }
     }
 
-    /// **The feed's reader gate** (task 3002 review). The feed holds a page
-    /// that arrives while this is true and merges it when it goes false; the
-    /// half that does the holding is 3003's (`ControlRoomChatFeed`). ⚠️ The
-    /// two calls are the seam: point them at the feed's own methods when it
-    /// has them.
+    /// **The feed's reader gate.** It is only "is the hand on the list"; the
+    /// 0.3s quiet judgement is this view's (`armQuietCheck`), because only
+    /// the view sees the wheel stream. `true` holds a page that arrives; the
+    /// hand leaving goes through `feed.readerIdle()`, which merges it and
+    /// sets the flag itself -- a bare `false` would hold no merge.
     private func readerActive(_ active: Bool) {
-        // ⚠️ feed.readerActive(active) -- not in this tree yet.
-        _ = active
+        guard active else { return }
+        feed.readerActive(true)
     }
 
     private func requestFollow() {
