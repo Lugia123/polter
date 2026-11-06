@@ -3683,6 +3683,21 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
             if chat.follow {
                 chat.new_rows = false;
             }
+            // **A page turned with the bar is reading history too.** The
+            // same two transitions as `scroll_by`: leaving the bottom
+            // enters the reading window (live rows wait aside), returning
+            // to it rejoins the latest. Without this, a drag to the top
+            // leaves `reading_history` false and the next live message
+            // trims a block the reader is looking at.
+            if let Some(feed) = chat.feed.as_mut() {
+                if chat.follow {
+                    if !feed.context_window() && feed.reading_history() {
+                        feed.return_to_latest(now_ms());
+                    }
+                } else if !feed.context_window() {
+                    feed.enter_reading();
+                }
+            }
         }
         true
     });
@@ -3764,6 +3779,19 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         chat.follow = chat.scroll >= chat.layout.clamp(i32::MAX, msg.height);
         if chat.follow {
             chat.new_rows = false;
+        }
+        // **A drag is reading history too** (the same transitions as
+        // `scroll_by`): leaving the bottom keeps live rows aside so the
+        // block the reader is on is not trimmed under them; returning to
+        // the bottom rejoins the latest.
+        if let Some(feed) = chat.feed.as_mut() {
+            if chat.follow {
+                if !feed.context_window() && feed.reading_history() {
+                    feed.return_to_latest(now_ms());
+                }
+            } else if !feed.context_window() {
+                feed.enter_reading();
+            }
         }
         true
     });
@@ -5905,7 +5933,8 @@ fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
 /// once: reaching the end and failing twice are the same sentence, not a
 /// new one every tick. The retry clock lives in the feed, so this is only
 /// what the person sees.
-fn sync_older_notice(hwnd: HWND) {
+fn sync_older_notice(hwnd: HWND) -> bool {
+    let mut invalidate = false;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return;
@@ -5915,6 +5944,16 @@ fn sync_older_notice(hwnd: HWND) {
         };
         if !chat.shown {
             return;
+        }
+        // **A sentence that has been up for 2.5 s is taken down here.**
+        // Paint already stops drawing it, but without this the part of
+        // the page it covered is never repainted and the sentence stays
+        // on screen until something else invalidates the window.
+        if chat.older_notice.as_ref().is_some_and(|(_, at)| {
+            at.elapsed() >= std::time::Duration::from_millis(2500)
+        }) {
+            chat.older_notice = None;
+            invalidate = true;
         }
         // A located-jump failure keeps the line it just put up; the older
         // state's sentence waits until that moment is over.
@@ -5970,7 +6009,9 @@ fn sync_older_notice(hwnd: HWND) {
         }
         chat.older_notice_key = Some(key.to_owned());
         chat.older_notice = Some((word, std::time::Instant::now()));
+        invalidate = true;
     });
+    invalidate
 }
 
 /// Keep a following view on the bottom; a view reading history never
@@ -6663,9 +6704,11 @@ fn demand_in_sight(hwnd: HWND) {
         let group = chat.group.clone();
         let generation = feed.generation();
         let view_h = chat.view_h.max(1);
-        // **One and a half screens each way**: Markdown is parsed before it
-        // is scrolled into sight, and the plan itself is still built only
-        // for the viewport (see `publish_heights`).
+        // **1.5 screens above the view and 1.5 below it.** `visible` takes
+        // a top and a span, so the span is the viewport plus both margins:
+        // 4 × the view's height, starting 1.5 screens above the scroll.
+        // Markdown is parsed before it is scrolled into sight; the plan
+        // itself is still built only for the viewport (`publish_heights`).
         let preheat = view_h.saturating_mul(3) / 2;
         let range = chat
             .layout
@@ -6791,8 +6834,11 @@ fn tick(hwnd: HWND) {
     publish_heights(hwnd);
     // A following view stays on the bottom; a reading view keeps its place.
     sync_follow(hwnd);
-    // A failed or empty older block says so once, without moving anything.
-    sync_older_notice(hwnd);
+    // A failed or empty older block says so once, without moving anything;
+    // the line is taken down again after 2.5 s.
+    if sync_older_notice(hwnd) {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
     search_tick(hwnd, now);
     if apply_around(hwnd) {
         release_own_capture(hwnd);

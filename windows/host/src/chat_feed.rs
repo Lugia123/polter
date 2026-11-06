@@ -279,7 +279,11 @@ impl Body {
     /// says it happened.
     fn trim_keeping(&mut self, end: TrimEnd) -> bool {
         let mut dropped = false;
-        while self.rows.len() > WINDOW_LIMIT || self.bytes > WINDOW_BYTES {
+        // **Never empty the body**: a single over-budget row is kept (the
+        // page says the block too large rather than showing nothing), even
+        // when that row alone is over the byte limit.
+        while self.rows.len() > 1 && (self.rows.len() > WINDOW_LIMIT || self.bytes > WINDOW_BYTES)
+        {
             if self.rows.is_empty() {
                 break;
             }
