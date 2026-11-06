@@ -67,6 +67,26 @@ enum ControlRoomChatAnchor {
         offset <= threshold
     }
 
+    /// **Whether a restore that would land where the viewport already is has
+    /// really been answered.** `frames` may still be the map the restore was
+    /// frozen against (a replaced window's preference has not arrived yet);
+    /// spending the restore there marks the correction done and nothing ever
+    /// asks again (task 3002 review).
+    static func restoreWasAnswered(framesEpoch: UInt64, frozenAt: UInt64) -> Bool {
+        framesEpoch > frozenAt
+    }
+
+    /// The measured row nearest a point in content coordinates. **The blank
+    /// list's second answer**: an offset can be legal and still fall in a
+    /// stretch a `LazyVStack` never instantiated, so the recovery moves to a
+    /// row that really has a frame -- not straight to the bottom, which
+    /// throws the reader's place away.
+    static func nearestMeasured(centre: Double, frames: [String: CGRect]) -> String? {
+        frames.min {
+            abs(Double($0.value.midY) - centre) < abs(Double($1.value.midY) - centre)
+        }?.key
+    }
+
     /// Whether the located row is really on screen: its frame has been
     /// measured and it overlaps the viewport.
     ///
