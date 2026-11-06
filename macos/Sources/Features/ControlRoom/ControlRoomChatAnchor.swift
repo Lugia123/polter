@@ -149,6 +149,15 @@ enum ControlRoomChatAnchor {
         intentEpoch == currentUserEpoch
     }
 
+    /// **Whether an owed restore may run now**: never while a hand is on the
+    /// list. A restore running during a wheel or a live scroll is a second
+    /// thing moving the viewport at once, and whichever wins the reader sees
+    /// a jump (task 2999 ③, measured on 0.11.2381: the list jumped at a point
+    /// part-way up and only the scroller could reach the top).
+    static func mayRestore(userScrolling: Bool, readerRecently: Bool) -> Bool {
+        !userScrolling && !readerRecently
+    }
+
     static func change(from old: [String], to new: [String]) -> Change {
         if old == new { return .none }
         if old.isEmpty { return new.isEmpty ? .none : .appended }

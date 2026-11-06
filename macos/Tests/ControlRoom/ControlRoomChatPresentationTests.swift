@@ -173,6 +173,17 @@ struct ControlRoomChatPresentationTests {
         #expect(P.authorText(author: "", fromSelf: false) == "")
     }
 
+    /// **Nothing is put back under a hand that is on the list** (task 2999
+    /// ③). A restore that ran during a wheel or a live scroll moved the
+    /// viewport at the same time as the reader, and the list jumped at a
+    /// point part-way up while the scroller still reached the top.
+    @Test func testARestoreIsNotRunUnderAHandOnTheList() {
+        #expect(A.mayRestore(userScrolling: false, readerRecently: false))
+        #expect(!A.mayRestore(userScrolling: true, readerRecently: false))
+        #expect(!A.mayRestore(userScrolling: false, readerRecently: true))
+        #expect(!A.mayRestore(userScrolling: true, readerRecently: true))
+    }
+
     // MARK: - The reader's anchor
 
     private var frames: [String: CGRect] {

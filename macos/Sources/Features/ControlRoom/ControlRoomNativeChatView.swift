@@ -247,10 +247,18 @@ struct ControlRoomNativeChatView: View {
             frames = value
             framesEpoch &+= 1
             if scrollPhase == .layoutAwaitingFrames { scrollPhase = .idle }
-            if !atBottom {
-                keeper.layoutWillChange()
-                scrollIntent = .restore
-            }
+            // **A frames change is a consequence, never a cause.** This used
+            // to freeze the reader's place and owe a restore on every frames
+            // change while away from the bottom -- and scrolling up a
+            // LazyVStack changes frames on every row it makes. Each of those
+            // froze the anchor *from before* the scroll it was in the middle
+            // of, put the viewport back there, and the reader's next wheel
+            // started it again: the list jumped under the hand, and only the
+            // scroller (which never asks this view) could reach the top
+            // (measured on the real app, 0.11.2381). Every event that really
+            // does owe a restore -- a prepended page, a replaced window, a
+            // narrower window, a locate -- says so where it happens and sets
+            // `scrollIntent` itself.
             restoreSoon()
             // The located row may have just been measured: that is one of
             // the two moments its mark may breathe (task 2999 ④).
@@ -528,6 +536,16 @@ struct ControlRoomNativeChatView: View {
     /// and session, the window, the attach, the layout epoch, and that this
     /// is still the restore (a follow or a user scroll cancels it).
     private func restoreSoon() {
+        // **Nothing is put back under a hand that is on the list.** A restore
+        // that ran during a wheel or a live scroll is a second thing moving
+        // the viewport at the same time; whichever won, the reader saw a
+        // jump. The owed restore is dropped rather than delayed: the reader's
+        // own bounds callback clears the keeper's frozen place, so there is
+        // nothing left to put back.
+        guard ControlRoomChatAnchor.mayRestore(
+            userScrolling: scroll.userScrolling,
+            readerRecently: scroll.readerMovedRecently
+        ) else { return }
         guard scrollIntent == .restore, keeper.restoring, !atBottom else { return }
         let epoch = keeper.layoutEpoch
         let lifecycle = lifecycleEpoch
