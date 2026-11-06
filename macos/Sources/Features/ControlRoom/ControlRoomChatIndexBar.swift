@@ -30,7 +30,9 @@ enum ControlRoomChatIndexBar {
     static let trackWidth: CGFloat = 10
     /// Between the track and the window's edge.
     static let trackInset: CGFloat = 6
-    /// The least height between two drawn ticks.
+    /// The least height between two drawn ticks. **Mac-local on purpose**:
+    /// Windows' chat draws no ticks, so this is not in the shared look table
+    /// (which carries only the 36 / 10 / 6 the two hosts agree on).
     static let tickSpacing: CGFloat = 5
 
     /// Where the bar is, for one map and one camera.
