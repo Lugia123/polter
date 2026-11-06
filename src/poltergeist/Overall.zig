@@ -519,6 +519,26 @@ disk_hour_cell: i64 = -1,
 disk_week_cell: i64 = -1,
 
 machine: Machine = .{},
+/// **The whole tree this application is responsible for**, bytes: its own
+/// process and every terminal's tree under it (`In.main` plus `In.panes`).
+///
+/// `totalMib` is Polter's own rows -- the main process, the chats, the
+/// sidecars, the monitor. This is what macOS charges to Polter: a terminal's
+/// agent CLI, and the builds it starts, are descendants of this process, and
+/// the system's own Force Quit counts them here. The two are not the same
+/// number and neither is wrong (task 3012).
+///
+/// **The panes' trees, and not a parent walk from this pid.** Measured on
+/// macOS 2026-11-06: the app's child is `/usr/bin/login`, which runs as root
+/// and cannot be read (`proc_pidinfo` returns 0 for it), so one
+/// `procscan.scan` holds no parent link between this process and any
+/// terminal -- walking down from the app's pid found nothing under it. The
+/// panes are the application's own record of the terminals it started, and
+/// each pane's tree is walked from its root by `ledger.account`, which is the
+/// walk that reaches the shell, the agent and the build.
+///
+/// Null until the first reading.
+tree_bytes: ?u64 = null,
 /// How many readings were taken.
 readings: u64 = 0,
 /// When Polter started, wall clock, milliseconds: `Point.at_s` counts from
@@ -729,6 +749,38 @@ pub fn totalMib(self: *const Overall) u64 {
     return total;
 }
 
+/// **The whole tree's MiB**, as the system charges it to Polter (task 3012):
+/// the main process's own footprint plus every terminal's whole tree. Null
+/// before the first reading -- there is no tree to report, and zero would say
+/// the program holds nothing.
+///
+/// **Converted exactly the way `OverallPage`'s `mibOf` converts every other
+/// number** (whole MiB, the remainder dropped), not rounded to the nearest:
+/// two conversions on one page would differ by a MiB for no reader-visible
+/// reason, and this one number has no claim to a rule of its own.
+///
+/// **Not `totalMib`.** That is Polter's own rows; this is what a reader
+/// comparing it with Force Quit is looking at. The difference between them is
+/// the terminals: the shells, the agent CLIs and the builds they start.
+pub fn treeMib(self: *const Overall) ?u64 {
+    const b = self.tree_bytes orelse return null;
+    return b / mib;
+}
+
+/// The bytes the tree held this reading: the main process's own footprint and
+/// every terminal's whole tree.
+///
+/// **Both halves of a terminal are added back.** A worker's `mem` has its
+/// `polter +mcp` sidecars taken out -- they are a row of their own
+/// (`OverallRead.build`) -- so adding `mem` alone would leave every sidecar
+/// missing from the tree it is in. For a chat there is no such split, and
+/// `sidecar_mem` is zero.
+fn treeBytes(in: In) u64 {
+    var total: u64 = in.main.mem;
+    for (in.panes) |p| total +|= p.mem +| p.sidecar_mem;
+    return total;
+}
+
 /// Whether the disk is below the line macOS starts closing apps at.
 pub fn diskLow(self: *const Overall) bool {
     const free = self.machine.disk_free orelse return false;
@@ -774,6 +826,7 @@ pub fn forgetGroup(self: *Overall, name: []const u8) void {
 pub fn sample(self: *Overall, in: In) void {
     self.readings += 1;
     self.machine = in.machine;
+    self.tree_bytes = treeBytes(in);
     // When Polter started, kept, because a reply that has to write a clock
     // time for a row's `since` has nothing else to count from (handoff §5).
     self.run_start_ms = in.start_ms;
@@ -1487,6 +1540,100 @@ test "2149: the main process, its chats and its sidecars all add up" {
     // Everything tracked adds up, the monitor's own row included.
     const monitor_mib: u64 = @max(1, o.monitorBytes() / mib);
     try testing.expectEqual(@as(u64, 500 + (20 << 10) + 200), o.totalMib() - monitor_mib);
+}
+
+test "3012: the tree is the main process and every terminal's whole tree, sidecars included" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+
+    // **Null before the first reading**, not zero: there is no tree yet, and
+    // a zero would be drawn as an application that holds nothing.
+    try testing.expectEqual(@as(?u64, null), o.treeMib());
+
+    const start_ms: i64 = 1_700_000_000_000;
+    const chat = PaneReading.named(0xab, .chat, "web-app", 20480 * mib, 3);
+    // A terminal's `mem` has its sidecars taken out (`OverallRead.build`), so
+    // the tree has to add them back: `polter +mcp` is a descendant too.
+    const worker = PaneReading{
+        .id = 0xcd,
+        .kind = .worker,
+        .mem = 3000 * mib,
+        .procs = 30,
+        .sidecar_mem = 200 * mib,
+        .sidecar_procs = 2,
+        .sidecar_pid = 77,
+    };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{ chat, worker },
+    });
+
+    try testing.expectEqual(@as(?u64, 500 + 20480 + 3000 + 200), o.treeMib());
+    // The rows are not the tree: the worker's 3000 MiB has no row of its own
+    // (a worker with no sidecars is not a row here at all), and it is in the
+    // tree. The monitor's row is inside the main process's and is left out of
+    // the subtraction for that reason.
+    const monitor_mib: u64 = @max(1, o.monitorBytes() / mib);
+    try testing.expectEqual(@as(u64, 3000), o.treeMib().? + monitor_mib - o.totalMib());
+}
+
+test "3012: a terminal's child growing moves the tree and leaves every row where it was" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+
+    const quiet = PaneReading{ .id = 0xcd, .kind = .worker, .mem = 3000 * mib, .procs = 30 };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{quiet},
+    });
+    const before_tree = o.treeMib().?;
+    const before_rows = o.totalMib();
+
+    // The same tree with a 300 MiB child started in that terminal.
+    const busy = PaneReading{ .id = 0xcd, .kind = .worker, .mem = 3300 * mib, .procs = 31 };
+    o.sample(.{
+        .now_ms = start_ms + 2000,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{busy},
+    });
+
+    try testing.expectEqual(before_tree + 300, o.treeMib().?);
+    // **The rows did not move**, which is the whole point of task 3012: the
+    // number a reader compares with Force Quit was climbing while the figure
+    // the app called its own cost did not.
+    try testing.expectEqual(before_rows, o.totalMib());
+}
+
+test "3012: the tree is converted the same way every other MiB on the page is" {
+    // **Whole MiB, the remainder dropped** -- `OverallPage.mibOf`'s rule, not
+    // a rounding of its own. A MiB either way is invisible next to the
+    // numbers this row is read against, and two conversions on one page that
+    // disagreed by one would be the difference nobody could explain.
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+    const cases = [_]struct { bytes: u64, want: u64 }{
+        .{ .bytes = 0, .want = 0 },
+        .{ .bytes = mib / 2, .want = 0 },
+        .{ .bytes = mib - 1, .want = 0 },
+        .{ .bytes = mib, .want = 1 },
+        .{ .bytes = mib + mib / 2, .want = 1 },
+        .{ .bytes = 2 * mib - 1, .want = 1 },
+    };
+    for (cases, 0..) |c, i| {
+        o.sample(.{
+            .now_ms = start_ms + @as(i64, @intCast(i)) * 2000,
+            .start_ms = start_ms,
+            .main = .{ .id = 0, .root_pid = 1, .mem = c.bytes },
+        });
+        try testing.expectEqual(@as(?u64, c.want), o.treeMib());
+    }
 }
 
 test "2149: the disk is judged by a line, not by a rise" {
