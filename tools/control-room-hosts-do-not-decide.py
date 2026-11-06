@@ -176,10 +176,6 @@ EXCEPTIONS = {
      "guard index < feed.rows.count else { return false }"):
         (1, "the same id lookup's bound, not a group total"),
     ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "feed.rows.count == rowsAtFreeze"):
-        (1, "whether the page held for a gesture actually merged into this "
-            "showing -- the view's own before/after, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
      "index.reserveCapacity(feed.rows.count)"):
         (1, "sizing a local index table to the window being walked"),
     ('windows/control-room/src/chat_rows.rs', 'picks a winner by comparing',
@@ -203,21 +199,6 @@ EXCEPTIONS = {
     ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
      "guard rows.count > 1 else { return nil }"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
-     "let protected = min(Self.firstChunk, rows.count)"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
-     "guard protected < rows.count else { return nil }"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
-     "let count = min(Self.firstChunk, rows.count - protected)"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
-     "return (rows.count - count)..<rows.count"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
-     "\"\\(why, privacy: .public) rows=\\(feed.rows.count, privacy: .public) state=\\(state, privacy: .public) y=\\(Int(offsetY), privacy: .public) content=\\(Int(contentH), privacy: .public) viewport=\\(Int(viewportH), privacy: .public) plan=\\(self.listPlan.count, privacy: .public)\""):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
     ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
      "guard index > 0, index < feed.rows.count else { return false }"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
@@ -230,9 +211,36 @@ EXCEPTIONS = {
     ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
      "guard index >= 0, index < feed.rows.count else { return \"\" }"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
+    ('windows/control-room/src/chat_rows.rs', 'sorts',
+     'out.sort_unstable();'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'let before = rows.count'):
+        (3, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'logBlock(asked: pageAskedMs, before: before, after: rows.count, pages: 1)'):
+        (2, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'before: before, after: rows.count, pages: held.count'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'let back = rows.count - reader - 1'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'let hasBlocks = rows.count > Self.firstChunk'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'let canDropBack = hasBlocks && reader < rows.count - Self.firstChunk'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift', 'counts rows',
+     'let backRange = (rows.count - backBlock)..<rows.count'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
     ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
-     "let rowsAtFreeze = feed.rows.count"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
+     '"chat camera fallback id=\\(camera.place?.id ?? "-", privacy: .public) nearest=\\(nearest?.id ?? "-", privacy: .public) off=\\(Int(nearest?.offset ?? 0), privacy: .public) rows=\\(feed.rows.count, privacy: .public)"'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
+    ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
+     '"top-hit: count=\\(topHits, privacy: .public) rows=\\(feed.rows.count, privacy: .public) pinned=\\(camera.pinned, privacy: .public)"'):
+        (1, 'the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has'),
 }
 
 
