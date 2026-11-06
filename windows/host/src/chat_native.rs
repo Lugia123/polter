@@ -436,7 +436,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
             // **A page is the message pane**, not the whole window: the
-            // header and the strips above and below it do not scroll.
+            // fixed header does not scroll.
             let page = message_page_h(hwnd, metrics.line);
             match wp.0 as u16 {
                 key if key == VK_LEFT.0 => {
@@ -3393,9 +3393,9 @@ struct HSpot {
     on_bar: bool,
 }
 
-/// Where the message content starts inside the window: under the fixed
-/// header and the older-history strip. **One answer for paint, the row
-/// hit test and the horizontal hit test**, so they cannot disagree.
+/// Where the message content starts inside the window: directly under the
+/// fixed header. **One answer for paint, the row hit test and the
+/// horizontal hit test**, so they cannot disagree.
 fn page_content_top(
     dc: HDC,
     client: &windows::Win32::Foundation::RECT,
@@ -3665,6 +3665,9 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
         if x < bx || x >= bx + bw || y < by || y >= by + bh {
             return false;
         }
+        // **Taking the bar takes the view**: no pending jump correction may
+        // pull it back after the person has moved the thumb or a page.
+        chat.jump = None;
         if y >= bar.thumb_y && y < bar.thumb_y + bar.thumb_h {
             chat.vbar = Some(y - bar.thumb_y);
             capture = true;
@@ -3709,6 +3712,7 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
     if dc.0.is_null() {
         return false;
     }
+    let mut release = false;
     let moved = CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return false;
@@ -3719,8 +3723,10 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         let Some(grab) = chat.vbar else {
             return false;
         };
+        chat.jump = None;
         let Some(feed) = chat.feed.as_ref() else {
             chat.vbar = None;
+            release = true;
             return false;
         };
         let msg = message_rect(
@@ -3736,7 +3742,11 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
             .layout
             .string_bar(chat.scroll, msg.height, msg.bar, min_thumb)
         else {
+            // The rows went away mid-drag: the drag is over and the
+            // capture it may hold is this window's to release -- never
+            // left behind by an early return.
             chat.vbar = None;
+            release = true;
             return false;
         };
         let (_, by, _, bh) = bar.track;
@@ -3759,6 +3769,9 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
     });
     unsafe {
         ReleaseDC(Some(hwnd), dc);
+    }
+    if release {
+        release_own_capture(hwnd);
     }
     if moved {
         let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
@@ -4430,7 +4443,7 @@ fn search_tick(hwnd: HWND, now: u64) {
 
 /// The hit at `index` and the row it names. **A target that is not in the
 /// loaded window is said out loud**, never replaced by a look-alike.
-fn locate_hit(chat: &mut Chat, index: usize) {
+fn locate_hit(chat: &mut Chat, index: usize, hwnd: HWND) {
     let Some(hit) = chat
         .feed
         .as_ref()
@@ -4496,6 +4509,45 @@ fn locate_hit(chat: &mut Chat, index: usize) {
             // poll is cancelled so it cannot replace the window later.
             chat.jump = None;
             let now = now_ms();
+            // **One and a half screens either side of the target**, so the
+            // page around it is not blank: the target is put at the top and
+            // there must be rows under it to read. Clamped to 10..=99 --
+            // the core's page size is bounded, and "a screen" is an
+            // estimate from the message pane, never from text.
+            let metrics = Metrics::for_dpi(crate::dpi_for(hwnd) as i32);
+            // The rows one screen holds, from the message pane the same
+            // `message_rect` paint uses (never from text): the target goes
+            // to the top, so there must be rows *under* it to read.
+            let view_h = {
+                let mut client = windows::Win32::Foundation::RECT::default();
+                let _ = unsafe { GetClientRect(hwnd, &mut client) };
+                let dc = unsafe { GetDC(Some(hwnd)) };
+                if dc.0.is_null() {
+                    chat.view_h
+                } else {
+                    let h = chat
+                        .feed
+                        .as_ref()
+                        .map(|feed| {
+                            message_rect(
+                                dc,
+                                &client,
+                                &metrics,
+                                feed,
+                                chat.side != SidebarMode::Closed,
+                                chat.brief_open,
+                            )
+                            .height
+                        })
+                        .unwrap_or(chat.view_h);
+                    unsafe {
+                        ReleaseDC(Some(hwnd), dc);
+                    }
+                    h
+                }
+            };
+            let lines = (view_h.max(metrics.line) / metrics.line.max(1)).max(1) as f64;
+            let around = ((lines * 1.5).ceil() as i64).clamp(10, 99) as u8;
             let mut asked = false;
             if let Some(feed) = chat.feed.as_mut() {
                 feed.cancel_navigation();
@@ -4505,8 +4557,8 @@ fn locate_hit(chat: &mut Chat, index: usize) {
                     asked = feed.load_around(
                         &hit.message.anchor,
                         hit.message.location.as_deref(),
-                        10,
-                        10,
+                        around,
+                        around,
                         id,
                         now,
                     );
@@ -4724,7 +4776,7 @@ fn search_click(hwnd: HWND, x: i32, y: i32) -> bool {
                 .as_ref()
                 .map_or(0, |feed| feed.search_results().len());
             if index < count {
-                locate_hit(chat, index);
+                locate_hit(chat, index, hwnd);
                 clicked = Some(());
             }
         });
@@ -4736,8 +4788,8 @@ fn search_click(hwnd: HWND, x: i32, y: i32) -> bool {
     true
 }
 
-/// The one rectangle the rows live in: message pane (side slot taken out),
-/// below the fixed header and top strip, above the bottom strip. **Every
+/// The one rectangle the rows live in: the message pane (side slot and the
+/// scrollbar's track taken out), below the fixed header. **Every
 /// measurement, paint, hit test and scroll uses this.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MessageRect {
@@ -5665,8 +5717,8 @@ fn preview_click(hwnd: HWND, x: i32, y: i32) -> bool {
 }
 
 /// A click on the page's own furniture -- the header, its member popover,
-/// the older-history strip, the "back to latest" pill. **Consumed before
-/// the row hit test**, so a chip never becomes a table drag.
+/// the "back to latest" pill. **Consumed before the row hit test**, so a
+/// chip never becomes a table drag.
 fn chat_click(hwnd: HWND, x: i32, y: i32) -> bool {
     if search_click(hwnd, x, y) {
         return true;
@@ -5895,7 +5947,11 @@ fn sync_older_notice(hwnd: HWND) {
             }
         } else {
             match feed.older() {
-                chat_feed::OlderState::Failed(_) | chat_feed::OlderState::Incomplete => (
+                // **Only a failure speaks here.** `Incomplete` is the state
+                // of an ordinary successful page whose tail can continue;
+                // saying "could not be read" after every loaded block would
+                // be a lie and would make loading visible.
+                chat_feed::OlderState::Failed(_) => (
                     "hist:failed",
                     crate::i18n::tr("Earlier messages could not be read."),
                 ),
@@ -6003,7 +6059,7 @@ fn search_scroll_by(hwnd: HWND, by: i32) {
 
 /// The message pane's height, as the last paint measured it -- or
 /// `fallback` before the first paint. **The page PgUp/PgDn moves**: the
-/// fixed header and the strips outside it are not part of it.
+/// fixed header is not part of it.
 fn message_page_h(hwnd: HWND, fallback: i32) -> i32 {
     CHATS.with(|c| {
         c.try_borrow()
@@ -6028,6 +6084,10 @@ fn scroll_by(hwnd: HWND, by: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
+        // **The reader takes the view over**: a wheel or key move cancels a
+        // pending jump correction, so the next publish cannot pull the view
+        // back to a target the person just scrolled away from.
+        chat.jump = None;
         chat.scroll = chat.layout.clamp(chat.scroll - by, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -6085,6 +6145,7 @@ fn scroll_to(hwnd: HWND, at: i32) {
             return;
         };
         let view_h = chat.view_h.max(1);
+        chat.jump = None;
         chat.scroll = chat.layout.clamp(at, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -6239,9 +6300,9 @@ fn publish_heights(hwnd: HWND) {
             return;
         };
         // **The plan is measured for the same rectangle paint draws and
-        // the hit test uses**: the message pane, below the fixed header
-        // and between the two boundary strips, with the side panel's
-        // width already taken out.
+        // the hit test uses**: the message pane, below the fixed header,
+        // with the side panel's width and the scrollbar's track already
+        // taken out.
         let msg = message_rect(
             dc,
             &client,

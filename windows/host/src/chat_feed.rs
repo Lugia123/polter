@@ -2574,9 +2574,12 @@ impl Feed {
                                 }
                             }
                             _ => {
+                                // **A normal successful page.** `Incomplete`
+                                // here means rows arrived and the tail can
+                                // be continued -- not a failure, and not a
+                                // reason to cool the door.
                                 self.auto_advances = 0;
                                 self.older = OlderState::Incomplete;
-                                self.older_retry_at = now_ms.saturating_add(AUX_RETRY_MS);
                             }
                         }
                         self.load = if self.body.rows.is_empty() {
@@ -3802,7 +3805,18 @@ mod tests {
     fn a_failed_older_block_cools_before_it_is_asked_again() {
         let (mut feed, job) = started("g");
         let token = "cccccccccccccccccccccccccccccccc";
-        let first = ready("g", &job, "s1", &[], "budget", Some(token));
+        // **A non-empty full page**, not an empty budget one: an empty
+        // budget page steps to its continuation by itself, which would
+        // leave an ask in flight and make the first assertion a different
+        // question.
+        let first = ready(
+            "g",
+            &job,
+            "s1",
+            &[message(10, 10, "p:10", None)],
+            "full",
+            Some(token),
+        );
         feed.accept_poll(
             &envelope(Kind::Poll, feed.generation(), "g"),
             body(first),
@@ -3825,6 +3839,74 @@ mod tests {
             "r-later".to_owned(),
             20 + AUX_RETRY_MS
         ));
+    }
+
+    #[test]
+    fn two_successful_blocks_in_a_row_are_not_cooled() {
+        let (mut feed, job) = started("g");
+        let token = "cccccccccccccccccccccccccccccccc";
+        let first = ready(
+            "g",
+            &job,
+            "s1",
+            &[message(10, 10, "p:10", None)],
+            "full",
+            Some(token),
+        );
+        feed.accept_poll(
+            &envelope(Kind::Poll, feed.generation(), "g"),
+            body(first),
+            10,
+        );
+        assert!(feed.load_older("r-one".to_owned(), 20));
+        // The block completes normally. **`Incomplete` is success, not a
+        // failure**: the next block may be asked for at once, and the
+        // cooling clock was never set.
+        let older_job = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        feed.accept_aux_begin(
+            &envelope(Kind::AuxBegin, feed.generation(), "g"),
+            body(begin("g", older_job, "s1", 5, &[])),
+            20,
+        );
+        let older = [message(0, 6, "p:6", None)];
+        feed.accept_aux_poll(
+            &envelope(Kind::AuxPoll, feed.generation(), "g"),
+            body(ready("g", older_job, "s1", &older, "full", Some(token))),
+            30,
+        );
+        assert_eq!(feed.older(), &OlderState::Incomplete);
+        assert_eq!(feed.older_retry_at, 0);
+        assert!(feed.load_older("r-two".to_owned(), 31));
+    }
+
+    #[test]
+    fn eight_empty_pages_stop_auto_advancing_without_calling_it_the_end() {
+        let (mut feed, job) = started("g");
+        let token = "cccccccccccccccccccccccccccccccc";
+        feed.accept_poll(
+            &envelope(Kind::Poll, feed.generation(), "g"),
+            body(ready("g", &job, "s1", &[], "budget", Some(token))),
+            10,
+        );
+        let aux_job = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        for _ in 0..AUTO_ADVANCE_LIMIT {
+            feed.accept_aux_begin(
+                &envelope(Kind::AuxBegin, feed.generation(), "g"),
+                body(begin("g", aux_job, "s1", 5, &[])),
+                20,
+            );
+            feed.accept_aux_poll(
+                &envelope(Kind::AuxPoll, feed.generation(), "g"),
+                body(ready("g", aux_job, "s1", &[], "budget", Some(token))),
+                30,
+            );
+        }
+        // **Not "beginning of the group"**: the budget pages held nothing
+        // but the core never said there is nothing older, so the state is
+        // `Incomplete` and the door is cooled, not closed.
+        assert_eq!(feed.older(), &OlderState::Incomplete);
+        assert!(feed.older_retry_at > 0);
+        assert!(!feed.load_older("r-again".to_owned(), 31));
     }
 
     #[test]

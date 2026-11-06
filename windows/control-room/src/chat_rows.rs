@@ -34,12 +34,6 @@ pub const BAR_W_PT: f64 = 10.0;
 pub const BAR_GAP_PT: f64 = 6.0;
 /// The thumb is never shorter than this, in logical points.
 pub const THUMB_MIN_PT: f64 = 36.0;
-/// The smallest gap two scale marks may have, in logical points. Named
-/// here even though this host does not draw marks yet: the number belongs
-/// with the bar's other measures, not inside a paint routine.
-pub const BAR_TICK_GAP_PT: f64 = 5.0;
-/// How long a drag must rest before the bar settles (milliseconds).
-pub const BAR_REST_MS: u64 = 250;
 
 /// The page's measurements at one DPI. **Built once per size change**; the
 /// constants above are multiplied here and nowhere else.
