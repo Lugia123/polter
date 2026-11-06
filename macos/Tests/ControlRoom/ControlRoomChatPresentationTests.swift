@@ -14,6 +14,7 @@ import Testing
 struct ControlRoomChatPresentationTests {
     typealias P = ControlRoomChatPresentation
     typealias A = ControlRoomChatAnchor
+    typealias I = ControlRoomChatIndexBar
 
     private var utc: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -514,5 +515,159 @@ struct ControlRoomChatPresentationTests {
         // The window dropped its front while appending: neither end is the
         // same list, so this is not an append that may pull the reader down.
         #expect(A.change(from: ["a", "b", "c"], to: ["b", "c", "d"]) == .replaced)
+    }
+
+    // MARK: - The index bar (task 3002)
+
+    /// `count` rows of the same height, with the list's 10pt gap between
+    /// them, in the content coordinates the frames preference reports.
+    private func frameMap(_ heights: [CGFloat]) -> (order: [String], frames: [String: CGRect]) {
+        var order: [String] = []
+        var frames: [String: CGRect] = [:]
+        var y: CGFloat = 0
+        for (index, height) in heights.enumerated() {
+            let id = "r\(index)"
+            order.append(id)
+            frames[id] = CGRect(x: 0, y: y, width: 300, height: height)
+            y += height + 10
+        }
+        return (order, frames)
+    }
+
+    /// **The thumb is the viewport's share of the loaded map**, and it is
+    /// never shorter than a hand can grab.
+    @Test func testTheThumbIsTheShareOfTheMapTheViewportCovers() {
+        let all: CGFloat = 300
+        #expect(I.thumbHeight(totalTicks: 10, viewportTicks: 10, trackH: all) == all)
+        #expect(I.thumbHeight(totalTicks: 20, viewportTicks: 10, trackH: all) == 150)
+        #expect(I.thumbHeight(totalTicks: 100, viewportTicks: 10, trackH: all) == 36)
+        // A night's messages: the ratio would be under a point, the floor
+        // holds, and the thumb is still no taller than its track.
+        #expect(I.thumbHeight(totalTicks: 5_000, viewportTicks: 10, trackH: all) == 36)
+        // A track shorter than the floor is the limit, not the floor.
+        #expect(I.thumbHeight(totalTicks: 5_000, viewportTicks: 10, trackH: 30) == 30)
+        #expect(I.thumbHeight(totalTicks: 20, viewportTicks: 10, trackH: 20) == 20)
+        #expect(I.thumbHeight(totalTicks: 0, viewportTicks: 0, trackH: all) == all)
+    }
+
+    /// **The thumb reaches the end of its travel exactly at the bottom**:
+    /// that is what makes the bar's end read as the newest message and not as
+    /// "somewhere near it".
+    @Test func testTheThumbReachesTheEndOnlyAtTheBottom() {
+        let top = I.geometry(totalTicks: 500, viewportTicks: 10, topTick: 0, trackH: 300)
+        #expect(top.thumbY == 0)
+        #expect(top.thumbH == 36)
+        let bottom = I.geometry(
+            totalTicks: 500, viewportTicks: 10, topTick: 490, trackH: 300)
+        let travel: CGFloat = 300 - 36
+        #expect(bottom.thumbY == travel)
+        let middle = I.geometry(
+            totalTicks: 500, viewportTicks: 10, topTick: 245, trackH: 300)
+        #expect(middle.thumbY == travel / 2)
+        // Past the end is still the end: an estimate that overshoots must not
+        // draw the thumb outside the track.
+        let past = I.geometry(totalTicks: 500, viewportTicks: 10, topTick: 900, trackH: 300)
+        #expect(past.thumbY == travel)
+    }
+
+    /// **A drag lands on a row of the loaded map**, from the first to the
+    /// last, and never past either end.
+    @Test func testADragLandsOnARowAndNeverPastTheEnds() {
+        #expect(I.seekIndex(fraction: 0, totalTicks: 101, step: 1) == 0)
+        #expect(I.seekIndex(fraction: 1, totalTicks: 101, step: 1) == 100)
+        #expect(I.seekIndex(fraction: 0.5, totalTicks: 101, step: 1) == 50)
+        #expect(I.seekIndex(fraction: -1, totalTicks: 101, step: 1) == 0)
+        #expect(I.seekIndex(fraction: 2, totalTicks: 101, step: 1) == 100)
+        // One drawn cell is `step` rows, so a drag lands on a cell boundary:
+        // 50 with steps of 3 goes to the nearest multiple, 51.
+        #expect(I.seekIndex(fraction: 0.5, totalTicks: 100, step: 3) == 51)
+        let last = I.seekIndex(fraction: 1, totalTicks: 100, step: 3)
+        #expect(last == 99)
+        #expect(I.seekIndex(fraction: 0, totalTicks: 0, step: 1) == 0)
+    }
+
+    /// **How many rows one drawn tick stands for**: one while they fit, more
+    /// once they do not.
+    @Test func testAStepIsHowManyRowsOneTickStandsFor() {
+        // 300pt of track, one tick every 5pt: sixty fit.
+        #expect(I.step(totalTicks: 60, trackH: 300) == 1)
+        #expect(I.step(totalTicks: 61, trackH: 300) == 2)
+        #expect(I.step(totalTicks: 120, trackH: 300) == 2)
+        #expect(I.step(totalTicks: 601, trackH: 300) == 11)
+        #expect(I.step(totalTicks: 0, trackH: 300) == 1)
+        let fractions = I.tickFractions(totalTicks: 601, step: 11)
+        #expect(fractions.count == 55)
+        #expect(fractions.first == 0)
+        #expect(fractions.last == 1)
+    }
+
+    /// A click on the bare track is a page; a click on the thumb is not.
+    @Test func testAClickOnTheBareTrackIsAPage() {
+        #expect(I.page(forY: 10, thumbY: 100, thumbH: 36) == -1)
+        #expect(I.page(forY: 10, thumbY: 0, thumbH: 36) == 0)
+        #expect(I.page(forY: 118, thumbY: 100, thumbH: 36) == 0)
+        #expect(I.page(forY: 200, thumbY: 100, thumbH: 36) == 1)
+    }
+
+    /// **The camera's place is a continuous tick, not the index of a row**:
+    /// half way into a row is half a tick. A scroll of one pixel must move
+    /// the thumb by one pixel's worth, not by a whole row.
+    @Test func testTheTopTickIsARowPlusHowFarIntoItTheReaderIs() {
+        let list = frameMap([40, 40, 40])
+        // Row r1 spans 50..90. Offset 60 is a quarter into it.
+        let quarter = I.topTick(
+            order: list.order, frames: list.frames, offset: 60, viewport: 20)
+        #expect(quarter == 1.25)
+        let atTop = I.topTick(
+            order: list.order, frames: list.frames, offset: 0, viewport: 20)
+        #expect(atTop == 0)
+        // Nothing measured is "not known", not "at the top".
+        #expect(I.topTick(order: ["x"], frames: [:], offset: 0, viewport: 20) == nil)
+        #expect(I.topTick(order: list.order, frames: list.frames, offset: 0, viewport: 0) == nil)
+    }
+
+    /// The viewport's coverage is counted over the frames it really overlaps,
+    /// with a partly visible row counting by the part on screen.
+    @Test func testTheViewportCoversOnlyWhatItSees() {
+        let list = frameMap([40, 40, 40])
+        let half = I.viewportTicks(
+            order: list.order, frames: list.frames, offset: 60, viewport: 20)
+        #expect(half == 0.5)
+        let two = I.viewportTicks(
+            order: list.order, frames: list.frames, offset: 0, viewport: 90)
+        // r0 fully, r1 fully (50..90), and nothing of r2 (starts at 100).
+        #expect(two == 2)
+        #expect(I.viewportTicks(order: list.order, frames: list.frames, offset: 900, viewport: 20) == nil)
+    }
+
+    /// The bubble says which row and when, and never invents a clock the row
+    /// does not have.
+    @Test func testTheBubbleNamesTheRowAndItsClock() {
+        #expect(I.bubbleText(index: 0, time: "10:12:05") == "#1  10:12:05")
+        #expect(I.bubbleText(index: 99, time: "") == "#100")
+    }
+
+    // MARK: - The blank list and the spent restore (task 3002 review)
+
+    /// **A restore is not spent on the map it was frozen against.** A
+    /// replaced window's frames preference arrives after the freeze; until
+    /// the epoch moves, "it is already there" means nothing.
+    @Test func testARestoreIsOnlySpentOnceTheFramesMovedOn() {
+        #expect(!A.restoreWasAnswered(framesEpoch: 7, frozenAt: 7))
+        #expect(!A.restoreWasAnswered(framesEpoch: 6, frozenAt: 7))
+        #expect(A.restoreWasAnswered(framesEpoch: 8, frozenAt: 7))
+    }
+
+    /// The blank list's second answer is the nearest **measured** row, so the
+    /// viewport lands where rows exist -- not at the bottom, which would
+    /// throw the reader's place away.
+    @Test func testTheRecoveryPicksTheNearestMeasuredRow() {
+        let list = frameMap([40, 40, 40])
+        // Rows at 0..40, 50..90, 100..140; a viewport centred at 78 is
+        // nearest r1 (mid 70), not r2 (mid 120).
+        #expect(A.nearestMeasured(centre: 78, frames: list.frames) == "r1")
+        #expect(A.nearestMeasured(centre: 0, frames: list.frames) == "r0")
+        #expect(A.nearestMeasured(centre: 300, frames: list.frames) == "r2")
+        #expect(A.nearestMeasured(centre: 300, frames: [:]) == nil)
     }
 }

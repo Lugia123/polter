@@ -91,6 +91,7 @@
       "macos/Sources/Features/ControlRoom/ControlRoomChatMetadata.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatAnchor.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatPresentation.swift",
+      "macos/Sources/Features/ControlRoom/ControlRoomChatIndexBar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatSearch.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatSearchFeed.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatContext.swift",
