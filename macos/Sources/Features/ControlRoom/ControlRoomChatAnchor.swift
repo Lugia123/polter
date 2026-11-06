@@ -1,113 +1,16 @@
 import CoreGraphics
 import Foundation
 
-/// Where the reader is, as a message identity and an offset into it
-/// (DESIGN-v2 §9.2): never an array index and never a page height.
+/// The chat list's rules: where a row is, where the viewport is in it, and
+/// who moved it (task 3016's camera model).
 ///
-/// **A rule, not a scroll view.** The message list hands the frames it has
-/// and the viewport's content offset; this says which message is under the
-/// viewport's top edge and how far into it the reader has gone, and where to
-/// put the viewport again after a row above it changed height. Keeping the
-/// arithmetic here is what lets a test hold the four moments the design names
-/// -- older messages prepended, Markdown measured, the window narrowed, the
-/// preview sidebar opened -- without a window on screen.
+/// **The camera is the truth; the pixel offset is its projection.** The list
+/// hands the frames it has and the viewport's content offset; `place` turns
+/// one into the other, `y(of:)` turns it back, and only a callback the reader
+/// caused may move it. A row inserted above, a Markdown row measuring late, a
+/// narrower window: every one of those changes frames and none of them
+/// changes the camera -- the view re-projects instead.
 enum ControlRoomChatAnchor {
-    /// A message and how far the viewport's top is past that message's top.
-    /// `offset` is never negative: a row that starts below the viewport's
-    /// top edge (a gap above the first row) is read as an offset of zero.
-    struct Anchor: Equatable {
-        var id: String
-        var offset: Double
-    }
-
-    /// The anchor for a viewport whose content offset is `offset`: the first
-    /// row in `order` whose bottom is still below that line. `nil` when no
-    /// row the view knows about reaches it (the first paint, before frames
-    /// are measured).
-    static func anchor(
-        order: [String],
-        frames: [String: CGRect],
-        at offset: Double
-    ) -> Anchor? {
-        for id in order {
-            guard let frame = frames[id] else { continue }
-            if frame.maxY > offset + 0.5 {
-                return Anchor(id: id, offset: max(0, offset - frame.minY))
-            }
-        }
-        return nil
-    }
-
-    /// The content offset that puts `anchor` back where the reader left it.
-    /// `nil` when that row is not measured (dropped from the window, or not
-    /// made yet) -- then there is nothing honest to restore to, and the list
-    /// leaves the scroll where it is rather than guessing.
-    static func offset(of anchor: Anchor, frames: [String: CGRect]) -> Double? {
-        guard let frame = frames[anchor.id] else { return nil }
-        return frame.minY + anchor.offset
-    }
-
-    /// Whether the viewport is at the bottom, which is the only moment a new
-    /// message may pull it down (DESIGN-v2 §9.2). A content shorter than the
-    /// viewport is at both ends at once.
-    static func isAtBottom(
-        offset: Double,
-        viewport: Double,
-        content: Double,
-        tolerance: Double = 2
-    ) -> Bool {
-        guard viewport > 0, content > 0 else { return true }
-        return content - (offset + viewport) <= tolerance
-    }
-
-    /// Whether the reader has reached the top far enough to ask for older
-    /// messages. The list asks once per arrival; the feed refuses while a
-    /// page is already out.
-    static func shouldLoadOlder(offset: Double, threshold: Double = 24) -> Bool {
-        offset <= threshold
-    }
-
-    /// **Whether a restore that would land where the viewport already is has
-    /// really been answered.** `frames` may still be the map the restore was
-    /// frozen against (a replaced window's preference has not arrived yet);
-    /// spending the restore there marks the correction done and nothing ever
-    /// asks again (task 3002 review).
-    static func restoreWasAnswered(framesEpoch: UInt64, frozenAt: UInt64) -> Bool {
-        framesEpoch > frozenAt
-    }
-
-    /// The measured row nearest a point in content coordinates. **The blank
-    /// list's second answer**: an offset can be legal and still fall in a
-    /// stretch a `LazyVStack` never instantiated, so the recovery moves to a
-    /// row that really has a frame -- not straight to the bottom, which
-    /// throws the reader's place away.
-    static func nearestMeasured(centre: Double, frames: [String: CGRect]) -> String? {
-        frames.min {
-            abs(Double($0.value.midY) - centre) < abs(Double($1.value.midY) - centre)
-        }?.key
-    }
-
-    /// Whether the located row is really on screen: its frame has been
-    /// measured and it overlaps the viewport.
-    ///
-    /// **A locate arriving is not the moment to draw the eye to it** (task
-    /// 2999 ④). `locate(anchor:)` publishes the anchor at once, while the
-    /// rows are still the old window that is about to be replaced; the
-    /// around page then publishes the same anchor again, which changes
-    /// nothing. Breathing for the first of those spends the whole animation
-    /// on a row that is not on screen yet. The measured row under the
-    /// viewport is the moment, and it is the same answer for a page that
-    /// opens already located.
-    static func locatedIsInView(
-        located: String,
-        frames: [String: CGRect],
-        offset: Double,
-        viewport: Double
-    ) -> Bool {
-        guard viewport > 0, let frame = frames[located] else { return false }
-        return frame.maxY > offset && frame.minY < offset + viewport
-    }
-
     /// What a row list did between two of its states, as far as the reader's
     /// place is concerned. **A window that dropped rows from its front and
     /// added others is `replaced`**, not `appended`: neither end is the same
@@ -153,29 +56,11 @@ enum ControlRoomChatAnchor {
     ) -> Cause {
         if programmatic { return .programmatic }
         // **A real live-scroll, or a wheel, wins over every layout
-        // inference.** While a restore waits for frames, a person dragging
-        // the list is reading; classifying their bounds as layout would put
-        // them back.
+        // inference.**
         if userScrolling || readerRecently { return .user }
         if phaseIsLayout || framesChanged { return .layout }
         if contentChanged { return .layout }
         return .user
-    }
-
-    /// Whether a bottom remembered earlier may still be performed: only if
-    /// the reader has not moved the list since. A layout or a programmatic
-    /// scroll does not move `userEpoch`; the reader does.
-    static func mayFollow(intentEpoch: UInt64, currentUserEpoch: UInt64) -> Bool {
-        intentEpoch == currentUserEpoch
-    }
-
-    /// **Whether an owed restore may run now**: never while a hand is on the
-    /// list. A restore running during a wheel or a live scroll is a second
-    /// thing moving the viewport at once, and whichever wins the reader sees
-    /// a jump (task 2999 ③, measured on 0.11.2381: the list jumped at a point
-    /// part-way up and only the scroller could reach the top).
-    static func mayRestore(userScrolling: Bool, readerRecently: Bool) -> Bool {
-        !userScrolling && !readerRecently
     }
 
     static func change(from old: [String], to new: [String]) -> Change {
@@ -187,106 +72,32 @@ enum ControlRoomChatAnchor {
         return .replaced
     }
 
-    /// **The reader's place is frozen before a layout change, not after.**
-    /// A bounds callback during a prepend, a Markdown measurement or a
-    /// narrower window arrives with new frames and an old offset; reading
-    /// the anchor then overwrites the reader's position with a different
-    /// message. This keeper decides which callbacks may move the anchor:
+    /// Whether the viewport is at the bottom. A content shorter than the
+    /// viewport is at both ends at once.
+    static func isAtBottom(
+        offset: Double,
+        viewport: Double,
+        content: Double,
+        tolerance: Double = 2
+    ) -> Bool {
+        guard viewport > 0, content > 0 else { return true }
+        return content - (offset + viewport) <= tolerance
+    }
+
+    /// **Whether the located row is really on screen**: its frame has been
+    /// measured and it overlaps the viewport.
     ///
-    ///  * a user scroll (no layout change, no programmatic scroll);
-    ///  * never a layout or a programmatic scroll;
-    ///  * a layout change freezes the anchor last read from the user, and the
-    ///    view restores that frozen anchor once the new frames are known.
-    ///
-    /// Coordinates are one system throughout: row frames are the scroll
-    /// content's, `y` is the clip view's content origin, and the restore
-    /// target is a content origin.
-    struct Keeper: Equatable {
-        private(set) var anchor: Anchor?
-        private(set) var frozen: Anchor?
-        private(set) var restoring = false
-        private(set) var layoutEpoch: UInt64 = 0
-        private(set) var userEpoch: UInt64 = 0
-        private(set) var programmatic = 0
-
-        /// A bounds callback. **`user` is the view's classification, handed
-        /// down rather than inferred**: `false` means the movement is a
-        /// layout change (a measured row, a replaced window) or the view's
-        /// own scroll, and a layout change must touch none of the anchor,
-        /// the frozen place or `restoring`.
-        ///
-        /// ⚠️ This used to infer the reader from `!framesChanged`, and that
-        /// was the hole (task 2999 ④/③): during a window replacement a
-        /// bounds callback with unchanged frames is ordinary, and it cleared
-        /// the frozen place a locate was waiting to restore to -- so the
-        /// list stayed at the top of the new window and the located row was
-        /// never brought into view. **Who moved is known where the cause is
-        /// decided, and only there.**
-        mutating func bounds(
-            y: Double,
-            order: [String],
-            frames: [String: CGRect],
-            user: Bool
-        ) -> Bool {
-            guard user else { return false }
-            // **A real movement ends a restore.** A reader who grabs the list
-            // while it is being put back is reading, and a restore that
-            // ignored them would fight the scroll they are making.
-            restoring = false
-            frozen = nil
-            if let next = ControlRoomChatAnchor.anchor(order: order, frames: frames, at: y) {
-                anchor = next
-            }
-            userEpoch &+= 1
-            return true
-        }
-
-        /// The view is putting the list back itself: the bounds callback it
-        /// causes is not the reader. Registered **before** the scroll call,
-        /// so a synchronous callback sees it.
-        mutating func willScrollProgrammatically() {
-            programmatic &+= 1
-        }
-
-        /// That callback arrived.
-        mutating func consumeProgrammaticCallback() {
-            if programmatic > 0 { programmatic -= 1 }
-        }
-
-        /// The scroll moved nothing, so no callback will come.
-        mutating func cancelProgrammatic() {
-            if programmatic > 0 { programmatic -= 1 }
-        }
-
-        /// A follow or an explicit "latest" replaces a pending restore.
-        mutating func cancelRestore() {
-            restoring = false
-            frozen = nil
-        }
-
-        /// A layout change is about to happen: freeze where the reader was.
-        mutating func layoutWillChange() {
-            layoutEpoch &+= 1
-            if let anchor {
-                frozen = anchor
-                restoring = true
-            }
-        }
-
-        /// Seed the keeper from a position the page kept across a tab switch.
-        mutating func seed(_ anchor: Anchor) {
-            self.anchor = anchor
-        }
-
-        func restoreTarget(frames: [String: CGRect]) -> Double? {
-            guard restoring, let frozen else { return nil }
-            return ControlRoomChatAnchor.offset(of: frozen, frames: frames)
-        }
-
-        mutating func restored() {
-            restoring = false
-            frozen = nil
-        }
+    /// **A locate arriving is not the moment to draw the eye to it** (task
+    /// 2999 ④). `locate(anchor:)` publishes the anchor at once, while the
+    /// rows are still the old window that is about to be replaced.
+    static func locatedIsInView(
+        located: String,
+        frames: [String: CGRect],
+        offset: Double,
+        viewport: Double
+    ) -> Bool {
+        guard viewport > 0, let frame = frames[located] else { return false }
+        return frame.maxY > offset && frame.minY < offset + viewport
     }
 
     /// Whether a probe view may attach its observer, and to what. **One
@@ -323,5 +134,341 @@ enum ControlRoomChatAnchor {
             generation &+= 1
             attached = nil
         }
+    }
+}
+
+/// **The group chat's camera** (task 3016): the row under the viewport's top
+/// edge and how far into it the reader is -- never a pixel offset, never an
+/// array index.
+///
+/// The rules live here, away from the view, so the moments the design names
+/// can be held by a test without a window on screen: a prepended page, a
+/// Markdown row measuring late, a narrower window, the reader taking over,
+/// and a jump to a row the lazy stack has not made yet.
+enum ControlRoomChatCamera {
+    /// A row and how far past its top the viewport's top edge is, **in
+    /// points**. Not a fraction of the row: a long message re-measured taller
+    /// must keep the reader on the same words (R1-9). The offset can be past
+    /// the row's height when the top edge sits in the gap below it.
+    struct Place: Equatable {
+        var id: String
+        var offset: Double
+    }
+
+    /// What the projection should do, in **three kinds of answer**: scroll
+    /// somewhere, ask for a row, or say why nothing can be done yet. `wait`
+    /// and `fallback` are "I do not know yet" and "I know it is gone" -- two
+    /// different answers that a bool could not tell apart.
+    enum Projection: Equatable {
+        /// The place's row is measured: put `y` at the top.
+        case scroll(Double)
+        /// The row is in `rows` but the lazy stack has not made it: ask for
+        /// it by name, then project from the frames that follow (R1-3).
+        case scrollTo(String)
+        /// Pin to the bottom. Requires `pinIsAvailable` (R1-6).
+        case pin
+        /// Waiting, with no scroll. **`nil` means "there is no camera yet"**
+        /// (an empty map, or an unpinned view with no place): a different
+        /// state from "this known row is waiting to be measured", which names
+        /// the row. The two must not share one value.
+        case wait(String?)
+        /// **The place's row is gone** (trim, a locate's new window, a
+        /// session change, `clearWindow`, a clamped origin). The answer is a
+        /// place on the nearest measured row **keeping an offset inside it**,
+        /// or nil when there is none -- and it is always an answer, never
+        /// `wait` (R1-4). The offset is what stops a fallback jumping half a
+        /// viewport (M2).
+        case fallback(Place?)
+    }
+
+    /// The camera and what projection is still owed for it.
+    struct State: Equatable {
+        var place: Place?
+        var pinned: Bool
+        var owed: Projection?
+
+        init(place: Place? = nil, pinned: Bool = true, owed: Projection? = nil) {
+            self.place = place
+            self.pinned = pinned
+            self.owed = owed
+        }
+
+        /// **The inverse: a bounds callback may write the place only when the
+        /// reader caused it.** Everything else -- a measured row, a replaced
+        /// window, the view's own scroll -- leaves the camera alone, because
+        /// the correction is made *from* it. Returns whether it wrote.
+        ///
+        /// **`pinned` here only means "a reader moved, so the old bottom is
+        /// no longer owed".** The view follows it with `pinned(after:atBottom:
+        /// was:)` to learn whether the reader actually landed on the bottom;
+        /// the pair must be applied in that order (task 3016 R1-7).
+        @discardableResult
+        mutating func bounds(
+            cause: ControlRoomChatAnchor.Cause,
+            y: Double,
+            order: [String],
+            frames: [String: CGRect]
+        ) -> Bool {
+            guard writesPlace(cause: cause) else { return false }
+            if let next = ControlRoomChatCamera.place(
+                order: order, frames: frames, at: y
+            ) {
+                place = next
+            }
+            // **A hand on the list voids every projection it interrupted.**
+            owed = nil
+            pinned = false
+            return true
+        }
+    }
+
+    /// **The inverse's rule: the last row whose top is at or above `y`.**
+    /// Windows' `anchor` uses the same one, and it is the lossless choice:
+    ///
+    /// * inside a row: that row, offset = y - top (0 ..< row height);
+    /// * in the 10 pt gap below a row: **still that row**, offset = y - top
+    ///   (row height ..< row height + gap) -- the distance is kept, and
+    ///   `top + offset` restores y exactly;
+    /// * above the first measured row (the list's 12 pt top padding): the
+    ///   first measured row with a **negative** offset, which projects back to
+    ///   the same point. No negative offset comes out of the loop above -- a
+    ///   row is only chosen there when its top is at or above y.
+    ///
+    /// **The `break` assumes measured rows are monotonically lower in
+    /// `order`.** An unmeasured row is skipped, so if row 3 has no frame and
+    /// row 4 is at or above y, row 4 is chosen even though the top edge is
+    /// physically in row 3's stretch: this frame has no basis for row 3, and
+    /// the next frames preference is what answers it. That is deliberate, not
+    /// a missed case.
+    ///
+    /// `nil` only when nothing is measured at all.
+    static func place(order: [String], frames: [String: CGRect], at y: Double) -> Place? {
+        var result: Place?
+        for id in order {
+            guard let frame = frames[id] else { continue }
+            if Double(frame.minY) <= y {
+                result = Place(id: id, offset: y - Double(frame.minY))
+            } else {
+                // Later measured rows start lower still: nothing after this
+                // can satisfy the rule.
+                break
+            }
+        }
+        if result != nil { return result }
+        // Above every measured row: the first one, distance kept negative.
+        for id in order {
+            guard let frame = frames[id] else { continue }
+            return Place(id: id, offset: y - Double(frame.minY))
+        }
+        return nil
+    }
+
+    /// **The projection: camera → pixels.** `nil` when the row is not
+    /// measured (the view waits for frames rather than guessing).
+    static func y(of place: Place, frames: [String: CGRect]) -> Double? {
+        guard let frame = frames[place.id] else { return nil }
+        return Double(frame.minY) + place.offset
+    }
+
+    /// The decision the view applies. It reads no pixel offset.
+    ///
+    /// **Pinning does not need any row height** (the Windows host's rule):
+    /// `scroll to max` against a document the lazy stack has estimated is
+    /// good enough, and every frames change pins again. That is why the first
+    /// screen never has to wait for the last row to be measured -- and why a
+    /// new message arriving does not scroll to its top first (MF1).
+    ///
+    /// `pending` is a jump whose map is still on its way (M1): a place naming
+    /// it must wait, not fall back -- "not loaded yet" is not "gone".
+    static func projection(
+        state: State,
+        order: [String],
+        frames: [String: CGRect],
+        content: Double,
+        viewport: Double,
+        centre: Double,
+        pending: String? = nil
+    ) -> Projection {
+        if state.pinned {
+            guard pinIsAvailable(content: content, viewport: viewport) else {
+                // Nothing to pin to yet (an empty or short map).
+                return .wait(nil)
+            }
+            return .pin
+        }
+        guard let place = state.place else { return .wait(nil) }
+        if let y = y(of: place, frames: frames) { return .scroll(y) }
+        if let pending, pending == place.id, !order.contains(pending) {
+            // **A jump still on its way** (M1): the row is not in the map
+            // yet, and that is not the fallback's question.
+            return .wait(pending)
+        }
+        if order.contains(place.id) {
+            // **Only a real jump asks the lazy stack by name** (MF1). A row
+            // that merely is not measured yet (a width change's fresh map,
+            // a live message below a pinned viewport) waits for the frames
+            // it is about to get; seeking would scroll to the row's top and
+            // then scroll again.
+            return pending == place.id ? .scrollTo(place.id) : .wait(place.id)
+        }
+        return .fallback(fallbackPlace(centre: centre, order: order, frames: frames))
+    }
+
+    /// The fallback's place: the measured row nearest the viewport's **top
+    /// edge**, with the reader's offset inside that row kept. Using the
+    /// viewport's middle and scrolling to the row's top was a half-screen
+    /// jump on every fallback (M2).
+    static func fallbackPlace(
+        centre: Double,
+        order: [String],
+        frames: [String: CGRect]
+    ) -> Place? {
+        guard let id = nearestMeasured(centre: centre, order: order, frames: frames),
+              let frame = frames[id]
+        else { return nil }
+        let offset = min(
+            max(0, centre - Double(frame.minY)),
+            Double(frame.height)
+        )
+        return Place(id: id, offset: offset)
+    }
+
+    /// The inverse's gate (R1-2 / the old `mayRestore`). **Nothing is
+    /// projected under a hand that is on the list.**
+    static func mayProject(userScrolling: Bool, readerRecently: Bool) -> Bool {
+        !userScrolling && !readerRecently
+    }
+
+    /// The inverse's gate, as a rule about the cause alone.
+    static func writesPlace(cause: ControlRoomChatAnchor.Cause) -> Bool {
+        cause == .user
+    }
+
+    /// **A projection owed against a version of the frames may only be
+    /// answered by a newer one.** A replaced window's preference arrives
+    /// after the rows changed; projecting from the old map is projecting to a
+    /// place that does not exist any more (R1-12).
+    static func mayAnswer(framesEpoch: UInt64, waitingSince: UInt64) -> Bool {
+        framesEpoch > waitingSince
+    }
+
+    /// Whether the bottom can be pinned at all (R1-6, revised by MF1): the
+    /// document must be taller than the viewport. **No row needs to be
+    /// measured** -- `scroll to max` is the bottom of the estimated document,
+    /// and the next frames change pins again. A short (or empty) map has no
+    /// bottom to travel to and waits.
+    static func pinIsAvailable(content: Double, viewport: Double) -> Bool {
+        content > 0 && content > viewport
+    }
+
+    /// **Whether a bounds callback belongs to the view's own scroll** (MF2).
+    /// Every target the view has sent is kept until the callback that matches
+    /// it arrives; a callback that matches none is the reader's (or layout's)
+    /// and **leaves the set alone**. The old single slot was cleared by the
+    /// first callback whether it matched or not, so the second of two
+    /// programmatic scrolls in one turn was read as the reader and turned
+    /// `pinned` off.
+    static func programmaticCallback(
+        inScrollCall: Bool,
+        seekInFlight: Bool,
+        y: Double,
+        expectations: inout [Double]
+    ) -> Bool {
+        if let index = expectations.firstIndex(where: { abs($0 - y) <= 1 }) {
+            expectations.remove(at: index)
+            return true
+        }
+        return inScrollCall || seekInFlight
+    }
+
+    /// **Whether a locate has settled its landing** (M5). It has once the
+    /// target's own window is in place (`context != nil`) or the feed has
+    /// said the target is not in it (`locateTrouble`). Without this a target
+    /// outside its window was never "landed", so every rows change asked for
+    /// the same `around` again -- one core request per round.
+    static func locateSettled(
+        targetInRows: Bool,
+        hasContext: Bool,
+        trouble: Bool
+    ) -> Bool {
+        targetInRows || hasContext || trouble
+    }
+
+    /// **Whether the lower edge of a located window may ask for a newer page**
+    /// (M4). **Only on the reader's own input.** A pinned viewport re-pins on
+    /// every page, and asking from that programmatic callback walks the whole
+    /// remaining history one request at a time.
+    static func newerIsDue(wants: Bool, fromInput: Bool) -> Bool {
+        wants && fromInput
+    }
+
+    /// **`pinned` after a callback.** Only the reader changes it: reaching
+    /// the bottom is following again, leaving it is reading history. A layout
+    /// or the view's own scroll changes nothing (R1-7).
+    static func pinned(after cause: ControlRoomChatAnchor.Cause, atBottom: Bool, was: Bool) -> Bool {
+        guard cause == .user else { return was }
+        return atBottom
+    }
+
+    /// The measured row nearest a point in content coordinates. **The
+    /// fallback's answer**: an offset can be legal and still fall in a
+    /// stretch a `LazyVStack` never instantiated, so a lost place moves to a
+    /// row that really has a frame -- not to the bottom, which throws the
+    /// reader's place away.
+    ///
+    /// **Only rows still in `order` count.** `frames` may hold the old
+    /// coordinates of rows that have since left the window -- a trim is
+    /// exactly the reason this fallback runs -- and landing on one of those
+    /// would project into a place that no longer exists.
+    static func nearestMeasured(
+        centre: Double,
+        order: [String],
+        frames: [String: CGRect]
+    ) -> String? {
+        let present = Set(order)
+        return frames
+            .filter { present.contains($0.key) }
+            .min {
+                abs(Double($0.value.midY) - centre) < abs(Double($1.value.midY) - centre)
+            }?.key
+    }
+
+    // MARK: - Prefetch (§5, R1-15)
+
+    /// **How far ahead of the edge a page is asked for**, in viewports. Three
+    /// screens is what makes scrolling not stop at a page boundary: the page
+    /// is already on its way long before the reader reaches the loaded edge.
+    static let prefetchScreens: Double = 3
+
+    /// Whether the place's top edge is close enough to the loaded top that an
+    /// older page should be asked for. `distance <= screens * viewport`, so a
+    /// threshold of zero means "only once the edge is reached" -- the floor
+    /// the design names.
+    static func wantsOlder(
+        top: Double,
+        loadedTop: Double,
+        viewport: Double,
+        screens: Double = prefetchScreens
+    ) -> Bool {
+        withinScreens(distance: top - loadedTop, viewport: viewport, screens: screens)
+    }
+
+    /// The mirror of `wantsOlder` for a located window's lower edge.
+    static func wantsNewer(
+        bottom: Double,
+        loadedBottom: Double,
+        viewport: Double,
+        screens: Double = prefetchScreens
+    ) -> Bool {
+        withinScreens(distance: loadedBottom - bottom, viewport: viewport, screens: screens)
+    }
+
+    private static func withinScreens(
+        distance: Double,
+        viewport: Double,
+        screens: Double
+    ) -> Bool {
+        guard viewport > 0 else { return false }
+        return distance <= screens * viewport
     }
 }

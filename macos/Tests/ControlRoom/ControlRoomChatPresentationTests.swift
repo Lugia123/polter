@@ -14,6 +14,7 @@ import Testing
 struct ControlRoomChatPresentationTests {
     typealias P = ControlRoomChatPresentation
     typealias A = ControlRoomChatAnchor
+    typealias C = ControlRoomChatCamera
     typealias I = ControlRoomChatIndexBar
 
     private var utc: Calendar {
@@ -175,17 +176,27 @@ struct ControlRoomChatPresentationTests {
     }
 
     /// **Nothing is put back under a hand that is on the list** (task 2999
-    /// ③). A restore that ran during a wheel or a live scroll moved the
-    /// viewport at the same time as the reader, and the list jumped at a
-    /// point part-way up while the scroller still reached the top.
-    @Test func testARestoreIsNotRunUnderAHandOnTheList() {
-        #expect(A.mayRestore(userScrolling: false, readerRecently: false))
-        #expect(!A.mayRestore(userScrolling: true, readerRecently: false))
-        #expect(!A.mayRestore(userScrolling: false, readerRecently: true))
-        #expect(!A.mayRestore(userScrolling: true, readerRecently: true))
+    /// ③, kept as R1-2). A projection that ran during a wheel or a live
+    /// scroll moved the viewport at the same time as the reader, and the list
+    /// jumped at a point part-way up while the scroller still reached the
+    /// top. **What is owed is not dropped either**: the projection stays in
+    /// the state and is paid once the hand leaves.
+    @Test func testAProjectionIsNotRunUnderAHandOnTheList() {
+        #expect(C.mayProject(userScrolling: false, readerRecently: false))
+        #expect(!C.mayProject(userScrolling: true, readerRecently: false))
+        #expect(!C.mayProject(userScrolling: false, readerRecently: true))
+        #expect(!C.mayProject(userScrolling: true, readerRecently: true))
+
+        // A layout callback while a projection is owed leaves it owed.
+        var state = C.State(
+            place: .init(id: "c", offset: 3), pinned: false, owed: .wait("c"))
+        let wrote = state.bounds(
+            cause: .layout, y: 0, order: ["a", "b", "c"], frames: frames)
+        #expect(!wrote)
+        #expect(state.owed == .wait("c"))
     }
 
-    // MARK: - The reader's anchor
+    // MARK: - The camera's primitives
 
     private var frames: [String: CGRect] {
         [
@@ -195,190 +206,458 @@ struct ControlRoomChatPresentationTests {
         ]
     }
 
-    @Test func testTheAnchorIsTheFirstRowUnderTheViewportTop() {
-        #expect(A.anchor(order: ["a", "b", "c"], frames: frames, at: 25)
-                == .init(id: "b", offset: 5))
-        #expect(A.anchor(order: ["a", "b", "c"], frames: frames, at: 0)
-                == .init(id: "a", offset: 0))
-        #expect(A.anchor(order: ["a", "b", "c"], frames: frames, at: 100) == nil)
-    }
-
-    /// A height change above the anchor moves its frame; the offset that puts
-    /// the viewport back is the row's new top plus the same offset into it.
-    @Test func testTheAnchorOffsetSurvivesANewRowHeight() {
-        let anchor = A.Anchor(id: "b", offset: 5)
-        #expect(A.offset(of: anchor, frames: frames) == 25)
-        let taller: [String: CGRect] = [
+    /// A taller row above moves the frame; the projection is the row's new
+    /// top plus the same offset **in points**.
+    private var tallerFrames: [String: CGRect] {
+        [
             "a": CGRect(x: 0, y: 0, width: 100, height: 30),
             "b": CGRect(x: 0, y: 40, width: 100, height: 10),
             "c": CGRect(x: 0, y: 60, width: 100, height: 10),
         ]
-        #expect(A.offset(of: anchor, frames: taller) == 45)
-        #expect(A.offset(of: .init(id: "gone", offset: 5), frames: frames) == nil)
     }
 
-    @Test func testOnlyTheBottomFollowsNewMessages() {
+    /// **The inverse is the last row whose top is at or above the line**
+    /// (R2-3's rule, the same as Windows'). Inside a row, in the gap below
+    /// it, and exactly on its top all name a row and keep the distance.
+    @Test func testThePlaceIsTheLastRowWhoseTopIsAboveTheViewport() {
+        #expect(C.place(order: ["a", "b", "c"], frames: frames, at: 25)
+                == .init(id: "b", offset: 5))
+        #expect(C.place(order: ["a", "b", "c"], frames: frames, at: 0)
+                == .init(id: "a", offset: 0))
+        // 15 sits in the 10pt gap between a (0..10) and b (20..30): the last
+        // row whose top is above it is still a, offset 15.
+        #expect(C.place(order: ["a", "b", "c"], frames: frames, at: 15)
+                == .init(id: "a", offset: 15))
+        // Above every measured row (the list's own 12pt top padding): the
+        // first row with the distance kept **negative**, which projects back
+        // to the same point (the Windows seat's rule).
+        let padded: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 12, width: 100, height: 10),
+        ]
+        #expect(C.place(order: ["a"], frames: padded, at: 5)
+                == .init(id: "a", offset: -7))
+        #expect(C.y(of: .init(id: "a", offset: -7), frames: padded) == 5)
+        // Nothing measured is the only "no basis" answer.
+        #expect(C.place(order: ["a", "b", "c"], frames: [:], at: 5) == nil)
+    }
+
+    /// **`y → place → y` is lossless in all three positions** (R2-3), to
+    /// within half a point: inside a row, in the gap below one, and exactly
+    /// on a row's top.
+    @Test func testThePlaceRoundTripsToTheSamePoint() {
+        for y in [25.0, 15.0, 20.0, 43.0, 0.0] {
+            guard let place = C.place(order: ["a", "b", "c"], frames: frames, at: y)
+            else {
+                Issue.record("no place for \(y)")
+                continue
+            }
+            let back = C.y(of: place, frames: frames)
+            #expect(back != nil)
+            if let back { #expect(abs(back - y) <= 0.5) }
+        }
+        // ... the same round trip above the first measured row, where the
+        // offset is negative (the top padding).
+        let padded: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 12, width: 100, height: 10),
+        ]
+        guard let above = C.place(order: ["a"], frames: padded, at: 5) else {
+            Issue.record("no place in the padding")
+            return
+        }
+        #expect(above.offset < 0)
+        let back = C.y(of: above, frames: padded)
+        #expect(back != nil)
+        if let back { #expect(abs(back - 5) <= 0.5) }
+    }
+
+    /// **R2-2: a programmatic scroll is converted to a place first**, so the
+    /// projection that follows it lands on the same point instead of undoing
+    /// it. This is the page/seek/clamp rule stated without a window.
+    @Test func testAProgrammaticScrollProjectsBackToTheSamePoint() {
+        let target = 45.0
+        guard let place = C.place(order: ["a", "b", "c"], frames: frames, at: target)
+        else {
+            Issue.record("no place for \(target)")
+            return
+        }
+        let back = C.y(of: place, frames: frames)
+        #expect(back != nil)
+        if let back { #expect(abs(back - target) <= 0.5) }
+    }
+
+    /// The place keeps its **points** when a row above is re-measured
+    /// taller: the same words, not the same fraction of a new height (R1-9).
+    @Test func testThePlaceKeepsItsPointsWhenTheRowIsRemeasured() {
+        let place = C.Place(id: "b", offset: 5)
+        #expect(C.y(of: place, frames: frames) == 25)
+        #expect(C.y(of: place, frames: tallerFrames) == 45)
+        #expect(C.y(of: .init(id: "gone", offset: 5), frames: frames) == nil)
+    }
+
+    @Test func testTheBottomIsWhereTheViewportEnds() {
         #expect(A.isAtBottom(offset: 200, viewport: 400, content: 600))
         #expect(A.isAtBottom(offset: 198, viewport: 400, content: 600))
         #expect(!A.isAtBottom(offset: 190, viewport: 400, content: 600))
         #expect(A.isAtBottom(offset: 0, viewport: 400, content: 100))
-        #expect(A.shouldLoadOlder(offset: 0))
-        #expect(A.shouldLoadOlder(offset: 24))
-        #expect(!A.shouldLoadOlder(offset: 25))
     }
 
-    // MARK: - Freezing the reader's place
+    // MARK: - The camera's state machine (the old Keeper's tests)
 
-    /// A layout callback with new frames must not move the anchor; the
-    /// frozen position is restored from the new frames instead.
-    @Test func testALayoutCallbackDoesNotOverwriteTheAnchor() {
-        var keeper = A.Keeper()
-        let order = ["a", "b", "c"]
-        let moved = keeper.bounds(
-            y: 25, order: order, frames: frames,
-            user: true
-        )
-        #expect(moved)
-        #expect(keeper.anchor == .init(id: "b", offset: 5))
+    /// **Only a callback the reader caused writes the place** (old tests
+    /// `testALayoutCallbackDoesNotOverwriteTheAnchor` and
+    /// `testBothCallbackOrdersLeaveTheAnchorWhereItWas`, both branches kept).
+    /// A layout callback -- with the old frames or the new -- leaves the
+    /// camera alone; the correction is projected *from* it.
+    @Test func testOnlyAUserCallbackWritesThePlace() {
+        var state = C.State()
+        let wrote = state.bounds(
+            cause: .user, y: 25, order: ["a", "b", "c"], frames: frames)
+        #expect(wrote)
+        #expect(state.place == .init(id: "b", offset: 5))
+        #expect(!state.pinned)
 
-        keeper.layoutWillChange()
-        #expect(keeper.restoring)
-        // The callback that arrives with the new frames and the old offset.
-        let layoutBounds = keeper.bounds(
-            y: 55, order: order, frames: frames,
-            user: false
-        )
-        #expect(!layoutBounds)
-        #expect(keeper.anchor == .init(id: "b", offset: 5))
-
-        let taller: [String: CGRect] = [
-            "a": CGRect(x: 0, y: 0, width: 100, height: 30),
-            "b": CGRect(x: 0, y: 40, width: 100, height: 10),
-            "c": CGRect(x: 0, y: 60, width: 100, height: 10),
-        ]
-        #expect(keeper.restoreTarget(frames: taller) == 45)
-        keeper.restored()
-        #expect(!keeper.restoring)
-    }
-
-    /// The two orders a scroll view reports a layout change in -- bounds
-    /// first, frames first -- both leave the frozen anchor alone.
-    @Test func testBothCallbackOrdersLeaveTheAnchorWhereItWas() {
-        for framesFirst in [true, false] {
-            var keeper = A.Keeper()
-            let start = keeper.bounds(
-                y: 25, order: ["a", "b", "c"], frames: frames,
-                user: true
-            )
-            #expect(start)
-            keeper.layoutWillChange()
-            if framesFirst {
-                let layout = keeper.bounds(
-                    y: 55, order: ["a", "b", "c"], frames: frames,
-                    user: false
-                )
-                #expect(!layout)
-            } else {
-                let programmatic = keeper.bounds(
-                    y: 55, order: ["a", "b", "c"], frames: frames,
-                    user: false
-                )
-                #expect(!programmatic)
-            }
-            #expect(keeper.anchor == .init(id: "b", offset: 5))
-            #expect(keeper.restoring)
+        // Both callback orders: bounds arriving with the old frames
+        // (bounds-first), and the stash already refreshed (frames-first).
+        for list in [frames, tallerFrames] {
+            var kept = C.State(place: .init(id: "b", offset: 5), pinned: false)
+            let layout = kept.bounds(
+                cause: .layout, y: 55, order: ["a", "b", "c"], frames: list)
+            #expect(!layout)
+            #expect(kept.place == .init(id: "b", offset: 5))
+            let projected = C.y(of: .init(id: "b", offset: 5), frames: tallerFrames)
+            #expect(projected == 45)
+            if let projected { #expect(abs(projected - 45) <= 0.5) }
         }
     }
 
-    /// A programmatic scroll's bounds callback is not the reader moving.
-    @Test func testAProgrammaticScrollDoesNotMoveTheAnchor() {
-        var keeper = A.Keeper()
-        _ = keeper.bounds(
-            y: 25, order: ["a", "b", "c"], frames: frames,
-            user: true
-        )
-        let anchor = keeper.anchor
-        let programmatic = keeper.bounds(
-            y: 0, order: ["a", "b", "c"], frames: frames,
-            user: false
-        )
-        #expect(!programmatic)
-        #expect(keeper.anchor == anchor)
+    /// **The view's own scroll is not the reader** (old test
+    /// `testAProgrammaticScrollDoesNotMoveTheAnchor`).
+    @Test func testAProgrammaticScrollDoesNotWriteThePlace() {
+        #expect(C.writesPlace(cause: .user))
+        #expect(!C.writesPlace(cause: .layout))
+        #expect(!C.writesPlace(cause: .programmatic))
+
+        var state = C.State(place: .init(id: "b", offset: 5), pinned: false)
+        let wrote = state.bounds(
+            cause: .programmatic, y: 0, order: ["a", "b", "c"], frames: frames)
+        #expect(!wrote)
+        #expect(state.place == .init(id: "b", offset: 5))
     }
 
-    /// Seeding a kept position and restoring it to a different frame is the
-    /// tab-return path.
-    @Test func testASeededPositionCanBeRestored() {
-        var keeper = A.Keeper()
-        keeper.seed(.init(id: "c", offset: 3))
-        keeper.layoutWillChange()
-        #expect(keeper.restoreTarget(frames: frames) == 43)
+    /// A place kept across a showing projects from **fresh** frames (old test
+    /// `testASeededPositionCanBeRestored`, first half).
+    @Test func testATabReturnedPlaceProjectsFromFreshFrames() {
+        let place = C.Place(id: "c", offset: 3)
+        #expect(C.y(of: place, frames: frames) == 43)
+        #expect(C.y(of: place, frames: tallerFrames) == 63)
     }
 
-    /// A reader grabbing the list during a restore takes over: the restore
-    /// is over and the anchor becomes theirs.
-    @Test func testAUserScrollCancelsARestore() {
-        var keeper = A.Keeper()
-        _ = keeper.bounds(
-            y: 25, order: ["a", "b", "c"], frames: frames,
-            user: true
-        )
-        keeper.layoutWillChange()
-        #expect(keeper.restoring)
-
-        let user = keeper.bounds(
-            y: 45, order: ["a", "b", "c"], frames: frames,
-            user: true
-        )
-        #expect(user)
-        #expect(!keeper.restoring)
-        #expect(keeper.anchor == .init(id: "c", offset: 5))
-    }
-
-    /// **A layout callback while a place is owed must not drop it** (task
-    /// 2999 ④/③). During a window replacement a bounds callback with
-    /// unchanged frames is ordinary; while the keeper inferred "the reader"
-    /// from that, it cleared the frozen place -- and the viewport stayed at
-    /// the top of the new window instead of the row a locate was going to.
-    @Test func testALayoutCallbackWithTheSameFramesKeepsTheOwedPlace() {
-        var keeper = A.Keeper()
-        keeper.seed(.init(id: "c", offset: 3))
-        keeper.layoutWillChange()
-        #expect(keeper.restoring)
-
-        // The new window's height moved; its frames preference has not
-        // arrived yet. This is layout and must change nothing.
-        let layout = keeper.bounds(
-            y: 0, order: ["a", "b", "c"], frames: frames, user: false)
-        #expect(!layout)
-        #expect(keeper.restoring)
-        #expect(keeper.anchor == .init(id: "c", offset: 3))
-
-        // The frames arrive: the owed place is still the target row.
-        let taller: [String: CGRect] = [
-            "a": CGRect(x: 0, y: 0, width: 100, height: 30),
-            "b": CGRect(x: 0, y: 40, width: 100, height: 10),
-            "c": CGRect(x: 0, y: 60, width: 100, height: 10),
+    /// ... and while its row is unmeasured it **asks for it by name** rather
+    /// than scrolling to a guess (old test `testASeededPositionCanBeRestored`,
+    /// second half; R1-3's two-stage jump).
+    @Test func testAnUnmeasuredPlaceAsksForItsRow() {
+        let unmeasured: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 100, height: 10),
+            "b": CGRect(x: 0, y: 20, width: 100, height: 10),
         ]
-        #expect(keeper.restoreTarget(frames: taller) == 63)
-        keeper.restored()
-        #expect(!keeper.restoring)
+        let state = C.State(place: .init(id: "c", offset: 3), pinned: false)
+        let projection = C.projection(
+            state: state, order: ["a", "b", "c"], frames: unmeasured,
+            content: 100, viewport: 40, centre: 20)
+        // **Waiting, not seeking** (MF1): this place is not a jump, so the
+        // row will be measured by the layout that is about to run.
+        #expect(projection == .wait("c"))
     }
 
-    /// **And the reader still wins**: a wheel or a drag before the place is
-    /// put back cancels it, and the viewport stays where they left it.
-    @Test func testTheReaderCancelsTheOwedPlace() {
-        var keeper = A.Keeper()
-        keeper.seed(.init(id: "c", offset: 3))
-        keeper.layoutWillChange()
-        #expect(keeper.restoring)
+    /// **A hand takes the place and voids what was owed** (old tests
+    /// `testAUserScrollCancelsARestore` and `testTheReaderCancelsTheOwedPlace`,
+    /// both owed states kept).
+    @Test func testAUserScrollTakesThePlaceAndCancelsTheOwed() {
+        for owed in [C.Projection.wait("c"), .fallback(.init(id: "b", offset: 5))] {
+            var state = C.State(
+                place: .init(id: "c", offset: 3), pinned: false, owed: owed)
+            let wrote = state.bounds(
+                cause: .user, y: 25, order: ["a", "b", "c"], frames: frames)
+            #expect(wrote)
+            #expect(state.owed == nil)
+            #expect(state.place == .init(id: "b", offset: 5))
+            #expect(!state.pinned)
+        }
+    }
 
-        let user = keeper.bounds(
-            y: 25, order: ["a", "b", "c"], frames: frames, user: true)
-        #expect(user)
-        #expect(!keeper.restoring)
-        #expect(keeper.restoreTarget(frames: frames) == nil)
-        #expect(keeper.anchor == .init(id: "b", offset: 5))
+    /// **A projection owed against a version of the frames may only be
+    /// answered by a newer one** (old tests
+    /// `testALayoutCallbackWithTheSameFramesKeepsTheOwedPlace` and
+    /// `testARestoreIsOnlySpentOnceTheFramesMovedOn`, merged).
+    @Test func testAOwedProjectionIsNotAnsweredByTheFramesItWasFrozenAgainst() {
+        #expect(!C.mayAnswer(framesEpoch: 7, waitingSince: 7))
+        #expect(!C.mayAnswer(framesEpoch: 6, waitingSince: 7))
+        #expect(C.mayAnswer(framesEpoch: 8, waitingSince: 7))
+
+        // And the same fact from the projection's side: the row the place
+        // names is still unmeasured in the map it was frozen against, so the
+        // projection asks for it rather than scrolling to the old frame.
+        let state = C.State(place: .init(id: "c", offset: 3), pinned: false)
+        let unmeasured: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 100, height: 10),
+            "b": CGRect(x: 0, y: 20, width: 100, height: 10),
+        ]
+        #expect(C.projection(
+            state: state, order: ["a", "b", "c"], frames: unmeasured,
+            content: 100, viewport: 40, centre: 20
+        ) == .wait("c"))
+    }
+
+    /// **A bottom owed before the reader moved is not performed** (old test
+    /// `testAFollowIntentIsDroppedByAUserScroll`, and R1-7's transfer).
+    @Test func testABottomOwedBeforeTheReaderMovedIsNotPerformed() {
+        #expect(!C.pinned(after: .user, atBottom: false, was: true))
+        #expect(C.pinned(after: .user, atBottom: true, was: false))
+        // A layout or the view's own scroll changes nothing, even at the
+        // bottom: only the reader pins or unpins.
+        #expect(!C.pinned(after: .layout, atBottom: true, was: false))
+        #expect(C.pinned(after: .programmatic, atBottom: false, was: true))
+
+        // **The pair, in the view's order** (R1-7): `bounds` first (it
+        // voids the owed bottom and unpins), then `pinned(after:)`. A reader
+        // who lands on the bottom ends up pinned with nothing owed -- the
+        // intermediate `false` must not survive, and must not eat `.pin`.
+        var state = C.State(
+            place: .init(id: "b", offset: 5), pinned: false, owed: .pin)
+        state.bounds(cause: .user, y: 43, order: ["a", "b", "c"], frames: frames)
+        state.pinned = C.pinned(after: .user, atBottom: true, was: state.pinned)
+        #expect(state.pinned)
+        #expect(state.owed == nil)
+        #expect(state.place == .init(id: "c", offset: 3))
+    }
+
+    /// **The fallback picks the nearest measured row** (old test
+    /// `testTheRecoveryPicksTheNearestMeasuredRow`, unchanged assertions).
+    @Test func testAFallbackPicksTheNearestMeasuredRow() {
+        let list = frameMap([40, 40, 40])
+        // Rows at 0..40, 50..90, 100..140; a viewport centred at 78 is
+        // nearest r1 (mid 70), not r2 (mid 120).
+        #expect(C.nearestMeasured(
+            centre: 78, order: list.order, frames: list.frames) == "r1")
+        #expect(C.nearestMeasured(
+            centre: 0, order: list.order, frames: list.frames) == "r0")
+        #expect(C.nearestMeasured(
+            centre: 300, order: list.order, frames: list.frames) == "r2")
+        #expect(C.nearestMeasured(
+            centre: 300, order: list.order, frames: [:]) == nil)
+        // **A measured row that is no longer in the window is not a
+        // candidate**: it is what a trim leaves behind, and landing on it
+        // would project into a place that no longer exists. `gone` is at
+        // 53..93 (mid 73), *nearer* the centre than r1's 70, so an
+        // unfiltered search would pick it.
+        var stale = list.frames
+        stale["gone"] = CGRect(x: 0, y: 53, width: 300, height: 40)
+        #expect(C.nearestMeasured(
+            centre: 78, order: list.order, frames: stale) == "r1")
+        #expect(C.nearestMeasured(centre: 73, order: [], frames: stale) == nil)
+    }
+
+    /// **A place whose row is gone falls back instead of waiting** (new,
+    /// R1-4). "I do not know yet" and "I know it is gone" are different
+    /// answers, and only the second may move the camera.
+    @Test func testAPlaceWhoseRowIsGoneFallsBackInsteadOfWaiting() {
+        let state = C.State(place: .init(id: "gone", offset: 5), pinned: false)
+        let projection = C.projection(
+            state: state, order: ["a", "b", "c"], frames: frames,
+            content: 100, viewport: 40, centre: 25)
+        // **The nearest row, with the offset inside it kept** (M2): b spans
+        // 20..30, and the top edge at 25 is 5 points into it. Scrolling to
+        // b's top instead would jump half a viewport.
+        #expect(projection == .fallback(.init(id: "b", offset: 5)))
+        #expect(projection != .wait("gone"))
+
+        // Nothing measured: no row to fall back to, still not `wait`.
+        let empty = C.projection(
+            state: state, order: ["a", "b", "c"], frames: [:],
+            content: 0, viewport: 40, centre: 0)
+        #expect(empty == .fallback(nil))
+    }
+
+    /// **A jump to a row the lazy stack has not made asks for it by name**
+    /// (new, R1-3). **A row that is merely not measured waits** (MF1): only
+    /// a jump's own row may make the view scroll before the frames arrive.
+    @Test func testJumpToAnUnmeasuredRowAsksForItByName() {
+        let state = C.State(place: .init(id: "x", offset: 0), pinned: false)
+        let unmeasured: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 100, height: 10),
+        ]
+        // No jump named it: this is a row about to be measured, not a jump.
+        #expect(C.projection(
+            state: state, order: ["a", "x"], frames: unmeasured,
+            content: 100, viewport: 40, centre: 5
+        ) == .wait("x"))
+        // The jump that named it is the one allowed to seek.
+        #expect(C.projection(
+            state: state, order: ["a", "x"], frames: unmeasured,
+            content: 100, viewport: 40, centre: 5, pending: "x"
+        ) == .scrollTo("x"))
+
+        let measured: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 100, height: 10),
+            "x": CGRect(x: 0, y: 20, width: 100, height: 10),
+        ]
+        #expect(C.projection(
+            state: state, order: ["a", "x"], frames: measured,
+            content: 100, viewport: 40, centre: 5
+        ) == .scroll(20))
+    }
+
+    /// **A jump still on its way is not a lost place** (M1): the place names
+    /// a row the map does not have yet, and that must wait, not fall back.
+    @Test func testAJumpWhoseRowIsNotLoadedYetWaitsInsteadOfFallingBack() {
+        let state = C.State(place: .init(id: "far", offset: 0), pinned: false)
+        let projection = C.projection(
+            state: state, order: ["a", "b", "c"], frames: frames,
+            content: 100, viewport: 40, centre: 25, pending: "far")
+        #expect(projection == .wait("far"))
+        #expect(projection != .fallback(.init(id: "b", offset: 5)))
+        // The same place with no jump in flight *is* gone.
+        #expect(C.projection(
+            state: state, order: ["a", "b", "c"], frames: frames,
+            content: 100, viewport: 40, centre: 25
+        ) == .fallback(.init(id: "b", offset: 5)))
+    }
+
+    /// **A pinned projection needs content taller than the viewport, and
+    /// nothing else** (R1-6, revised by MF1). `scroll to max` works against
+    /// the estimated document, so no row has to be measured.
+    @Test func testAPinnedProjectionWaitsUntilThereIsABottom() {
+        // **The first screen is pinned before anything else happens** (task
+        // 3016 §4). This is the default the view's first render reads: there
+        // is no landing action that could fail and be lost.
+        #expect(C.State().pinned)
+        #expect(!C.pinIsAvailable(content: 0, viewport: 600))
+        #expect(!C.pinIsAvailable(content: 400, viewport: 600))
+        #expect(C.pinIsAvailable(content: 800, viewport: 600))
+
+        let state = C.State(place: nil, pinned: true)
+        // An empty map has no row to name: `nil`, not the empty string.
+        #expect(C.projection(
+            state: state, order: [], frames: [:],
+            content: 0, viewport: 600, centre: 0
+        ) == .wait(nil))
+        // **No camera and no place are the same "not yet"**.
+        let unpinned = C.State(place: nil, pinned: false)
+        #expect(C.projection(
+            state: unpinned, order: [], frames: [:],
+            content: 0, viewport: 600, centre: 0
+        ) == .wait(nil))
+        let frames: [String: CGRect] = ["a": CGRect(x: 0, y: 0, width: 100, height: 40)]
+        // Content taller than the viewport pins even though the last row has
+        // not been measured: that is what stops the first screen's seek.
+        #expect(C.projection(
+            state: state, order: ["a"], frames: frames,
+            content: 800, viewport: 600, centre: 400
+        ) == .pin)
+    }
+
+    /// **The prefetch asks three viewports before the edge** (new, §5;
+    /// replaced the `shouldLoadOlder` half of the old bottom test).
+    @Test func testPrefetchAsksThreeViewportsBeforeTheEdge() {
+        #expect(C.wantsOlder(top: 0, loadedTop: 0, viewport: 600))
+        #expect(C.wantsOlder(top: 1800, loadedTop: 0, viewport: 600))
+        #expect(!C.wantsOlder(top: 1800.5, loadedTop: 0, viewport: 600))
+        // The floor's shape: a threshold of zero asks only at the edge.
+        #expect(!C.wantsOlder(top: 1, loadedTop: 0, viewport: 600, screens: 0))
+        #expect(C.wantsOlder(top: 0, loadedTop: 0, viewport: 600, screens: 0))
+
+        #expect(C.wantsNewer(bottom: 4000, loadedBottom: 5000, viewport: 600))
+        #expect(!C.wantsNewer(bottom: 3199, loadedBottom: 5000, viewport: 600))
+        // No viewport measured: nothing is asked.
+        #expect(!C.wantsOlder(top: 0, loadedTop: 0, viewport: 0))
+    }
+
+    /// **A width change does not project from the old frames** (new, R1-12):
+    /// while the map is empty the projection waits; only frames newer than
+    /// the wait may answer it.
+    @Test func testAWidthChangeDoesNotProjectFromTheOldFrames() {
+        let state = C.State(place: .init(id: "b", offset: 5), pinned: false)
+        #expect(C.projection(
+            state: state, order: ["a", "b", "c"], frames: frames,
+            content: 100, viewport: 40, centre: 20
+        ) == .scroll(25))
+        // **Waiting, not seeking** (MF1): the row is on screen and about to
+        // be measured; a seek would scroll to one place and then another.
+        #expect(C.projection(
+            state: state, order: ["a", "b", "c"], frames: [:],
+            content: 100, viewport: 40, centre: 20
+        ) == .wait("b"))
+        #expect(!C.mayAnswer(framesEpoch: 9, waitingSince: 9))
+        #expect(C.mayAnswer(framesEpoch: 10, waitingSince: 9))
+    }
+
+    /// **Two programmatic scrolls in one turn are both recognised** (MF2).
+    /// The old single slot was cleared by the first callback whether it
+    /// matched or not, so the second landed in the reader's branch and turned
+    /// `pinned` off.
+    @Test func testTwoProgrammaticScrollsInOneTurnAreBothRecognised() {
+        var expectations: [Double] = []
+        expectations.append(100)
+        expectations.append(200)
+        #expect(C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 100,
+            expectations: &expectations))
+        #expect(C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 200,
+            expectations: &expectations))
+        #expect(expectations.isEmpty)
+
+        // **A callback that matches nothing is not the view's** -- and does
+        // not spend the expectations that are still owed.
+        var owed: [Double] = [400]
+        #expect(!C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 250,
+            expectations: &owed))
+        #expect(owed == [400])
+        #expect(C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 400.4,
+            expectations: &owed))
+        #expect(owed.isEmpty)
+    }
+
+    /// **The lower edge asks for a newer page only on the reader's input**
+    /// (M4): a pinned viewport's programmatic callback is always at distance
+    /// zero, and asking there walked the whole remaining history.
+    @Test func testANewerPageIsAskedForOnlyOnTheReadersInput() {
+        #expect(C.newerIsDue(wants: true, fromInput: true))
+        #expect(!C.newerIsDue(wants: true, fromInput: false))
+        #expect(!C.newerIsDue(wants: false, fromInput: true))
+        #expect(!C.newerIsDue(wants: false, fromInput: false))
+    }
+
+    /// **A settle means the locate is finished, not that the row is here**
+    /// (M5): a target outside its own window must be recorded too, or every
+    /// rows change asks for the same `around` again.
+    @Test func testALocateIsSettledEvenWhenItsTargetIsNotInTheWindow() {
+        #expect(C.locateSettled(targetInRows: true, hasContext: false, trouble: false))
+        #expect(C.locateSettled(targetInRows: false, hasContext: true, trouble: false))
+        #expect(C.locateSettled(targetInRows: false, hasContext: false, trouble: true))
+        // Still on its way: no window and no word from the feed.
+        #expect(!C.locateSettled(targetInRows: false, hasContext: false, trouble: false))
+    }
+
+    /// **A momentum event counts wherever the pointer is** (M6). A fling is
+    /// window-wide; dropping it once the cursor left the list opened the
+    /// projection gate while the list was still decelerating.
+    @Test func testAMomentumWheelCountsOutsideTheListAndItsEndEndsTheHand() {
+        #expect(ControlRoomChatScrollHandle.wheelCounts(
+            momentum: true, pointerInside: false))
+        #expect(ControlRoomChatScrollHandle.wheelCounts(
+            momentum: false, pointerInside: true))
+        #expect(!ControlRoomChatScrollHandle.wheelCounts(
+            momentum: false, pointerInside: false))
+
+        let handle = ControlRoomChatScrollHandle()
+        #expect(handle.noteWheel(now: 10))
+        #expect(handle.readerMovedRecently(now: 10.1))
+        // The explicit end needs no window: the hand is off now.
+        handle.endMomentum(now: 10.1)
+        #expect(!handle.readerMovedRecently(now: 10.1))
     }
 
     // MARK: - The probe's attach
@@ -499,12 +778,6 @@ struct ControlRoomChatPresentationTests {
         #expect(!A.locatedIsInView(located: "z", frames: frames, offset: 50, viewport: 20))
         // No viewport has nothing on it.
         #expect(!A.locatedIsInView(located: "b", frames: frames, offset: 0, viewport: 0))
-    }
-
-    /// A remembered bottom is only owed while the reader has not moved.
-    @Test func testAFollowIntentIsDroppedByAUserScroll() {
-        #expect(A.mayFollow(intentEpoch: 3, currentUserEpoch: 3))
-        #expect(!A.mayFollow(intentEpoch: 3, currentUserEpoch: 4))
     }
 
     @Test func testTheRowListChangeTellsPrependFromAppend() {
@@ -647,27 +920,9 @@ struct ControlRoomChatPresentationTests {
         #expect(I.bubbleText(index: 99, time: "") == "#100")
     }
 
-    // MARK: - The blank list and the spent restore (task 3002 review)
-
-    /// **A restore is not spent on the map it was frozen against.** A
-    /// replaced window's frames preference arrives after the freeze; until
-    /// the epoch moves, "it is already there" means nothing.
-    @Test func testARestoreIsOnlySpentOnceTheFramesMovedOn() {
-        #expect(!A.restoreWasAnswered(framesEpoch: 7, frozenAt: 7))
-        #expect(!A.restoreWasAnswered(framesEpoch: 6, frozenAt: 7))
-        #expect(A.restoreWasAnswered(framesEpoch: 8, frozenAt: 7))
-    }
-
-    /// The blank list's second answer is the nearest **measured** row, so the
-    /// viewport lands where rows exist -- not at the bottom, which would
-    /// throw the reader's place away.
-    @Test func testTheRecoveryPicksTheNearestMeasuredRow() {
-        let list = frameMap([40, 40, 40])
-        // Rows at 0..40, 50..90, 100..140; a viewport centred at 78 is
-        // nearest r1 (mid 70), not r2 (mid 120).
-        #expect(A.nearestMeasured(centre: 78, frames: list.frames) == "r1")
-        #expect(A.nearestMeasured(centre: 0, frames: list.frames) == "r0")
-        #expect(A.nearestMeasured(centre: 300, frames: list.frames) == "r2")
-        #expect(A.nearestMeasured(centre: 300, frames: [:]) == nil)
-    }
+    // The old spent-restore test and the old nearest-measured test moved to
+    // the camera's state machine section above: `testAOwedProjectionIsNot
+    // AnsweredByTheFramesItWasFrozenAgainst` and
+    // `testAFallbackPicksTheNearestMeasuredRow`. Nothing here was dropped --
+    // the assertion for each old one is still exactly once in the file.
 }

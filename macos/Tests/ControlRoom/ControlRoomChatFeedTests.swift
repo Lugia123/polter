@@ -658,9 +658,10 @@ struct ControlRoomChatFeedTests {
     }
 
     /// **The chunk sizes are the request's, not the drawing's.** The first
-    /// screen asks for 100, each upward page for 50, and the upward page
-    /// still carries the resume token and no mode.
-    @Test func testTheFirstScreenAsksForAHundredAndEachOlderPageForFifty() {
+    /// screen and each upward page both ask for 100 (task 3016 §5: the
+    /// prefetch's three-viewport margin is spent against pages this size), and
+    /// the upward page still carries the resume token and no mode.
+    @Test func testTheFirstScreenAndEveryOlderPageAskForAHundred() {
         let rig = Rig()
         var polls = 0
         rig.door.reply = { request in
@@ -692,7 +693,7 @@ struct ControlRoomChatFeedTests {
         #expect(rig.door.methods("chat_history_begin").count == 2)
         #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == Feed.olderChunk)
         #expect(rig.door.last("chat_history_begin")?["resume_token"] as? String == olderToken)
-        #expect(Feed.olderChunk == 50)
+        #expect(Feed.olderChunk == 100)
     }
 
     /// **Loading older is only rows.** A window of more than a thousand
@@ -967,6 +968,53 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.older == .atEnd)
         #expect(rig.feed.historyTail?.nextToken == nil)
         #expect(!rig.feed.canLoadOlder)
+    }
+
+    /// **A gesture keeps asking** (M3). One page per gesture is the "scroll
+    /// stops to load" the person reported: while the hand is on the list the
+    /// feed holds each page and asks for the next from the token it just
+    /// received, and `readerIdle()` lands the whole queue as **one rows
+    /// change** (one correction), not one per page.
+    @Test func testAGestureQueuesSeveralOlderPagesAndMergesThemAtOnce() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken))
+                }
+                // p:9, p:8, ... each with a token of its own.
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:\(20 - polls)")],
+                    stop: "full", token: self.olderToken))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+
+        rig.feed.readerActive(true)
+        rig.feed.loadOlder()
+        // Let several pages land while the hand stays on the list.
+        for _ in 0..<8 { rig.scheduler.run(0.2) }
+
+        // Nothing has been inserted: the map is still the first screen.
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        // **The pipeline kept asking**: each held page sent the next begin.
+        #expect(rig.door.methods("chat_history_begin").count >= 3)
+        #expect(!rig.feed.canLoadOlder)
+
+        rig.feed.readerIdle()
+        // One merge: every held page arrived, oldest first, in one change.
+        #expect(rig.feed.rows.count > 2)
+        #expect(rig.feed.rows.last?.id == "p:10")
+        #expect(rig.feed.rows.first?.id != "p:10")
     }
 
     /// `readerIdle()` with nothing held changes nothing at all.
@@ -1966,13 +2014,14 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
     }
 
-    /// **A window smaller than one block is not cut into.** The old
-    /// `trimIndex` computed `rows.count - keepLiveTail`, which is negative
-    /// below the live-tail size, so its middle-hole branch never fired;
-    /// this model protects the reader's first block outright. With a tiny
-    /// byte ceiling and fewer rows than a block, nothing goes at all and the
-    /// reader's own row is still there.
-    @Test func testASmallWindowWithTheReaderInItsOnlyBlockDropsNothing() {
+    /// **The byte ceiling wins, but it never cuts the block the reader is
+    /// standing in** (R2-5 plus the invariant the old test pinned). Three
+    /// rows are over a 60-byte ceiling and the camera is on the oldest one;
+    /// the window is one block wide, so `trim` yields entirely and drops
+    /// nothing -- emptying or cutting the only block would leave the reader
+    /// on an evicted row, which draws as a header over a blank list. The
+    /// byte ceiling is allowed to lose here; the reader's block is not.
+    @Test func testTheByteCeilingNeverCutsTheBlockTheReaderIsIn() {
         let rig = Rig()
         rig.feed.byteLimit = 60
         rig.door.reply = { request in
@@ -1998,11 +2047,100 @@ struct ControlRoomChatFeedTests {
         rig.feed.reading(anchor: "p:0")
 
         rig.scheduler.run(2)
-        // Three rows are over 60 bytes; the reader is in the only block, so
-        // the ceiling yields and every row stays.
+        // The reader's block is the only block: nothing may be dropped, so
+        // the byte ceiling yields and every row stays.
         #expect(rig.feed.rows.map(\.id) == ["p:0", "p:1", "p:2"])
         #expect(rig.feed.trimmedBefore == nil)
         #expect(rig.feed.trimmedAfter == nil)
+    }
+
+    /// **The row reserve on each side of the camera** (R1-5): past the row
+    /// ceiling with the camera in the middle, the *farther* end goes and at
+    /// least `retainedEachSide` rows stay on the near side.
+    @Test func testTheFartherEndGoesAndTheCameraKeepsItsNeighbourhood() {
+        let rig = Rig()
+        let side = Feed.retainedEachSide
+        let count = Feed.retainedLimit
+        var sent = false
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll": return .answer(self.status("pending"))
+            case "group_read":
+                guard !sent else {
+                    return .answer(self.live(next: UInt64(count + 1), messages: []))
+                }
+                sent = true
+                let messages = (1...count).map { i in
+                    self.message(seq: UInt64(i), log: UInt64(i), anchor: "p:\(i)")
+                }
+                return .answer(self.live(next: UInt64(count), messages: messages))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(2)
+        #expect(rig.feed.rows.count == count)
+
+        // The camera sits 3000 rows from the front and 1999 from the back;
+        // the front is the farther end, so the oldest block goes.
+        rig.feed.reading(anchor: "p:3001")
+        rig.door.reply = { request in
+            guard Door.method(request) == "group_read" else { return .notReady }
+            return .answer(self.live(
+                next: UInt64(count + 1),
+                messages: [self.message(
+                    seq: UInt64(count + 1), log: UInt64(count + 1),
+                    anchor: "p:\(count + 1)")]))
+        }
+        rig.scheduler.run(2)
+        #expect(rig.feed.rows.count == count + 1 - Feed.firstChunk)
+        #expect(rig.feed.rows.first?.id == "p:\(Feed.firstChunk + 1)")
+        #expect(rig.feed.rows.last?.id == "p:\(count + 1)")
+        #expect(rig.feed.trimmedBefore != nil)
+        #expect(rig.feed.trimmedAfter == nil)
+        // The camera's neighbourhood survives on the side behind it.
+        let index = rig.feed.rows.firstIndex { $0.id == "p:3001" } ?? -1
+        #expect(index >= 0)
+        #expect(rig.feed.rows.count - 1 - index >= side)
+    }
+
+    /// **A jump to a row that is not loaded asks once, and a row that is
+    /// already here asks for nothing** (task 3016 §6). The second call while
+    /// the around is on its way must not restart a job whose window is about
+    /// to land.
+    @Test func testJumpToALoadedRowAsksForNothingAndAnUnloadedOneAsksOnce() {
+        let rig = Rig()
+        let job = String(repeating: "a", count: 32)
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(job: job))
+            case "chat_history_poll":
+                polls += 1
+                guard polls == 1 else { return .answer(self.status("pending")) }
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:10")],
+                    stop: "at_end", token: nil, job: job))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+
+        // The row is loaded: the view scrolls and the feed is not asked.
+        let begins = rig.door.methods("chat_history_begin").count
+        rig.feed.jump(to: "p:10")
+        #expect(rig.door.methods("chat_history_begin").count == begins)
+
+        // A row that is not loaded is one around...
+        rig.feed.jump(to: "p:2")
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
+        #expect(rig.feed.locatedAnchor == "p:2")
+        // ... and a second ask for the same row while it is out is none.
+        rig.feed.jump(to: "p:2")
+        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
     }
 
     /// The byte bound is the contract's own (text and identity strings), and

@@ -161,13 +161,13 @@ final class ControlRoomChatFeed: ObservableObject {
     static let catchUpDelay: TimeInterval = 0.2
 
     /// **The two chunk sizes, in one place.** The first screen asks for
-    /// `firstChunk`; each upward page asks for `olderChunk`. The eviction
-    /// block is the same 100 as `firstChunk` on purpose -- a page leaves in
-    /// the units it was read in. These two numbers decide how much is asked
-    /// for anywhere in this file; when Polter grows a chat configuration
-    /// section, this is where its two values land.
+    /// `firstChunk`; each upward page asks for `olderChunk`. **Both are 100**
+    /// (task 3016 §5): a reader scrolling faster than the core must never
+    /// reach the loaded edge, and the page size is the margin the prefetch's
+    /// three viewports is spent against. The eviction block is the same 100
+    /// on purpose -- a page leaves in the units it was read in.
     static let firstChunk = 100
-    static let olderChunk = 50
+    static let olderChunk = 100
     /// The context page's own size. **Not `olderChunk`**: a located
     /// window's page is a different question from the plain resume page and
     /// the two may be tuned apart (they happen to start equal). The search
@@ -302,8 +302,8 @@ final class ControlRoomChatFeed: ObservableObject {
     private(set) var readingOffset: Double = 0
 
     /// The position a re-displayed page restores to, if it has one.
-    var savedReading: ControlRoomChatAnchor.Anchor? {
-        readingAnchor.map { ControlRoomChatAnchor.Anchor(id: $0, offset: readingOffset) }
+    var savedReading: ControlRoomChatCamera.Place? {
+        readingAnchor.map { ControlRoomChatCamera.Place(id: $0, offset: readingOffset) }
     }
 
     /// Whether a page older than the window can be asked for now. A page
@@ -321,7 +321,7 @@ final class ControlRoomChatFeed: ObservableObject {
         // A page already here but held for the reader's hand is still a page
         // in flight as far as the top edge is concerned: asking again would
         // scan the same range twice.
-        guard heldOlder == nil, heldContextOlder == nil else { return false }
+        guard heldOlder.isEmpty, heldContextOlder == nil else { return false }
         if let context {
             return context.olderToken != nil && !context.olderAtEnd
                 && !contextOlderStale
@@ -460,12 +460,29 @@ final class ControlRoomChatFeed: ObservableObject {
     private var automaticAdvances = 0
     /// The view's hand is on the list, as `readerActive(_:)` last said.
     private var readerIsActive = false
-    /// A page that arrived while it was. Nothing about it is applied --
+    /// **Pages that arrived while the hand was on the list** (R1-1), in the
+    /// order they arrived (newest first). Nothing about them is applied --
     /// not one row, not the tail, not the `older` word -- until
-    /// `readerIdle()`, and the generation it arrived under is kept so a
-    /// lifecycle change meanwhile drops it.
-    private var heldOlder: H.Ready?
+    /// `readerIdle()`, and the generation they arrived under is kept so a
+    /// lifecycle change meanwhile drops them.
+    ///
+    /// **A queue, not one page** (M3): a continuous flick outruns a single
+    /// 100-row page in a few screens, and holding one page per gesture is
+    /// exactly the "scroll stops to load" the user reported. Each held page
+    /// keeps the time its request was sent, so the block log can report the
+    /// wait even though every page lands in one merge.
+    private struct HeldPage {
+        var page: H.Ready
+        var askedMs: Int64
+    }
+    private var heldOlder: [HeldPage] = []
     private var heldOlderGeneration: UInt64 = 0
+    /// When the page out now was asked for, for the block log.
+    private var pageAskedMs: Int64 = 0
+    /// **How many rows the queue may hold.** Four pages of the 100-row
+    /// chunk: enough for a long continuous flick, small enough that the merge
+    /// at the end is one visible correction rather than a stall.
+    static let heldRowLimit = 400
     private var heldContextOlder: ControlRoomChatContext.Context?
     private var heldContextJobID: String?
     private var heldContextGeneration: UInt64 = 0
@@ -728,6 +745,7 @@ final class ControlRoomChatFeed: ObservableObject {
         firstScreenReady = false
         canReload = false
         state = .loading
+        pageAskedMs = nowMs()
         sendBegin()
     }
 
@@ -1023,7 +1041,9 @@ final class ControlRoomChatFeed: ObservableObject {
                 return
             }
             if session == nil { session = page.session }
+            let before = rows.count
             mergeHistory(page.messages)
+            logBlock(asked: pageAskedMs, before: before, after: rows.count, pages: 1)
             historyTail = HistoryTail(
                 stop: page.stop,
                 nextToken: page.nextToken,
@@ -1138,10 +1158,11 @@ final class ControlRoomChatFeed: ObservableObject {
                 )
             }
         }
-        if let page = heldOlder {
-            heldOlder = nil
+        if !heldOlder.isEmpty {
+            let pages = heldOlder
+            heldOlder = []
             if started, heldOlderGeneration == generation {
-                finishContinuation(page, generation: generation)
+                finishHeldContinuation(pages, generation: generation)
             }
         }
     }
@@ -1172,6 +1193,22 @@ final class ControlRoomChatFeed: ObservableObject {
         default: break
         }
         beginContinuation(token: token, automatic: false)
+    }
+
+    /// **The view's one teleport primitive** (task 3016 §6). A row already in
+    /// the loaded window is a scroll and the view's own business; this is the
+    /// *change of map* half -- an `around` window centred on the row, after
+    /// which the row is in `rows` and the view projects onto it.
+    ///
+    /// **Idempotent with a locate already on its way**: the search panel and
+    /// a locate's own epoch both arrive through here, and a second `around`
+    /// for the same anchor would restart a job whose window is about to land.
+    func jump(to id: String) {
+        guard started, let group else { return }
+        // A live alias names a row that is already here too (A2 S5).
+        if byAnchor[id] != nil || byAlias[id] != nil { return }
+        if locating, locateAnchor == id { return }
+        locate(anchor: id, location: nil)
     }
 
     /// The person stopped the scan that is out. The token it was reading from
@@ -1216,6 +1253,7 @@ final class ControlRoomChatFeed: ObservableObject {
             failOlder("BadParams")
             return
         }
+        pageAskedMs = nowMs()
         switch ask(request) {
         case .notReady:
             trace("older-begin group=\(group) gen=\(generation) notReady")
@@ -1354,17 +1392,14 @@ final class ControlRoomChatFeed: ObservableObject {
             }
             if session == nil { session = page.session }
             self.olderJobID = nil
-            // **The page lands only when the hand is off the list.** An
-            // inserted row above the viewport moves the document coordinate
-            // at that instant; a restore can fix the end position, not the
-            // jump during the gesture. Everything about the page waits --
-            // its messages, the new `historyTail`, the `older` word -- and
-            // `older` stays `.loading`/`.scanning` so no second request can
-            // go out while it is held. The view freezes its own anchor
-            // first and then calls `readerIdle()`.
-            if readerIsActive {
-                heldOlder = page
-                heldOlderGeneration = generation
+            // **The page lands only when the hand is off the list** (R1-1),
+            // and the queue keeps asking while it is on (M3). An inserted
+            // row above the viewport moves the document coordinate at that
+            // instant; a restore can fix the end position, not the jump
+            // during the gesture. **An empty page is applied at once**: it
+            // moves nothing, and its token is what carries the scan on.
+            if readerIsActive, !page.messages.isEmpty {
+                holdContinuation(page, generation: generation)
                 return
             }
             finishContinuation(page, generation: generation)
@@ -1391,7 +1426,9 @@ final class ControlRoomChatFeed: ObservableObject {
     /// `syncMarkdown` -- which is what lets `readerIdle()` put the whole
     /// held page in at once.
     private func finishContinuation(_ page: H.Ready, generation: UInt64) {
+        let before = rows.count
         mergeHistory(page.messages)
+        logBlock(asked: pageAskedMs, before: before, after: rows.count, pages: 1)
         historyTail = HistoryTail(
             stop: page.stop,
             nextToken: page.nextToken,
@@ -1429,6 +1466,110 @@ final class ControlRoomChatFeed: ObservableObject {
             settleFirstScreen(page)
             firstScreenReady = true
         }
+    }
+
+    /// **Hold a page for the gesture and keep the pipeline full** (M3).
+    /// While the queue holds fewer than `heldRowLimit` rows and the page
+    /// named a resume token, the next page is asked for from that token --
+    /// without applying this page's tail, which is what the single-page hold
+    /// could not do. When the queue is full the scan pauses here; the last
+    /// held page's token becomes `historyTail` at `readerIdle()`, so the top
+    /// edge resumes from the right place.
+    private func holdContinuation(_ page: H.Ready, generation: UInt64) {
+        heldOlder.append(HeldPage(page: page, askedMs: pageAskedMs))
+        heldOlderGeneration = generation
+        let heldRows = heldOlder.reduce(0) { $0 + $1.page.messages.count }
+        // **The queue is bounded by bytes as well as by rows** (R2-5): 96 KiB
+        // records could otherwise put 400 rows outside the 32 MiB window
+        // while they wait for the hand.
+        let heldBytes = heldOlder.reduce(0) { total, held in
+            total + held.page.messages.reduce(0) { $0 + Self.cost($1) }
+        }
+        guard heldRows < Self.heldRowLimit,
+              bytes + heldBytes < byteLimit,
+              let newestHeld = heldOlder.last?.page,
+              newestHeld.stop != .atEnd,
+              let token = newestHeld.nextToken
+        else { return }
+        olderRequestID = ControlRoomChatRequest.newRequestID()
+        olderToken = token
+        olderJobID = nil
+        olderAutomatic = false
+        older = .loading
+        sendContinuationBegin()
+    }
+
+    /// **Land the whole held queue in one rows change** (M3). The pages
+    /// arrived newest first; the messages are merged oldest first, and the
+    /// oldest page's tail is the one the scan continues from. Every held
+    /// page is logged with its own ask time because they were all merged
+    /// into the same document change.
+    private func finishHeldContinuation(_ held: [HeldPage], generation: UInt64) {
+        guard let oldest = held.last?.page else { return }
+        let before = rows.count
+        let messages = held.reversed().flatMap(\.page.messages)
+        mergeHistory(messages)
+        let mergedAt = nowMs()
+        for block in held {
+            logBlock(
+                asked: block.askedMs, mergedAt: mergedAt,
+                before: before, after: rows.count, pages: held.count
+            )
+        }
+        historyTail = HistoryTail(
+            stop: oldest.stop,
+            nextToken: oldest.nextToken,
+            restarted: oldest.restarted,
+            gap: oldest.gap
+        )
+        trouble = nil
+        if let advance = olderAdvance(oldest) {
+            switch advance {
+            case let .carryOn(next):
+                guard next != olderToken else {
+                    failOlder("the history scan stopped advancing")
+                    return
+                }
+                scheduleOlderAdvance(token: next, generation: generation)
+            case let .stop(why):
+                if let why {
+                    failOlder(why)
+                } else {
+                    settleOlder(oldest)
+                    olderToken = nil
+                }
+            }
+            return
+        }
+        settleOlder(oldest)
+        olderToken = nil
+        if case .loading = state {
+            settleFirstScreen(oldest)
+            firstScreenReady = true
+        }
+    }
+
+    /// **The criterion-2 instrument** (task 3016): one line per block, so
+    /// "how long did a page take" and "how many rows did it bring" are read
+    /// off the log rather than judged by eye. `asked` is the request's own
+    /// send time; the merge timestamp is shared by a queue that lands
+    /// together.
+    private static let blockLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-block"
+    )
+    private func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+    private func logBlock(
+        asked: Int64,
+        mergedAt: Int64? = nil,
+        before: Int,
+        after: Int,
+        pages: Int
+    ) {
+        let merged = mergedAt ?? nowMs()
+        Self.blockLog.notice(
+            "block: asked=\(asked, privacy: .public) merged=\(merged, privacy: .public) took=\(merged - asked, privacy: .public) rows=\(before, privacy: .public)->\(after, privacy: .public) pages=\(pages, privacy: .public)"
+        )
     }
 
     /// The state `page` leaves the older loader in. **Completeness is not
@@ -1657,7 +1798,7 @@ final class ControlRoomChatFeed: ObservableObject {
         guard let context, let token = context.olderToken,
               !context.olderAtEnd, !contextOlderStale,
               locateJobID == nil, locateRequestID == nil,
-              heldContextOlder == nil, heldOlder == nil,
+              heldContextOlder == nil, heldOlder.isEmpty,
               !olderCoolingDown, started, let group
         else { return }
         contextOlderStale = false
@@ -2154,7 +2295,8 @@ final class ControlRoomChatFeed: ObservableObject {
     /// a session change or a new locate drops it rather than landing old
     /// rows into a world that has moved on.
     private func clearHeldPages() {
-        heldOlder = nil
+        heldOlder = []
+        heldOlderGeneration = 0
         heldContextOlder = nil
         heldContextJobID = nil
         heldContextPending = nil
@@ -2351,33 +2493,31 @@ final class ControlRoomChatFeed: ObservableObject {
     /// The window's edge. **A row leaves only with its whole block, and only
     /// from an end** -- never one picked out of the middle.
     ///
-    /// The old rule kept a window either side of the reader *and* a live
-    /// tail, and cut the hole between them; at 500 rows that was the only
-    /// way to hold both ends of a page the reader had just asked for, and it
-    /// drew as two lists with a missing run in between. The ceiling is now
-    /// `retainedLimit` -- a hundred screens of messages -- so the window no
-    /// longer has to be split: the block that goes is the one farthest from
-    /// the reader. That is the oldest block, **except** while the reader's
-    /// own row is inside it: then the oldest block is the page `loadOlder`
-    /// just put in front of them, and the newest block is the far one. What
-    /// is kept is one contiguous run either way, and `trimmedBefore` /
-    /// `trimmedAfter` say which end was released, so the list draws an
-    /// honest boundary rather than a false neighbour.
+    /// **The block that goes is the one farthest from the camera**
+    /// (`readingAnchor`), and each side keeps `retainedEachSide` rows: a
+    /// reader parked in history has the page `loadOlder` just put in front of
+    /// them protected, and so does the newest end behind them. What is kept
+    /// is one contiguous run, and `trimmedBefore` / `trimmedAfter` say which
+    /// end was released, so the list draws an honest boundary rather than a
+    /// false neighbour.
     ///
-    /// **The consequence is intended**: a reader parked in history can have
-    /// the newest block evicted under them, so "back to latest" cannot lean
-    /// on the newest rows still being there -- `returnToLatest()` starts the
-    /// body again from the newest records instead.
+    /// **The bytes outrank the reserve** (R2-5): when the byte ceiling is
+    /// what is over, the reserve gives way and the block goes anyway. If that
+    /// block is the camera's own, the view's `fallback` says so and lands on
+    /// a measured row -- the feed never deletes the reader's place in
+    /// silence.
     ///
     /// **The window is never emptied.** The byte ceiling can be exceeded by
     /// a handful of huge messages while fewer than two blocks are held;
     /// dropping the only block would leave `rows == []` under a `.ready`
     /// state, which the view can only draw as a header over a blank list.
     /// When the far end has nothing to give that is not the reader's own
-    /// block, the ceiling yields and the rows stay. With 64 KiB records and
-    /// the 32 MiB ceiling this is a defensive invariant rather than a path
-    /// the contract can reach, and it stays because the row ceiling alone
-    /// would allow ~312 MiB.
+    /// row, the ceiling yields and the rows stay.
+    ///
+    /// **The consequence is intended**: a reader parked in history can have
+    /// the newest block evicted under them, so "back to latest" cannot lean
+    /// on the newest rows still being there -- `returnToLatest()` starts the
+    /// body again from the newest records instead.
     ///
     /// A dropped message takes its aliases with it.
     private func trim() {
@@ -2401,33 +2541,70 @@ final class ControlRoomChatFeed: ObservableObject {
         if bytes < 0 { bytes = 0 }
     }
 
+    /// **How many rows one showing keeps on each side of the camera** (task
+    /// 3016 §5): the page a reader parked in history just asked for must not
+    /// be evicted from under them, and the newest end must not be either.
+    static let retainedEachSide = 2000
+
     /// The rows one turn of `trim` may drop, or nil when the ceiling has to
-    /// give way. Whole blocks, from one end, and one row always stays.
+    /// give way. Whole blocks, from the end farthest from the camera, and one
+    /// row always stays.
+    ///
+    /// **The byte ceiling outranks the row reserve** (R2-5): 96 KiB records
+    /// cannot keep two thousand rows either side inside 32 MiB, so when the
+    /// bytes are what is over, the row reserve gives way. **The block the
+    /// reader is standing in never does**: a window that is one block wide
+    /// yields entirely (returns nil) rather than being cut under the reader,
+    /// and if a block does take the camera's row the view's `fallback` says
+    /// so instead of the deletion happening in silence.
     private func trimRange() -> Range<Int>? {
         guard rows.count > 1 else { return nil }
-        if trimFromFront {
-            // The reader is not in the oldest block, so that block is the
-            // far one. One row always stays.
-            return 0..<min(Self.firstChunk, rows.count - 1)
-        }
-        // The reader is in the first block: that block is what they are
-        // looking at and stays. Only what lies beyond it may go.
-        let protected = min(Self.firstChunk, rows.count)
-        guard protected < rows.count else { return nil }
-        let count = min(Self.firstChunk, rows.count - protected)
-        return (rows.count - count)..<rows.count
-    }
-
-    /// Whether the block that goes is the oldest one. It is, unless the
-    /// reader's own row sits in that first block -- then those rows are what
-    /// they are looking at, and the far end is the newest. Without a
-    /// reader's anchor (the view has not reported one yet) the oldest block
-    /// goes, as it always has.
-    private var trimFromFront: Bool {
+        let byBytes = bytes > byteLimit
         guard let readingAnchor,
               let reader = rows.firstIndex(where: { $0.id == readingAnchor })
-        else { return true }
-        return reader >= Self.firstChunk
+        else {
+            // No camera yet: the oldest block is the far one.
+            return 0..<min(Self.firstChunk, rows.count - 1)
+        }
+        let front = reader
+        let back = rows.count - reader - 1
+        // **A block exists at an end only while the window is wider than one
+        // block.** With fewer rows than that, the first and last block are
+        // the same rows, and cutting them is cutting the reader's block.
+        let hasBlocks = rows.count > Self.firstChunk
+        let canDropFront = hasBlocks && reader >= Self.firstChunk
+        let canDropBack = hasBlocks && reader < rows.count - Self.firstChunk
+        // Capped at the side they take from, so the byte branch below can
+        // never build a range past the reader's own row.
+        let frontRange = 0..<min(Self.firstChunk, front)
+        let backBlock = min(Self.firstChunk, back)
+        let backRange = (rows.count - backBlock)..<rows.count
+        let reserveFront = canDropFront
+            && front - Self.firstChunk >= Self.retainedEachSide
+        let reserveBack = canDropBack
+            && back - Self.firstChunk >= Self.retainedEachSide
+        let frontIsFar = front >= back
+
+        // The row ceiling keeps the reserve: the farther end gives, and the
+        // other end only when the farther one cannot.
+        if frontIsFar {
+            if reserveFront { return frontRange }
+            if reserveBack { return backRange }
+        } else {
+            if reserveBack { return backRange }
+            if reserveFront { return frontRange }
+        }
+        // **The bytes are over and the reserve cannot hold.** Give the
+        // reserve way -- but never the block the reader is in.
+        guard byBytes else { return nil }
+        if frontIsFar {
+            if canDropFront { return frontRange }
+            if canDropBack { return backRange }
+        } else {
+            if canDropBack { return backRange }
+            if canDropFront { return frontRange }
+        }
+        return nil
     }
 
     private func forget(_ row: Row) {

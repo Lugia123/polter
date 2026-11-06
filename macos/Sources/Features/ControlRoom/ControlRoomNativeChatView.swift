@@ -18,13 +18,16 @@ import SwiftUI
 /// and only they ask the Markdown store for a parse. An empty live answer
 /// that changes nothing therefore never turns a drawn row back into text.
 ///
-/// **The reader's place is a message and an offset** (DESIGN-v2 §9.2), kept
-/// in `ControlRoomChatAnchor`: the first row reaching the viewport's top edge
-/// and how far into it the reader is. Older pages, a measured Markdown row, a
+/// **The truth is where the viewport's top edge is pinned, not how far the
+/// view scrolled** (task 3016, the camera model). `camera` names the row and
+/// the offset into it; `pinned` says the viewport is at the bottom. The pixel
+/// offset is a projection of those two: it is written only by `project()`
+/// (truth → pixels) and read back only in `scrolled` for a callback the
+/// reader caused (pixels → truth). Older pages, a measured Markdown row, a
 /// narrower window and the preview sidebar opening all change row heights;
-/// each of those reports new frames and the viewport is put back on the same
-/// message. **New messages follow only while the reader is at the bottom**;
-/// away from it they raise the "jump to latest" pill instead.
+/// each of those reports new frames and the view projects the same camera
+/// again. **New messages follow while `pinned`**; away from the bottom they
+/// raise the "jump to latest" pill instead.
 struct ControlRoomNativeChatView: View {
     typealias Look = ControlRoomLook
 
@@ -38,19 +41,29 @@ struct ControlRoomNativeChatView: View {
 
     @StateObject private var scroll = ControlRoomChatScrollHandle()
     @State private var frames: [String: CGRect] = [:]
-    @State private var keeper = ControlRoomChatAnchor.Keeper()
+    /// **The truth about where the reader is** (task 3016):
+    /// `ControlRoomChatCamera.State` holds the place, whether the viewport is
+    /// pinned to the bottom, and the projection still owed. Nothing else in
+    /// this view is allowed to be a second copy of that truth.
+    @State private var camera = ControlRoomChatCamera.State()
     @State private var lastIDs: [String] = []
+    /// The pixels, projected from the camera (or the bottom) on every change
+    /// and never read as the truth. The index bar reads the same numbers.
     @State private var offsetY: CGFloat = 0
     @State private var viewportH: CGFloat = 0
     @State private var contentH: CGFloat = 0
-    /// How many times this blank episode has been recovered. Bounded so a
-    /// recovery that cannot help (the rows are simply not laid out yet) does
-    /// not become a scroll loop; reset as soon as a row is on screen.
-    @State private var blankAttempts = 0
     @State private var framesEpoch: UInt64 = 0
     @State private var seenFramesEpoch: UInt64 = 0
-    @State private var atBottom = true
+    /// Set when the rows changed and the frames that answer them have not
+    /// arrived. A bounds callback in this window is layout, not the reader.
+    @State private var layoutAwaitingFrames = false
+    /// The frames epoch an owed projection was made against. **An answer
+    /// from the same map is not an answer** (R1-12).
+    @State private var waitingSince: UInt64?
     @State private var newBelow = false
+    /// The row the lazy stack has been asked to make by name, so a camera on
+    /// an unmeasured row asks once rather than on every pass.
+    @State private var soughtID: String?
     /// One ask of `ScrollViewReader`, for a row the lazy stack has not made
     /// yet. **The token, not the id, is the identity**: asking twice for the
     /// same row must fire twice.
@@ -60,54 +73,45 @@ struct ControlRoomNativeChatView: View {
     }
     @State private var seekRequest: SeekRequest?
     @State private var seekToken: UInt64 = 0
-    /// The frames epoch a restore was frozen against. **A restore that would
-    /// land where the viewport already is has not been answered until the
-    /// frames have moved on**: the frames may still be the replaced window's,
-    /// and consuming the restore then loses the correction for good.
-    @State private var frozenFramesEpoch: UInt64 = 0
+    /// A seek is in flight: the bounds callbacks it causes are the view's,
+    /// not the reader's.
+    @State private var seekInFlight = false
     /// Bumped when the map is replaced rather than extended. The index bar
     /// reads it to abandon a drag that was aimed at the old map.
     @State private var mapEpoch: UInt64 = 0
-    /// Invalidates the "the hand has left the list" restore attempts queued
-    /// by earlier wheel events.
-    @State private var quietToken: UInt64 = 0
-    /// Whether the view has told the feed the reader is moving. **The gate
-    /// is the feed's; this is only the edge that sets it**, so the view never
-    /// asks twice for the same state.
-    @State private var toldReaderActive = false
-    /// The one scroll the view is doing: none, following the newest message,
-    /// or putting the reader's place back. **Mutually exclusive**, so a
-    /// bottom never opens a restore that then blocks the follow, and an
-    /// explicit "latest" replaces a restore instead of leaving it behind.
-    private enum ScrollIntent: Equatable {
-        case none
-        case follow
-        case restore
-    }
-    @State private var scrollIntent: ScrollIntent = .none
-    /// Where a bounds callback belongs. A layout change is not the reader,
-    /// even when its bounds arrive before the new frames do; a programmatic
-    /// scroll is only programmatic at the place it was sent.
-    private enum ScrollPhase: Equatable {
-        case idle
-        case layoutAwaitingFrames
-        case programmatic(expected: CGFloat)
-    }
-    @State private var scrollPhase: ScrollPhase = .layoutAwaitingFrames
     @State private var inScrollCall = false
+    /// **Every target the view's own scrolls have sent and not yet seen a
+    /// callback for** (MF2). A set, not a slot: one turn may send two
+    /// programmatic scrolls, and clearing the expectation on the first
+    /// callback made the second read as the reader -- the camera then took
+    /// the programmatic landing and `pinned` turned off.
+    @State private var expectedScrolls: [Double] = []
+    /// **A jump whose row is not in the loaded map yet** (M1). While the
+    /// `around` is on its way, the place names a row `rows` does not have;
+    /// that is "not loaded yet", not "gone", and must not fall back.
+    @State private var jumpInFlight: String?
+    /// **How many times a continuous gesture has reached the loaded top with
+    /// earlier history still available** (the criterion-2 instrument). Logged
+    /// only on entering that state, not on every callback.
+    @State private var topHits = 0
+    @State private var atLoadedTop = false
     /// The probe has found the scroll view and is listening to its clip view.
     @State private var handleAttached = false
     @State private var visible = false
-    /// A bottom the view still owes the reader: performed when the handle is
-    /// attached and the page is visible, and abandoned if the reader scrolls.
-    @State private var followIntent = false
-    @State private var followIntentUserEpoch: UInt64 = 0
-    @State private var followIntentFeedGeneration: UInt64 = 0
-    /// Invalidates queued work made for a page that has moved on.
-    @State private var lifecycleEpoch: UInt64 = 0
-    /// Bumped by appear/disappear so queued work from the previous showing
-    /// is dropped.
-    @State private var activeToken: UInt64 = 0
+    /// The hand is on the list, as the feed was last told.
+    @State private var toldReaderActive = false
+    /// Invalidates the quiet checks queued by earlier wheel events.
+    @State private var quietToken: UInt64 = 0
+    /// Invalidates the owed-projection checks queued by earlier events.
+    @State private var projectionToken: UInt64 = 0
+    /// **A locate's landing is driven by the rows, not by `locateEpoch`
+    /// alone** (R2-1): the epoch moves when the request starts, before the
+    /// target's around window exists, so the rows change is the second half.
+    /// The key is the locate, not the anchor: picking the same result again
+    /// must land again.
+    @State private var landedLocate: String?
+    /// A located window's way out is a change of map first (R1-8).
+    @State private var pendingReturnToLatest = false
     /// The located mark's own opacity: 1 is the steady highlight. Breathed
     /// twice when a locate arrives, and then left alone (task 2999 ④).
     /// **Opacity only**: the mark is drawn behind and beside the row, never
@@ -124,96 +128,20 @@ struct ControlRoomNativeChatView: View {
     @State private var breathedLocate: String?
 
     private static let space = "poltergeist.chat.rows"
-    private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
-
-    // MARK: - The blank-screen probe (task 3002)
-
-    /// **Only the abnormal path writes a line.** The person reproduced a chat
-    /// whose header drew and whose list was empty; the suspicion is a clip
-    /// origin outside the document, which makes `LazyVStack` instantiate
-    /// nothing. This says so when it happens and is silent otherwise.
-    ///
-    /// `POLTERCHAT_TRACE` is accepted beside the brief's `POLTER_CHAT_TRACE`
-    /// because `tools/mac-test-instance.sh` unsets every inherited
-    /// `POLTER_*`/`GHOSTTY_*`/`CLAUDE*` variable -- the brief's name would
-    /// never reach an app started that way.
-    private static let traceOn =
-        ProcessInfo.processInfo.environment["POLTER_CHAT_TRACE"] == "1"
-        || ProcessInfo.processInfo.environment["POLTERCHAT_TRACE"] == "1"
-    private static let traceLog = Logger(
+    /// **A camera with no row is said out loud** (R1-4): "I do not know yet"
+    /// and "I know it is gone" must not look the same in a log either.
+    private static let cameraLog = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
-        category: "chat-view"
+        category: "chat-camera"
     )
-
-    private func traceState(_ why: String) {
-        guard Self.traceOn else { return }
-        // A state word, never the refusal's own text: a diagnostic line is
-        // not the place for a message body or a core's words.
-        let state: String
-        switch feed.state {
-        case .idle: state = "idle"
-        case .loading: state = "loading"
-        case .ready: state = "ready"
-        case .empty: state = "empty"
-        case .cancelled: state = "cancelled"
-        case .gap: state = "gap"
-        case .failed: state = "failed"
-        }
-        Self.traceLog.notice(
-            "\(why, privacy: .public) rows=\(feed.rows.count, privacy: .public) state=\(state, privacy: .public) y=\(Int(offsetY), privacy: .public) content=\(Int(contentH), privacy: .public) viewport=\(Int(viewportH), privacy: .public) plan=\(self.listPlan.count, privacy: .public)"
-        )
-    }
-
-    /// **A non-empty list with no row on screen is recovered, not waited
-    /// out.** The criterion is the measured frames, not a clamped offset:
-    /// `scroll(toY:)` clamps against a document height that a `LazyVStack`
-    /// only estimates, so an offset can be perfectly legal and still land in
-    /// a stretch that instantiates nothing.
-    ///
-    /// Checked where a blank list actually came from: the probe attaching, a
-    /// tab coming back, a width change, the viewport going from 0 to real,
-    /// and a replaced map. At most two attempts per episode; any successful
-    /// sighting resets the count.
-    ///
-    /// **The order is the point**: a frozen or located place first (that is
-    /// where the reader was), then the nearest measured row (where rows
-    /// exist), and only then the bottom -- not "jump to the bottom" as a
-    /// first answer, which would throw the reader's place away.
-    private func recoverVisiblePlace(_ why: String) {
-        guard visible, handleAttached, viewportH > 0, !feed.rows.isEmpty,
-              !frames.isEmpty
-        else { return }
-        let visibleRow = frames.values.contains {
-            $0.maxY > offsetY && $0.minY < offsetY + viewportH
-        }
-        if visibleRow {
-            blankAttempts = 0
-            return
-        }
-        guard blankAttempts < 2 else { return }
-        blankAttempts += 1
-        traceState("blank-\(why)")
-        // 1. Where the reader was, if that was ever frozen or located.
-        if let target = keeper.restoreTarget(frames: frames) {
-            scrollProgrammatically(toY: target)
-            return
-        }
-        if let located = feed.locatedAnchor, let frame = frames[located] {
-            scrollProgrammatically(toY: frame.minY)
-            return
-        }
-        // 2. The nearest measured row: a place the lazy stack definitely has.
-        let centre = Double(offsetY + viewportH / 2)
-        if let id = ControlRoomChatAnchor.nearestMeasured(centre: centre, frames: frames),
-           let frame = frames[id], abs(frame.minY - offsetY) > 1 {
-            scrollProgrammatically(
-                toY: min(frame.minY, max(0, contentH - viewportH)))
-            return
-        }
-        // 3. Nothing measured reaches the viewport: the newest messages are
-        // the end of the map that always exists.
-        requestFollow()
-    }
+    /// **The criterion-2 instrument** (task 3016): one line when a gesture
+    /// reaches the loaded top with earlier history still out. A reading is
+    /// counted from these lines, not judged by eye.
+    private static let flowLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-flow"
+    )
+    private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
     var body: some View {
         let theme = Look.theme(scheme)
@@ -283,20 +211,17 @@ struct ControlRoomNativeChatView: View {
                             handle: scroll,
                             onAttach: { attached in
                                 handleAttached = attached
-                                if attached {
-                                    performFollowIfPossible()
-                                    restoreSoon()
-                                    // **A probe that has just found its
-                                    // scroll view** is one of the moments the
-                                    // blank list came from (a return to the
-                                    // tab, a rebuilt host): the place is put
-                                    // back once the frames are known.
-                                    DispatchQueue.main.async {
-                                        recoverVisiblePlace("attach")
-                                    }
-                                }
+                                // **R1-6: the probe attaching is a projection
+                                // trigger.** A rebuilt host finds its scroll
+                                // view again and the camera is projected from
+                                // scratch.
+                                if attached { project() }
                             },
-                            onVisible: { _ in },
+                            onVisible: { shown in
+                                // A page that comes back into sight projects
+                                // again; nothing was measurable while hidden.
+                                if shown { project() }
+                            },
                             onUserScroll: userTookScroll,
                             onUserScrollEnd: handLeftTheList,
                             report: scrolled
@@ -304,15 +229,24 @@ struct ControlRoomNativeChatView: View {
                     }
                     .scrollIndicators(.hidden)
                     .onChange(of: geometry.size.width) { _ in
-                        layoutChangedForScroll()
+                        // **R1-12: the frames are the old width's.** A
+                        // projection against them would scroll to a wrong
+                        // place and the arriving frames would scroll a second
+                        // time -- two visible movements. Clear them; the new
+                        // frames are what the projection waits for.
+                        frames = [:]
+                        framesEpoch &+= 1
+                        layoutAwaitingFrames = true
+                        project()
                     }
                     .onChange(of: seekRequest) { request in
                         guard let request else { return }
-                        // **A jump inside the loaded map** (task 3002): the
-                        // index bar and the search never point at a row the
-                        // ForEach does not have, so this is a scroll and not
-                        // a change of map. The measured correction that
-                        // follows is `restoreSoon`'s.
+                        // **The second half of a two-stage jump** (R1-3): a
+                        // row the lazy stack has not made yet has no frame,
+                        // so the projection cannot reach it. Ask for it by
+                        // name; `project()` corrects to the measured frame
+                        // when it arrives. The id here is the list plan's
+                        // (`"m:"+row.id`), never the camera's.
                         proxy.scrollTo(request.id, anchor: .top)
                     }
                     .overlay(alignment: .trailing) {
@@ -322,30 +256,29 @@ struct ControlRoomNativeChatView: View {
             }
             // **A located window keeps its own way out.** Its bottom is the
             // end of the around window, not the newest message, so the pill
-            // has to return the page to the live tail; `requestFollow()`
-            // alone would only scroll this map. The condition is the located
-            // state, not `atBottom`: reading the middle of a located window
-            // leaves `atBottom` false too, and the two mean different things.
+            // has to return the page to the live tail. The condition is the
+            // located state, not `atBottom`: reading the middle of a located
+            // window leaves `atBottom` false too, and the two mean different
+            // things.
             if isLocated || !atBottom {
                 jumpPill(theme)
             }
         }
         .onAppear {
             visible = true
-            activeToken &+= 1
             lastIDs = feed.rows.map(\.id)
             // **A page always opens on the newest message** (task 3002, the
             // person's ruling of 2026-11-06). The list is a fixed-height
-            // frame over a stream, not a document with a remembered bookmark:
-            // a group that comes back where it was read starts the reader in
-            // history by accident. The place is still reported to the feed
-            // (`reading(anchor:)`) so trimming keeps the reader's
-            // neighbourhood -- it just never seeds the viewport.
-            atBottom = true
+            // frame over a stream, not a document with a remembered bookmark.
+            // **It is one word now** (task 3016): `pinned` is the truth, and
+            // there is no landing action that could fail and be lost.
+            camera = ControlRoomChatCamera.State(place: nil, pinned: true)
+            waitingSince = nil
             newBelow = false
-            blankAttempts = 0
-            requestFollow()
-            DispatchQueue.main.async { recoverVisiblePlace("appear") }
+            pendingReturnToLatest = false
+            soughtID = nil
+            landedLocate = nil
+            project()
             // A page that opens already located: the mark may breathe once
             // the row is measured and under the viewport, which is what the
             // frames preference and the bounds callbacks ask below.
@@ -353,73 +286,60 @@ struct ControlRoomNativeChatView: View {
         }
         .onDisappear {
             visible = false
-            followIntent = false
-            scrollIntent = .none
-            activeToken &+= 1
-            lifecycleEpoch &+= 1
             // **The hand is not on a page that is gone.** A gesture
-            // interrupted by leaving the page would otherwise leave the view
-            // believing the reader is still touching the list, and it would
-            // never announce the next one -- the feed would keep holding
-            // pages for a hand that left. **Not `readerIdle()`**: a page may
-            // be merged when the hand leaves a list that is still there, not
-            // because the page went away (`feed.stop` is that moment).
-            if toldReaderActive {
-                toldReaderActive = false
-                feed.readerActive(false)
-            }
-            // Any quiet check still queued belongs to the page that left.
+            // interrupted by leaving the page would otherwise leave the feed
+            // holding a page for a hand that left. `feed.stop` is the other
+            // moment, and it clears the same flag.
+            toldReaderActive = false
+            feed.readerActive(false)
+            // **Every queued ticket belongs to the page that left** (A2 S2):
+            // a quiet check or an owed projection arranged before the page
+            // went away must not run on it, nor on the page that replaces it.
             quietToken &+= 1
+            projectionToken &+= 1
+            jumpInFlight = nil
         }
-        // **The locate's own epoch drives the landing** (task 3002 review A).
-        // The anchor's value could not: picking the same search result twice
-        // changes nothing about it, so nothing happened. The feed bumps
-        // `locateEpoch` on `locate()` and on a locate's own failure -- and
-        // **not** on a stop, a reload or a session change, which are not
-        // locates and must not pull the reader anywhere.
-        .onChange(of: feed.locateEpoch) { _ in landOnLocate() }
+        // **A locate has two moments** (R2-1). `locateEpoch` moves when the
+        // request starts, before the target's around window exists; the rows
+        // change that lands the window is the second. `jumpToLocate` is keyed
+        // on both so a repeated pick of the same result lands again and a
+        // context page appended afterwards does not pull the reader back.
+        .onChange(of: feed.locateEpoch) { _ in
+            jumpToLocate(feed.locatedAnchor)
+            // A locate that failed outright names no target; its in-flight
+            // wait would otherwise never be spent (M1).
+            if feed.locatedAnchor == nil { jumpInFlight = nil }
+        }
         .onChange(of: feed.rows) { rows in
-            lifecycleEpoch &+= 1
-            // The rows changed, so the frames will too: history freezes the
-            // reader, the bottom follows and never opens a restore.
-            scrollPhase = .layoutAwaitingFrames
-            if atBottom {
-                keeper.cancelRestore()
-            } else {
-                freezeForRestore()
-            }
+            // **One map, one projection.** Every rows change -- an older
+            // page prepended, a live message appended, a locate's new window
+            // -- says the frames will move, and the camera is projected onto
+            // them. If the camera's row is gone, the fallback says so.
+            layoutAwaitingFrames = true
             rowsChanged(rows)
+            jumpToLocate(feed.locatedAnchor)
+            project()
         }
         // **A viewport that has just become real** (0 → positive, or a new
-        // size): the moment the reproduced blank chat came back from.
+        // size) projects the camera again: the bottom target depends on it.
         .onChange(of: viewportH) { height in
             guard height > 0 else { return }
-            DispatchQueue.main.async {
-                recoverVisiblePlace("viewport")
-                publishViewportRows()
-            }
+            project()
+            publishViewportRows()
         }
         .onPreferenceChange(RowFramesPreference.self) { value in
             frames = value
             framesEpoch &+= 1
-            if scrollPhase == .layoutAwaitingFrames { scrollPhase = .idle }
-            // **A frames change is a consequence, never a cause.** This used
-            // to freeze the reader's place and owe a restore on every frames
-            // change while away from the bottom -- and scrolling up a
-            // LazyVStack changes frames on every row it makes. Each of those
-            // froze the anchor *from before* the scroll it was in the middle
-            // of, put the viewport back there, and the reader's next wheel
-            // started it again: the list jumped under the hand, and only the
-            // scroller (which never asks this view) could reach the top
-            // (measured on the real app, 0.11.2381). Every event that really
-            // does owe a restore -- a prepended page, a replaced window, a
-            // narrower window, a locate -- says so where it happens and sets
-            // `scrollIntent` itself.
-            restoreSoon()
+            layoutAwaitingFrames = false
+            seekInFlight = false
+            // **A frames change is a consequence, never a cause.** Scrolling
+            // up a LazyVStack changes frames on every row it makes; none of
+            // those may move the camera. They are the moment the projection
+            // runs, because the camera's row may have just been measured.
+            project()
             // The located row may have just been measured: that is one of
             // the two moments its mark may breathe (task 2999 ④).
             breatheLocatedIfInView()
-            recoverVisiblePlace("frames")
             publishViewportRows()
         }
     }
@@ -546,40 +466,186 @@ struct ControlRoomNativeChatView: View {
         }
     }
 
-    // MARK: - Scrolling
+    // MARK: - The camera (task 3016)
 
+    /// **The projection: truth → pixels.** The only place the view puts the
+    /// camera or the bottom on screen. It reads no pixel offset; everything
+    /// it decides comes from `ControlRoomChatCamera`.
+    ///
+    /// **Nothing is projected under a hand that is on the list** (R1-2). A
+    /// second thing moving the viewport during a live scroll or a wheel is a
+    /// jump the reader sees. What is owed is not dropped: `camera.owed` keeps
+    /// it and `flushOwedProjection` pays it once the wheel is quiet.
+    private func project() {
+        guard handleAttached else { return }
+        // **A page that is hidden or gone scrolls nothing** (A2 S1/S2).
+        guard visible, scroll.isVisible else {
+            camera.owed = projectionNow()
+            return
+        }
+        guard ControlRoomChatCamera.mayProject(
+            userScrolling: scroll.userScrolling,
+            readerRecently: scroll.readerMovedRecently
+        ) else {
+            camera.owed = projectionNow()
+            armProjectionCheck()
+            return
+        }
+        apply(projectionNow())
+    }
+
+    private func projectionNow() -> ControlRoomChatCamera.Projection {
+        ControlRoomChatCamera.projection(
+            state: camera,
+            order: feed.rows.map(\.id),
+            frames: frames,
+            content: Double(contentH),
+            viewport: Double(viewportH),
+            // **The fallback measures from the top edge** (M2), not from the
+            // viewport's middle: the middle plus scrolling the row's top into
+            // place was a half-screen jump.
+            centre: Double(offsetY),
+            pending: jumpInFlight
+        )
+    }
+
+    /// Do one projection. **A projection made against a version of the frames
+    /// may only be answered by a newer one** (R1-12): after a width change the
+    /// old frames are gone and the debt waits for the new ones. `wait` and
+    /// `fallback` are two different answers and both are said out loud in the
+    /// model; here the second also writes a diagnostic.
+    private func apply(_ projection: ControlRoomChatCamera.Projection) {
+        switch projection {
+        case let .scroll(y):
+            guard mayAnswerNow() else {
+                camera.owed = projection
+                armProjectionCheck()
+                return
+            }
+            camera.owed = nil
+            scrollProgrammatically(toY: CGFloat(y))
+        case let .scrollTo(id):
+            // **Only a real jump asks the lazy stack by name** (R1-3 / MF1):
+            // the camera already names the row, and asking for it makes the
+            // stack build it; the frames that follow land here again.
+            camera.owed = projection
+            seekToJump(id)
+        case .pin:
+            guard mayAnswerNow() else {
+                camera.owed = projection
+                armProjectionCheck()
+                return
+            }
+            camera.owed = nil
+            // **No row height needed** (MF1): the estimated document's
+            // bottom is the target, and the next frames change pins again.
+            scrollProgrammatically(toY: .greatestFiniteMagnitude)
+            if let last = feed.rows.last {
+                // **Trim is fed by the camera** (R1-5): pinned means the
+                // reader is at the newest end.
+                feed.reading(anchor: last.id, offset: 0)
+            }
+        case let .wait(id):
+            // "I do not know yet": the frames preference asks again.
+            // **Nothing is sought here** (MF1): seeking to a row that is
+            // about to be measured scrolled to one place and then another.
+            _ = id
+            camera.owed = projection
+            waitingSince = framesEpoch
+        case let .fallback(nearest):
+            // **"I know it is gone."** Five paths put the camera's row
+            // outside the window (trim, a locate's new window, a session
+            // change, `clearWindow`, a clamped origin); without this the
+            // list would draw nothing at all. The fallback names a place
+            // **inside** the nearest measured row (M2), so landing on it
+            // moves the viewport by at most one row, not half a screen.
+            camera.owed = projection
+            waitingSince = framesEpoch
+            Self.cameraLog.notice(
+                "chat camera fallback id=\(camera.place?.id ?? "-", privacy: .public) nearest=\(nearest?.id ?? "-", privacy: .public) off=\(Int(nearest?.offset ?? 0), privacy: .public) rows=\(feed.rows.count, privacy: .public)"
+            )
+            if let nearest, let y = ControlRoomChatCamera.y(of: nearest, frames: frames) {
+                camera.place = nearest
+                camera.pinned = false
+                feed.reading(anchor: nearest.id, offset: nearest.offset)
+                scrollProgrammatically(toY: CGFloat(y))
+            } else if !feed.rows.isEmpty {
+                // Nothing measured: the newest end is the only place that
+                // exists, and the pinned projection knows how to wait for it.
+                camera.place = nil
+                camera.pinned = true
+            }
+        }
+    }
+
+    private func mayAnswerNow() -> Bool {
+        guard let since = waitingSince else { return true }
+        guard ControlRoomChatCamera.mayAnswer(
+            framesEpoch: framesEpoch, waitingSince: since
+        ) else { return false }
+        waitingSince = nil
+        return true
+    }
+
+    /// **The second half of a two-stage jump** (R1-3). A row the lazy stack
+    /// has not made has no frame, so the projection cannot reach it; asking
+    /// `ScrollViewReader` for it makes the stack build it, and the frames
+    /// that follow land the camera exactly. **Once per row**: the token makes
+    /// the same row askable again after a new jump. **Only a jump calls
+    /// this** (MF1) -- a row that is simply not measured yet waits.
+    private func seekToJump(_ id: String) {
+        guard soughtID != id else { return }
+        soughtID = id
+        seekInFlight = true
+        seekToken &+= 1
+        seekRequest = SeekRequest(
+            // The list plan's identity, not the camera's (R1-3).
+            id: ControlRoomChatPresentation.ListRow.message(id: id).id,
+            token: seekToken
+        )
+    }
+
+    /// **The inverse: pixels → truth.** Only a callback the reader caused may
+    /// move the camera, and the bottom it lands on is what `pinned` means.
     private func scrolled(_ y: CGFloat, _ viewport: CGFloat, _ content: CGFloat) {
         // **A hidden host scrolls nothing.** `feed.stop` and a hidden ancestor
         // do not always reach `onDisappear`; the live view test does.
         guard visible, scroll.isVisible else { return }
-        // **A clip origin past the document instantiates nothing.** The
-        // reproduced blank chat is this: the header drew, the list did not,
-        // and the origin was outside the content. A rubber-band overscroll is
-        // the reader's and is left alone; anything else is clamped back.
+        // **A clip origin past the document instantiates nothing** (R1-13:
+        // this is one of the kept readers of the pixel value). A rubber-band
+        // overscroll is the reader's and is left alone; anything else is
+        // clamped back. **The camera is written before the scroll** (R2-2),
+        // or the next projection would undo the clamp.
         if content > viewport + 1, y > content - viewport + 2,
            !inScrollCall, !scroll.userScrolling, !scroll.readerMovedRecently {
-            traceState("origin-past-content")
+            let target = Double(content - viewport)
+            if let place = ControlRoomChatCamera.place(
+                order: feed.rows.map(\.id), frames: frames, at: target
+            ) {
+                camera.place = place
+                feed.reading(anchor: place.id, offset: place.offset)
+            }
+            camera.pinned = true
+            camera.owed = nil
             scrollProgrammatically(toY: content - viewport)
             return
         }
         let contentChanged = abs(content - contentH) > 0.5
-        let wasAtBottom = atBottom
         offsetY = y
         viewportH = viewport
         contentH = content
         let epochChanged = seenFramesEpoch != framesEpoch
         seenFramesEpoch = framesEpoch
-        let phaseAtCallback = scrollPhase
-        var programmatic = false
-        switch phaseAtCallback {
-        case .layoutAwaitingFrames:
-            break
-        case let .programmatic(expected):
-            programmatic = abs(y - expected) <= 1
-            if !programmatic { keeper.cancelProgrammatic() }
-        case .idle:
-            programmatic = inScrollCall
-        }
+        // **Every target the view sent is kept until its own callback**
+        // (MF2). A callback matching none is the reader's (or layout's) and
+        // leaves the set alone, so the second of two programmatic scrolls in
+        // one turn still matches.
+        let programmatic = ControlRoomChatCamera.programmaticCallback(
+            inScrollCall: inScrollCall,
+            seekInFlight: seekInFlight,
+            y: Double(y),
+            expectations: &expectedScrolls
+        )
         // **A measured Markdown row moves the bounds before its frames
         // preference arrives.** Content height changing with the same frames
         // epoch is layout, not the reader; a real live-scroll event is the
@@ -587,105 +653,85 @@ struct ControlRoomNativeChatView: View {
         let cause = ControlRoomChatAnchor.cause(
             contentChanged: contentChanged && !programmatic,
             framesChanged: epochChanged,
-            phaseIsLayout: phaseAtCallback == .layoutAwaitingFrames,
+            phaseIsLayout: layoutAwaitingFrames,
             programmatic: programmatic,
             userScrolling: scroll.userScrolling,
             // **A wheel is the reader even when no live scroll is running**:
-            // the live-scroll notification covers the touch, not the
-            // momentum after `didEndLiveScroll`. Without this, a momentum
-            // callback carrying a lazily measured row's growth was layout,
-            // and the list was put back down under the reader's hand (task
-            // 2999 ③).
+            // the live-scroll notification covers the touch, not the momentum
+            // after `didEndLiveScroll` (task 2999 ③).
             readerRecently: scroll.readerMovedRecently
         )
-        if cause == .programmatic { keeper.consumeProgrammaticCallback() }
-        if phaseAtCallback != .layoutAwaitingFrames || epochChanged {
-            scrollPhase = .idle
-        }
-        if cause == .layout, contentChanged, !epochChanged, !keeper.restoring {
-            if atBottom {
-                requestFollow()
-            } else {
-                freezeForRestore()
-                restoreSoon()
-            }
-        }
-        // **A hand on the list has an end after all.** There is no "the
-        // reader let go" event to correct at, so the corrections a gesture
-        // interrupted are taken back here: when the wheel has been quiet for
-        // its window (0.3s), or when the live scroll ends. The restore is
-        // still the frozen anchor + intra-row offset, one shot -- never a sum
-        // of per-row height differences.
+        if layoutAwaitingFrames, epochChanged { layoutAwaitingFrames = false }
+        let bottom = ControlRoomChatAnchor.isAtBottom(
+            offset: Double(y), viewport: Double(viewport), content: Double(content)
+        )
         if cause == .user {
+            // **The hand is on the list**, so the feed holds pages for it
+            // (R1-1), and the view says when it leaves.
             if !toldReaderActive {
                 toldReaderActive = true
-                readerActive(true)
+                feed.readerActive(true)
             }
             armQuietCheck()
-        }
-
-        // **Who moved is decided here and handed down.** The keeper used to
-        // infer the reader from the frames not having changed, which is a
-        // fact about layout, not about who moved: a window replacement's
-        // ordinary bounds callback cleared the frozen place a locate was
-        // waiting to restore to (task 2999 ④/③).
-        let user = keeper.bounds(
-            y: y,
-            order: feed.rows.map(\.id),
-            frames: frames,
-            user: cause == .user
-        )
-        if user {
-            // The reader moved: no bottom is owed and a restore is over.
-            followIntent = false
-            scrollIntent = .none
-            if let next = keeper.anchor {
-                // Trim keeps this neighbourhood; it never moves the reader.
-                feed.reading(anchor: next.id, offset: next.offset)
+            // **The camera is written only here**, and trim is fed from it on
+            // every write (R1-5) -- a programmatic jump leaves the feed a
+            // stale anchor otherwise, and trim may then evict the camera's
+            // own row.
+            camera.bounds(
+                cause: cause,
+                y: Double(y),
+                order: feed.rows.map(\.id),
+                frames: frames
+            )
+            if let place = camera.place {
+                feed.reading(anchor: place.id, offset: place.offset)
             }
+            // **R1-7: a reader who reaches the bottom is following again.**
+            camera.pinned = ControlRoomChatCamera.pinned(
+                after: cause, atBottom: bottom, was: camera.pinned
+            )
+            if bottom { newBelow = false }
         }
-        let bottom = ControlRoomChatAnchor.isAtBottom(
-            offset: y, viewport: viewport, content: content
-        )
-        if bottom {
-            atBottom = true
-            // **Only the reader clears the notice**: a layout or a
-            // programmatic scroll reaching the bottom is not them reading.
-            if user { newBelow = false }
-            performFollowIfPossible()
-        } else {
-            atBottom = false
+        // **Content that grew under a pinned viewport stays pinned** (R2-7's
+        // mac answer): every projection re-pins, so a row measuring taller
+        // cannot leave the viewport half-way up.
+        if camera.pinned, contentChanged, cause != .user {
+            DispatchQueue.main.async { project() }
         }
-        if contentChanged, !bottom {
-            if wasAtBottom && !user {
-                requestFollow()
-            } else {
-                restoreSoon()
-            }
-        }
-        // **The top edge asks quietly** (task 3002): with no loading row and
-        // no "load earlier" control, getting the next page is the background
-        // continuing, not an event. The threshold is one viewport rather than
-        // the old 24pt: 24pt fires only once the reader is already at the
-        // very end of the map, so every page would arrive after them. One
-        // viewport asks while there is still content above to read.
-        if user, ControlRoomChatAnchor.shouldLoadOlder(offset: y, threshold: viewport) {
-            askForMore(.older)
-        }
-        // **And the bottom edge in a located window.** An around answer is a
-        // short window: without this the lower half of the screen is empty
-        // once the reader reaches its end, and the boundary row that used to
-        // offer the next page is gone with the rest of them.
-        if user, feed.context != nil,
-           ControlRoomChatAnchor.isAtBottom(
-                offset: y, viewport: viewport, content: content, tolerance: viewport) {
-            askForMore(.newer)
-        }
-        // **The viewport has moved**: if it has come to rest on the located
-        // row, that is the moment its mark breathes (task 2999 ④).
+        maybePrefetch(fromInput: cause == .user)
+        noteTopHit()
         breatheLocatedIfInView()
-        recoverVisiblePlace("scrolled")
         publishViewportRows()
+    }
+
+    /// **The criterion-2 instrument.** One line each time a gesture reaches
+    /// the loaded top while earlier history is still out; a reading is
+    /// counted from the log, not judged by eye. Only the transition is
+    /// logged, so a reader resting at the top does not fill the log.
+    private func noteTopHit() {
+        guard viewportH > 0, !feed.rows.isEmpty, hasEarlierHistory else {
+            atLoadedTop = false
+            return
+        }
+        let loadedTop = frames[feed.rows[0].id].map { Double($0.minY) } ?? 0
+        let hit = currentTopY() - loadedTop <= 1
+        if hit, !atLoadedTop {
+            atLoadedTop = true
+            topHits += 1
+            Self.flowLog.notice(
+                "top-hit: count=\(topHits, privacy: .public) rows=\(feed.rows.count, privacy: .public) pinned=\(camera.pinned, privacy: .public)"
+            )
+        } else if !hit {
+            atLoadedTop = false
+        }
+    }
+
+    /// Earlier history this window has not loaded yet.
+    private var hasEarlierHistory: Bool {
+        if let context = feed.context {
+            return context.olderToken != nil && !context.olderAtEnd
+        }
+        return feed.historyTail?.nextToken != nil
     }
 
     private func rowsChanged(_ rows: [ControlRoomChatFeed.Row]) {
@@ -695,106 +741,284 @@ struct ControlRoomNativeChatView: View {
         case .appended:
             if feed.locatedAnchor != nil {
                 // A replaced body here is a search locate, not new messages.
-                atBottom = false
                 newBelow = false
-            } else if atBottom {
-                requestFollow()
+            } else if camera.pinned {
+                newBelow = false
             } else if !rows.isEmpty {
                 newBelow = true
             }
         case .replaced:
             // **A new map, not a longer one.** The frames the view holds are
-            // the old window's coordinates, and a restore computed from them
-            // lands somewhere that does not exist any more; the drag the
+            // the old window's coordinates, and a projection computed from
+            // them lands somewhere that does not exist any more; the drag the
             // index bar is in the middle of was aimed at the old map too.
             frames = [:]
             framesEpoch &+= 1
             mapEpoch &+= 1
+            soughtID = nil
             if feed.locatedAnchor != nil {
-                atBottom = false
                 newBelow = false
-            } else if atBottom {
-                requestFollow()
+            } else if camera.pinned {
+                newBelow = false
             } else if !rows.isEmpty {
                 newBelow = true
             }
-            // Out of range almost only happens on a replacement, so the
-            // recovery is asked for here as well as from the frames.
-            DispatchQueue.main.async { recoverVisiblePlace("replaced") }
         case .prepended:
-            // The reader stays on their message; the frozen anchor is put
-            // back once the new frames are known. At the bottom there is
-            // nothing to keep.
-            if atBottom { requestFollow() }
+            // **The camera keeps its row and the projection is the
+            // correction.** The page itself never waits for the hand: that is
+            // R1-1's job in the feed (a coordinate-system guard), not the
+            // view's.
+            break
         case .none:
             break
         }
         lastIDs = ids
-        // The new rows are laid out after this turn: if they arrived but none
-        // is on screen, that is the blank list, and it is recovered there.
-        blankAttempts = 0
-        DispatchQueue.main.async { recoverVisiblePlace("rows") }
+        // **A jump whose map has arrived is no longer in flight** (M1).
+        if let inFlight = jumpInFlight, ids.contains(inFlight) {
+            jumpInFlight = nil
+        }
+        // **R1-8: a located window's way out lands when the new map does.**
+        if pendingReturnToLatest, !isLocated {
+            pendingReturnToLatest = false
+            camera = ControlRoomChatCamera.State(place: nil, pinned: true)
+            waitingSince = nil
+            jumpInFlight = nil
+        }
     }
 
-    /// **A jump to a row in the loaded map** (task 3002). The index bar and
-    /// the search never name a row the `ForEach` does not have, so this is a
-    /// scroll and never a change of map: reaching a message that is not
-    /// loaded is `feed`'s `around` window, and by the time it answers the row
-    /// is here.
+    /// **A locate has two moments** (R2-1): `locateEpoch` moves when the
+    /// request starts -- before the target's around window exists -- and the
+    /// rows change is when it lands. Keyed on both, so re-picking the same
+    /// result lands again while a context page appended afterwards does not
+    /// pull the reader back.
     ///
-    /// A measured row moves in one step. A row the lazy stack has not made
-    /// yet is asked for by name, and the keeper's frozen place is the same
-    /// row, so the one correction the frames preference causes lands on it --
-    /// two rounds at most, because the keeper is spent after one.
+    /// **A settled locate is recorded even when its target is not in the
+    /// window** (M5). `locateSettled` answers "has this locate finished",
+    /// not "is the row here": leaving the key unrecorded made every rows
+    /// change ask for the same `around` again -- one core request per round,
+    /// for ever.
+    private func jumpToLocate(_ target: String?) {
+        guard let target else { return }
+        let key = "\(feed.locateEpoch):\(target)"
+        guard landedLocate != key else { return }
+        let settled = ControlRoomChatCamera.locateSettled(
+            targetInRows: rowIndexByID[target] != nil,
+            hasContext: feed.context != nil,
+            trouble: feed.locateTrouble != nil
+        )
+        if settled { landedLocate = key }
+        if feed.locateTrouble != nil { jumpInFlight = nil }
+        // A settled locate whose target is not in its window has nothing to
+        // land on (the feed has said `TargetNotInWindow`); asking again is
+        // the loop M5 closes.
+        guard rowIndexByID[target] != nil || !settled else { return }
+        jump(to: target)
+    }
+
+    /// The index bar's seek, through the one teleport primitive.
     private func seek(toIndex index: Int) {
         guard index >= 0, index < feed.rows.count else { return }
-        let row = feed.rows[index]
-        // The person asked for a place: no bottom is owed and no older page
-        // is being waited for.
-        followIntent = false
+        jump(to: feed.rows[index].id)
+    }
+
+    /// **The one teleport primitive** (R1-3). A row already measured is a
+    /// projection; one in `rows` but not yet made is asked for by name and
+    /// corrected when its frame arrives; one not loaded at all changes the
+    /// map through the feed, and the around answer arrives as rows.
+    ///
+    /// **The camera is written first** (R2-2): `proxy.scrollTo` is a
+    /// programmatic scroll, and a projection that did not know where it went
+    /// would put it back.
+    private func jump(to id: String) {
+        camera.pinned = false
+        camera.owed = nil
         newBelow = false
-        atBottom = false
-        freezeForRestore(.init(id: row.id, offset: 0))
-        if let frame = frames[row.id] {
-            scrollPhase = .idle
-            scrollProgrammatically(toY: frame.minY)
-            restoreSoon()
+        pendingReturnToLatest = false
+        soughtID = nil
+        waitingSince = nil
+        camera.place = ControlRoomChatCamera.Place(id: id, offset: 0)
+        feed.reading(anchor: id, offset: 0)
+        guard rowIndexByID[id] != nil else {
+            // **The map has to change, so this is not "gone"** (M1): the
+            // projection waits for the row instead of falling back while the
+            // `around` is on its way.
+            jumpInFlight = id
+            feed.jump(to: id)
+            project()
             return
         }
-        scrollPhase = .layoutAwaitingFrames
-        seekToken &+= 1
-        seekRequest = SeekRequest(
-            id: ControlRoomChatPresentation.ListRow.message(id: row.id).id,
-            token: seekToken
-        )
+        jumpInFlight = nil
+        project()
     }
 
     /// A click on the bare track: one screenful in the direction asked for,
     /// within the loaded map (the index bar never covers more than that).
-    /// Near the top it also asks the feed for the next page, exactly as a
-    /// wheel there would.
+    /// Near an edge it asks the feed for the next page, exactly as a wheel
+    /// there would.
     private func pageBy(_ direction: Int) {
         guard direction != 0, viewportH > 0 else { return }
-        let target = max(0, offsetY + CGFloat(direction) * viewportH)
-        keeper.cancelRestore()
-        followIntent = false
-        scrollIntent = .none
-        scrollPhase = .idle
-        scrollProgrammatically(toY: target)
-        if direction < 0,
-           ControlRoomChatAnchor.shouldLoadOlder(offset: target, threshold: viewportH) {
+        let target = max(0, currentTopY() + Double(direction) * Double(viewportH))
+        let order = feed.rows.map(\.id)
+        // **The camera is written before the scroll** (R2-2), so the next
+        // projection lands on the same place rather than undoing it.
+        if let place = ControlRoomChatCamera.place(order: order, frames: frames, at: target) {
+            camera.place = place
+            camera.pinned = false
+            feed.reading(anchor: place.id, offset: place.offset)
+        } else if let first = order.first, let frame = frames[first] {
+            // Above the first measured row (the list's own top padding): the
+            // first row is the closest honest answer.
+            let place = ControlRoomChatCamera.Place(
+                id: first, offset: max(0, target - Double(frame.minY))
+            )
+            camera.place = place
+            camera.pinned = false
+            feed.reading(anchor: place.id, offset: place.offset)
+        } else {
+            camera.place = nil
+            camera.pinned = true
+        }
+        camera.owed = nil
+        waitingSince = nil
+        project()
+        maybePrefetch(fromInput: true)
+    }
+
+    /// The top edge in content coordinates, from the camera when it has one.
+    /// **The pixel offset is only the fallback** for a camera not measurable
+    /// yet; it is never the truth.
+    private func currentTopY() -> Double {
+        if camera.pinned { return max(0, Double(contentH - viewportH)) }
+        if let place = camera.place,
+           let y = ControlRoomChatCamera.y(of: place, frames: frames) {
+            return y
+        }
+        return Double(offsetY)
+    }
+
+    /// **Asking for more is silent, and it happens early** (R1-1 / §5): three
+    /// viewports before the loaded edge is what keeps a fast scroll from
+    /// reaching a page boundary. The feed's own gates (`canLoadOlder`, the
+    /// cooldown) make asking on every bounds callback one request per page.
+    ///
+    /// **The newer edge is asked for only on the reader's own input** (M4).
+    /// A pinned viewport re-pins on every page, and its programmatic callback
+    /// is always at distance 0 -- asking there walked the whole remaining
+    /// history one core request at a time.
+    private func maybePrefetch(fromInput: Bool) {
+        guard viewportH > 0, !feed.rows.isEmpty else { return }
+        let viewport = Double(viewportH)
+        let top = currentTopY()
+        let loadedTop = frames[feed.rows[0].id].map { Double($0.minY) } ?? 0
+        if ControlRoomChatCamera.wantsOlder(
+            top: top, loadedTop: loadedTop, viewport: viewport
+        ) {
             askForMore(.older)
         }
-        // **The mirror of the top edge**: a programmatic page never comes
-        // back as `user`, so the near-bottom ask in `scrolled` can never fire
-        // for it. In a located window that leaves the lower half of the
-        // screen empty -- the boundary row that used to offer the next page
-        // is gone.
-        if direction > 0, feed.context != nil,
-           ControlRoomChatAnchor.isAtBottom(
-                offset: Double(target), viewport: Double(viewportH),
-                content: Double(contentH), tolerance: Double(viewportH)) {
+        if feed.context != nil,
+           ControlRoomChatCamera.newerIsDue(
+            wants: ControlRoomChatCamera.wantsNewer(
+                bottom: top + viewport,
+                loadedBottom: Double(contentH),
+                viewport: viewport),
+            fromInput: fromInput
+           ) {
             askForMore(.newer)
+        }
+    }
+
+    /// A real live-scroll started (or a wheel burst): **the hand is on the
+    /// list**, and every projection is postponed until it leaves.
+    private func userTookScroll() {
+        // **The reader voids every expectation the view had** (MF2).
+        expectedScrolls = []
+        seekInFlight = false
+        if !toldReaderActive {
+            toldReaderActive = true
+            feed.readerActive(true)
+        }
+        armQuietCheck()
+    }
+
+    /// **The hand has left the list.** The feed lands the pages it held for
+    /// the gesture and the rows change projects once with the merged frames;
+    /// the projection postponed by the gate is paid after that, not before
+    /// (A2 S4: paying first would land on the pre-merge map and move again).
+    private func handLeftTheList() {
+        guard toldReaderActive else { return }
+        // **Momentum is still the reader**: `didEndLiveScroll` fires when the
+        // fingers lift, not when the list stops.
+        guard !scroll.readerMovedRecently else {
+            armQuietCheck()
+            return
+        }
+        toldReaderActive = false
+        // **R1-1: the held pages land now**, in one rows change.
+        feed.readerIdle()
+        flushOwedProjection()
+    }
+
+    /// **A timer, not only the end notification**: a hand that rests on the
+    /// trackpad without lifting never posts `didEndLiveScroll`. Each call
+    /// invalidates the one before it, so a wheel burst queues one look.
+    private func armQuietCheck() {
+        quietToken &+= 1
+        let token = quietToken
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + ControlRoomChatScrollHandle.wheelWindow
+        ) {
+            guard quietToken == token else { return }
+            if scroll.userScrolling || scroll.readerMovedRecently {
+                armQuietCheck()
+                return
+            }
+            handLeftTheList()
+            flushOwedProjection()
+        }
+    }
+
+    /// Pay the projection a gesture postponed, once the hand is really gone.
+    private func flushOwedProjection() {
+        guard camera.owed != nil else { return }
+        guard ControlRoomChatCamera.mayProject(
+            userScrolling: scroll.userScrolling,
+            readerRecently: scroll.readerMovedRecently
+        ) else {
+            armProjectionCheck()
+            return
+        }
+        project()
+    }
+
+    /// A short timer for the owed projection, so a wheel that stops without
+    /// a live-scroll end still pays it. It is the same window the wheel
+    /// signal uses.
+    private func armProjectionCheck() {
+        projectionToken &+= 1
+        let token = projectionToken
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + ControlRoomChatScrollHandle.wheelWindow
+        ) {
+            guard projectionToken == token else { return }
+            flushOwedProjection()
+        }
+    }
+
+    /// One programmatic scroll, registered **before** the call so a
+    /// synchronous bounds callback is not read as the reader. A scroll that
+    /// moved nothing has no callback coming.
+    private func scrollProgrammatically(toY y: CGFloat) {
+        inScrollCall = true
+        let target = scroll.scroll(toY: y)
+        inScrollCall = false
+        if let target {
+            // **Every target stays until its own callback** (MF2), so two
+            // scrolls in one turn are both recognised. A target that never
+            // produced a callback must not accumulate: the set is small.
+            expectedScrolls.append(Double(target))
+            if expectedScrolls.count > 8 {
+                expectedScrolls.removeFirst(expectedScrolls.count - 8)
+            }
         }
     }
 
@@ -867,12 +1091,17 @@ struct ControlRoomNativeChatView: View {
     private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
         if !feed.rows.isEmpty, height > 0 {
             let order = feed.rows.map(\.id)
-            let top = ControlRoomChatIndexBar.topTick(
-                order: order,
-                frames: frames,
-                offset: Double(offsetY),
-                viewport: Double(viewportH)
-            ) ?? 0
+            // **R1-14: the bar's top reads the camera**, not the projected
+            // pixel. The appearance is the same tick; the source stops it
+            // lagging a frame behind while a projection is owed. `pinned` has
+            // no place to read, so the pixel-derived tick stands there.
+            let top = cameraTopTick(order: order, frames: frames)
+                ?? ControlRoomChatIndexBar.topTick(
+                    order: order,
+                    frames: frames,
+                    offset: Double(offsetY),
+                    viewport: Double(viewportH)
+                ) ?? 0
             let covered = ControlRoomChatIndexBar.viewportTicks(
                 order: order,
                 frames: frames,
@@ -897,267 +1126,6 @@ struct ControlRoomNativeChatView: View {
             )
             .padding(.trailing, ControlRoomChatIndexBar.trackInset)
             .padding(.vertical, 8)
-        }
-    }
-
-    /// A layout change that is not the reader moving: **at the bottom it only
-    /// owes a follow; away from it, it freezes the reader for a restore.**
-    /// Never both, which is how a restore could block the follow for ever.
-    private func layoutChangedForScroll() {
-        lifecycleEpoch &+= 1
-        if atBottom {
-            keeper.cancelRestore()
-            requestFollow()
-        } else {
-            scrollPhase = .layoutAwaitingFrames
-            freezeForRestore()
-            restoreSoon()
-        }
-        // The width changed under the list: if that left nothing on screen,
-        // put a place back (see `recoverVisiblePlace`).
-        DispatchQueue.main.async { recoverVisiblePlace("width") }
-    }
-
-    /// **Freeze the reader's place for one restore.** The place is a row and
-    /// an offset into it, never a sum of row heights: a frame that measures
-    /// ten rows is one restore to the same row, not ten shifts.
-    ///
-    /// An anchor is never absent while rows are measured -- the place is a
-    /// fact about the frames, not about the reader having scrolled -- so a
-    /// prepend with no anchor yet is given the first row's measured frame
-    /// rather than shifting content under a reader nothing compensates for.
-    ///
-    /// The frames epoch the freeze was made against travels with it: a
-    /// restore answered by the map it froze against has answered nothing.
-    private func freezeForRestore(_ anchor: ControlRoomChatAnchor.Anchor? = nil) {
-        let place = anchor
-            ?? keeper.anchor
-            ?? ControlRoomChatAnchor.anchor(
-                order: feed.rows.map(\.id), frames: frames, at: Double(offsetY))
-        if let place { keeper.seed(place) }
-        keeper.layoutWillChange()
-        frozenFramesEpoch = framesEpoch
-        scrollIntent = .restore
-    }
-
-    /// **A locate landed (or failed).** The landed case puts the target at
-    /// the top once its row exists -- and it does so even when `rows` did not
-    /// change at all, which is what picking the same search result twice is.
-    ///
-    /// ⚠️ **Not a promise that every repeat locate moves the list**: a target
-    /// row that is in the window but has never been instantiated has no
-    /// frame, and this view cannot make the lazy stack make it. The locate's
-    /// own window replacement is what gives the row a frame. The measuring
-    /// that proves "the second click landed too" is a real-app reading.
-    private func landOnLocate() {
-        guard let target = feed.locatedAnchor else {
-            // **A failed or cleared locate leaves no place to land on.** The
-            // optimistic freeze must go with it, or the next layout change
-            // (a sidebar opening, a wider window) would execute it and jump
-            // to a row the reader never asked for.
-            keeper.cancelRestore()
-            if scrollIntent == .restore { scrollIntent = .none }
-            return
-        }
-        // A located window is history reading: do not follow, and put the
-        // target at the top once its row exists.
-        atBottom = false
-        newBelow = false
-        scrollPhase = .layoutAwaitingFrames
-        freezeForRestore(.init(id: target, offset: 0))
-        restoreSoon()
-    }
-
-    /// Put the viewport back on the **frozen** anchor. Every fact is checked
-    /// again at execution: the page's showing token, the feed's generation
-    /// and session, the window, the attach, the layout epoch, and that this
-    /// is still the restore (a follow or a user scroll cancels it).
-    private func restoreSoon() {
-        // **Nothing is put back under a hand that is on the list.** A restore
-        // that ran during a wheel or a live scroll is a second thing moving
-        // the viewport at the same time; whichever won, the reader saw a
-        // jump. What is owed is not dropped here, either: the feed holds a
-        // page that arrives while the reader is moving, and the quiet timer
-        // (`armQuietCheck` -> `handLeftTheList`) freezes, lets the merge in
-        // and restores once, after the hand has really left.
-        guard ControlRoomChatAnchor.mayRestore(
-            userScrolling: scroll.userScrolling,
-            readerRecently: scroll.readerMovedRecently
-        ) else { return }
-        guard scrollIntent == .restore, keeper.restoring, !atBottom else { return }
-        let epoch = keeper.layoutEpoch
-        let lifecycle = lifecycleEpoch
-        let active = activeToken
-        let feedGeneration = feed.generation
-        let session = feed.session
-        let owedEpoch = frozenFramesEpoch
-        DispatchQueue.main.async {
-            guard scrollIntent == .restore, visible, scroll.isVisible, handleAttached,
-                  !atBottom, keeper.restoring,
-                  keeper.layoutEpoch == epoch,
-                  lifecycleEpoch == lifecycle,
-                  activeToken == active,
-                  feed.generation == feedGeneration,
-                  feed.session == session,
-                  let target = keeper.restoreTarget(frames: frames)
-            else { return }
-            if abs(target - offsetY) <= 1 {
-                // **Not answered yet, so not spent.** `frames` may still be
-                // the map the restore was frozen against (the replacement's
-                // preference has not arrived); consuming it there would mark
-                // the correction done and nothing would ask again.
-                guard ControlRoomChatAnchor.restoreWasAnswered(
-                    framesEpoch: framesEpoch, frozenAt: owedEpoch
-                ) else { return }
-                keeper.restored()
-                scrollIntent = .none
-                return
-            }
-            scrollProgrammatically(toY: target)
-            keeper.restored()
-            scrollIntent = .none
-        }
-    }
-
-    /// A bottom the person is owed: remembered with the epoch of the reader
-    /// and the feed generation, and performed only where it can be seen.
-    /// A real live-scroll started: **every queued scroll intent is void**,
-    /// including a restore waiting for new frames and a follow waiting for
-    /// attach. The next bounds is the reader's, not ours.
-    private func userTookScroll() {
-        keeper.cancelRestore()
-        keeper.cancelProgrammatic()
-        scrollIntent = .none
-        followIntent = false
-        scrollPhase = .idle
-        lifecycleEpoch &+= 1
-        // The reader is here and moving: a blank-list recovery may try again
-        // from wherever they have gone.
-        blankAttempts = 0
-        // **And the feed is told, so a page it already holds is not merged
-        // into a document the reader is moving** (task 3002 review, the
-        // ruling of `### 5`): inserting above the viewport moves the
-        // document at once, and putting it back afterwards is a second
-        // visible movement -- a correction can fix the endpoint, never the
-        // moment. The page waits in the feed instead.
-        toldReaderActive = true
-        readerActive(true)
-        armQuietCheck()
-    }
-
-    /// **The hand has left the list** -- it has been still for the wheel
-    /// window. Freeze the place first, then let the feed merge what it held,
-    /// and restore once.
-    private func handLeftTheList() {
-        guard toldReaderActive else { return }
-        // **Momentum is still the reader**: `didEndLiveScroll` fires when the
-        // fingers lift, not when the list stops. A wheel inside its window
-        // means the hand has not really left yet.
-        guard !scroll.readerMovedRecently else {
-            armQuietCheck()
-            return
-        }
-        toldReaderActive = false
-        // **Freeze first, against the rows as they are**: nothing has been
-        // merged into them while the hand was on the list. `readerIdle()`
-        // merges synchronously, so the freeze must be in place before it.
-        let rowsAtFreeze = feed.rows.count
-        freezeForRestore()
-        feed.readerIdle()
-        restoreSoon()
-        // **A freeze that nothing answered is not left standing.** If the
-        // feed had no page to merge, the keeper would stay "restoring" and
-        // hold the next follow off. The wait is longer than a turn because
-        // the merge arrives through a SwiftUI update of its own; the row
-        // count must still be the one the freeze was made against.
-        quietToken &+= 1
-        let token = quietToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            guard quietToken == token, keeper.restoring,
-                  frozenFramesEpoch == framesEpoch,
-                  feed.rows.count == rowsAtFreeze
-            else { return }
-            keeper.cancelRestore()
-            if scrollIntent == .restore { scrollIntent = .none }
-        }
-    }
-
-    /// **A timer, not only the end notification**: a hand that rests on the
-    /// trackpad without lifting never posts `didEndLiveScroll`. Each call
-    /// invalidates the one before it, so a wheel burst queues one look.
-    private func armQuietCheck() {
-        quietToken &+= 1
-        let token = quietToken
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + ControlRoomChatScrollHandle.wheelWindow
-        ) {
-            guard quietToken == token else { return }
-            if scroll.userScrolling || scroll.readerMovedRecently {
-                armQuietCheck()
-                return
-            }
-            handLeftTheList()
-        }
-    }
-
-    /// **The feed's reader gate.** It is only "is the hand on the list"; the
-    /// 0.3s quiet judgement is this view's (`armQuietCheck`), because only
-    /// the view sees the wheel stream. `true` holds a page that arrives; the
-    /// hand leaving goes through `feed.readerIdle()`, which merges it and
-    /// sets the flag itself -- a bare `false` would hold no merge.
-    private func readerActive(_ active: Bool) {
-        guard active else { return }
-        feed.readerActive(true)
-    }
-
-    private func requestFollow() {
-        // An explicit latest replaces a restore instead of being refused by
-        // it.
-        keeper.cancelRestore()
-        scrollIntent = .follow
-        followIntent = true
-        followIntentUserEpoch = keeper.userEpoch
-        followIntentFeedGeneration = feed.generation
-        // After the turn that changed the rows: the scroll view's document
-        // height is the old one until SwiftUI has laid the new rows out.
-        DispatchQueue.main.async { performFollowIfPossible() }
-    }
-
-    private func performFollowIfPossible() {
-        guard followIntent, scrollIntent == .follow,
-              visible, scroll.isVisible, handleAttached, !keeper.restoring,
-              ControlRoomChatAnchor.mayFollow(
-                intentEpoch: followIntentUserEpoch,
-                currentUserEpoch: keeper.userEpoch
-              ),
-              feed.generation == followIntentFeedGeneration
-        else {
-            if scrollIntent == .follow, !followIntent { scrollIntent = .none }
-            return
-        }
-        followIntent = false
-        scrollProgrammatically(toY: .greatestFiniteMagnitude)
-        atBottom = true
-        newBelow = false
-        scrollIntent = .none
-    }
-
-    /// One programmatic scroll, registered **before** the call so a
-    /// synchronous bounds callback is not read as the reader. A scroll that
-    /// moved nothing has no callback coming, and its registration is taken
-    /// back rather than left to swallow the next user scroll.
-    private func scrollProgrammatically(toY y: CGFloat) {
-        keeper.willScrollProgrammatically()
-        inScrollCall = true
-        let target = scroll.scroll(toY: y)
-        inScrollCall = false
-        if let target {
-            // An asynchronous callback must match this place; a synchronous
-            // one has already been classified by `inScrollCall`.
-            scrollPhase = .programmatic(expected: target)
-        } else {
-            keeper.cancelProgrammatic()
-            scrollPhase = .idle
         }
     }
 
@@ -1251,21 +1219,53 @@ struct ControlRoomNativeChatView: View {
         feed.context != nil || feed.locatedAnchor != nil
     }
 
+    /// **`atBottom` is derived, never a third copy of the truth** (R1-7):
+    /// pinned means the bottom; away from it, a camera standing on the last
+    /// row is the bottom too.
+    private var atBottom: Bool {
+        if camera.pinned { return true }
+        // **A pixel answer, not "the camera is on the last row"** (A2 S3):
+        // the viewport's top can be inside the last row while a screenful of
+        // it is still below, and the old rule then hid the "new messages"
+        // pill.
+        guard let place = camera.place,
+              let y = ControlRoomChatCamera.y(of: place, frames: frames)
+        else { return false }
+        guard viewportH > 0, contentH > 0 else { return false }
+        return Double(contentH) - (y + Double(viewportH)) <= 2
+    }
+
+    /// The index bar's top tick from the camera (R1-14): the row's index plus
+    /// how far into it the reader is, in row heights. `nil` while pinned (the
+    /// bottom is not a position in the map) or while the place is unmeasured.
+    private func cameraTopTick(order: [String], frames: [String: CGRect]) -> Double? {
+        guard !camera.pinned, let place = camera.place,
+              let index = order.firstIndex(of: place.id),
+              let frame = frames[place.id], frame.height > 0
+        else { return nil }
+        return Double(index) + place.offset / Double(frame.height)
+    }
+
     private func jumpPill(_ theme: Look.Theme) -> some View {
         let located = isLocated
         return Button {
             // The person asked for the bottom: an explicit intent, not a
             // scroll position this view guessed.
             newBelow = false
+            // **R1-8: "latest" has two meanings.** A located window is
+            // another map, so the page goes back to the live tail first and
+            // pins when that map lands (`rowsChanged`); an ordinary page
+            // simply pins now. Neither goes through `jump` -- there is no id.
             if located {
-                // **Back to the live conversation.** A located window is
-                // another map; scrolling to its end is not "latest". The
-                // feed replaces the window, the index bar starts again on
-                // the new map, and the view follows the tail from there.
-                atBottom = true
+                pendingReturnToLatest = true
                 feed.returnToLatest()
+            } else {
+                camera.place = nil
+                camera.pinned = true
+                camera.owed = nil
+                waitingSince = nil
+                project()
             }
-            requestFollow()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.down")
@@ -1350,6 +1350,22 @@ final class ControlRoomChatScrollHandle: ObservableObject {
     /// about the new one.
     func forgetWheel() {
         lastWheelAt = 0
+    }
+
+    /// **The momentum phase has ended: the reader's hand is off** (M6). The
+    /// 0.3 s window exists for hands that stop without lifting; an explicit
+    /// end needs no wait, and waiting made a projection land while the list
+    /// was still decelerating.
+    func endMomentum(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        lastWheelAt = 0
+    }
+
+    /// **Whether a wheel event counts as the reader moving this list.** A
+    /// momentum event is window-wide -- the pointer may be anywhere -- so it
+    /// counts regardless of where the cursor is (M6). A plain wheel must land
+    /// on the scroll view.
+    static func wheelCounts(momentum: Bool, pointerInside: Bool) -> Bool {
+        momentum || pointerInside
     }
 
     var isVisible: Bool {
@@ -1505,13 +1521,26 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
 
         /// A wheel event arrived somewhere in this window: only one that
         /// lands on the scroll view this probe belongs to is the reader
-        /// moving *this* list.
+        /// moving *this* list -- **except momentum, which is window-wide**
+        /// (M6). A pointer that drifts off the list mid-fling used to stop
+        /// refreshing the reader signal, so the gate opened 0.3 s later while
+        /// the list was still decelerating and a projection landed under it.
         private func noteWheel(_ event: NSEvent) {
             guard let scrollView = enclosingScrollView,
                   event.window === scrollView.window
             else { return }
             let point = scrollView.convert(event.locationInWindow, from: nil)
-            guard scrollView.bounds.contains(point) else { return }
+            let momentum = event.momentumPhase != []
+            guard ControlRoomChatScrollHandle.wheelCounts(
+                momentum: momentum,
+                pointerInside: scrollView.bounds.contains(point)
+            ) else { return }
+            if event.momentumPhase == .ended {
+                // **The fling is over**: no window, the gate may open now.
+                handle?.endMomentum()
+                onUserScrollEnd?()
+                return
+            }
             if handle?.noteWheel() == true { onUserScroll?() }
         }
 
