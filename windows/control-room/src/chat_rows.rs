@@ -28,12 +28,18 @@ pub const PAD_PT: f64 = 12.0;
 pub const ROW_GAP_PT: f64 = 6.0;
 /// A line's height as a multiple of the body size.
 pub const LINE_FACTOR: f64 = 1.35;
+/// The scrollbar's three shared numbers, **from the look table**: the mac
+/// host draws the same bar and reads the same values from
+/// `ControlRoomLook.swift`. They keep one spelling in this module, but the
+/// numbers themselves live in `look::chat` and nowhere else -- a copy here
+/// would be the second one no gate can compare.
+///
 /// The scrollbar's track width, in logical points.
-pub const BAR_W_PT: f64 = 10.0;
+pub const BAR_W_PT: f64 = look::chat::BAR_WIDTH;
 /// The gap between the track and the window's right edge, in logical points.
-pub const BAR_GAP_PT: f64 = 6.0;
+pub const BAR_GAP_PT: f64 = look::chat::BAR_GAP;
 /// The thumb is never shorter than this, in logical points.
-pub const THUMB_MIN_PT: f64 = 36.0;
+pub const THUMB_MIN_PT: f64 = look::chat::BAR_THUMB_MIN;
 
 /// The page's measurements at one DPI. **Built once per size change**; the
 /// constants above are multiplied here and nowhere else.
