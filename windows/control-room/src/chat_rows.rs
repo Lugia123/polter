@@ -952,6 +952,35 @@ impl Layout {
         scroll.clamp(0, max)
     }
 
+    /// **Where a view landing on the latest end goes, and whether it has
+    /// got there.** `None` is "there is no bottom to land on yet": no rows,
+    /// a page no taller than the view (the top *is* the bottom), or a page
+    /// whose rows are **all** one-line placeholders -- those heights are
+    /// not the page's, so the "bottom" of that map is somewhere in the
+    /// middle of the real one.
+    ///
+    /// `settled` is false while a row in sight at that bottom is still a
+    /// placeholder. The caller lands anyway (so the bottom rows are what
+    /// the next tick measures) and keeps the flag, because the map grows
+    /// under the view as those heights arrive: landing once and forgetting
+    /// stops short of the bottom by exactly the heights still missing.
+    pub fn land(&self, viewport: i32) -> Option<Landing> {
+        if viewport <= 0 || self.rows.is_empty() || self.total() <= viewport {
+            return None;
+        }
+        if self.rows.iter().all(|r| r.placeholder) {
+            return None;
+        }
+        let scroll = self.clamp(i32::MAX, viewport);
+        let bottom = scroll.saturating_add(viewport);
+        let settled = self
+            .rows
+            .iter()
+            .filter(|r| r.top.saturating_add(r.height) > scroll && r.top < bottom)
+            .all(|r| !r.placeholder);
+        Some(Landing { scroll, settled })
+    }
+
     /// How many rows the viewport covers at `scroll`, at least one.
     fn in_sight_rows(&self, scroll: i32, viewport: i32) -> usize {
         let bottom = scroll.saturating_add(viewport);
@@ -1028,6 +1057,16 @@ impl Layout {
             ticks: self.rows.len(),
         })
     }
+}
+
+/// Where a view landing on the latest end goes, and whether the bottom it
+/// puts in sight carries every height it needs. See `Layout::land`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Landing {
+    pub scroll: i32,
+    /// Every row in sight at `scroll` has a measured height, so the bottom
+    /// will not move when the next heights arrive.
+    pub settled: bool,
 }
 
 /// One vertical scrollbar's geometry. **Graduated in loaded rows**: the
@@ -2424,6 +2463,163 @@ mod tests {
         let max = (layout.total() - 200).max(0);
         let bottom = layout.string_bar(max, 200, track, 36).expect("a bar");
         assert_eq!(bottom.thumb_y, track.1 + track.3 - bottom.thumb_h);
+    }
+
+    /// **A map with no measured rows is not a bottom, however tall it
+    /// looks.** This is the tick the entry lands on if the flag is spent
+    /// too early: the window clamps to 0, and the page it was waiting for
+    /// arrives with nothing left to land it.
+    #[test]
+    fn an_empty_or_all_placeholder_map_is_no_bottom_to_land_on() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 534;
+        // Nothing loaded at all: the state of the first tick after entry.
+        let empty = Layout::new();
+        let empty_landing: Option<Landing> = empty.land(view_h);
+        assert_eq!(empty_landing, None);
+        // Every row present and every row a one-line placeholder: the map
+        // is taller than the view, and its "bottom" is still not the page's
+        // -- landing there puts the view in the middle once the heights
+        // arrive. The placeholder map here is 840 px against a 534 px view.
+        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &[], &m, 300);
+        let placeholder_total = layout.total();
+        let placeholders_are_taller = placeholder_total > view_h;
+        assert!(placeholders_are_taller, "total {placeholder_total}");
+        let placeholder_landing: Option<Landing> = layout.land(view_h);
+        assert_eq!(placeholder_landing, None);
+        // A viewport that has not been laid out yet has no bottom either.
+        let unlaid_out: Option<Landing> = empty.land(0);
+        assert_eq!(unlaid_out, None);
+    }
+
+    /// **A measured page lands on its last row**: the bottom of the map
+    /// less one view, and there is nothing left to wait for.
+    #[test]
+    fn a_measured_page_lands_on_the_bottom_and_settles() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 534;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &decisions, &m, 300);
+        let total = layout.total();
+        let bottom = total - view_h;
+        assert_eq!(
+            layout.land(view_h),
+            Some(Landing {
+                scroll: bottom,
+                settled: true
+            })
+        );
+    }
+
+    /// **The bottom keeps moving while its own rows are being measured**:
+    /// the landing happens on the placeholders so the next tick measures
+    /// the rows that are actually there, and it is landed again until none
+    /// of them is a placeholder -- otherwise the view stops short of the
+    /// latest by exactly the heights still missing.
+    #[test]
+    fn a_bottom_still_measured_lands_again_on_the_next_tick() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 534;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        // Four measured, the rest still placeholders -- what the tick's
+        // measurement budget leaves behind.
+        let first_four: Vec<Decision> = ids
+            .iter()
+            .take(4)
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &first_four, &m, 300);
+        let partly = layout.total();
+        let partly_bottom = partly - view_h;
+        let first: Option<Landing> = layout.land(view_h);
+        assert_eq!(
+            first,
+            Some(Landing {
+                scroll: partly_bottom,
+                settled: false
+            })
+        );
+        // The rows in sight at that bottom are measured, and the map grows
+        // under the view: a second landing is lower than the first, and now
+        // there is nothing left to wait for.
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        layout.publish(&rows, &decisions, &m, 300);
+        let settled = layout.land(view_h).expect("a landing");
+        let settled_bottom = layout.total() - view_h;
+        assert!(
+            settled.scroll > partly_bottom,
+            "{} vs {partly_bottom}",
+            settled.scroll
+        );
+        assert_eq!(settled.scroll, settled_bottom);
+        assert!(settled.settled);
+    }
+
+    /// **A page shorter than the view keeps the flag set**: the top is the
+    /// bottom, so there is nowhere to land, and a message arriving later
+    /// still brings the view with it.
+    #[test]
+    fn a_page_shorter_than_the_view_has_nowhere_to_land() {
+        let m = Metrics::for_dpi(96);
+        let view_h = 534;
+        let ident = identity("g", "a", 1, 0, 300);
+        let ids = ["a", "b", "c"];
+        let rows: Vec<RowIdentity> = ids
+            .iter()
+            .map(|id| RowIdentity {
+                id,
+                version: 1,
+                date: false,
+            })
+            .collect();
+        let decisions: Vec<Decision> = ids
+            .iter()
+            .map(|id| replace(id, 1, Source::Raw, &ident, 100))
+            .collect();
+        let mut layout = Layout::new();
+        layout.publish(&rows, &decisions, &m, 300);
+        let total = layout.total();
+        let shorter_than_the_view = total <= view_h;
+        assert!(shorter_than_the_view, "total {total}");
+        let nowhere: Option<Landing> = layout.land(view_h);
+        assert_eq!(nowhere, None);
     }
 
     #[test]

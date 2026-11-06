@@ -3665,9 +3665,11 @@ fn vbar_press(hwnd: HWND, x: i32, y: i32) -> bool {
         if x < bx || x >= bx + bw || y < by || y >= by + bh {
             return false;
         }
-        // **Taking the bar takes the view**: no pending jump correction may
-        // pull it back after the person has moved the thumb or a page.
+        // **Taking the bar takes the view**: no pending jump correction and
+        // no pending landing may pull it back after the person has moved
+        // the thumb or a page.
         chat.jump = None;
+        chat.land_bottom = false;
         if y >= bar.thumb_y && y < bar.thumb_y + bar.thumb_h {
             chat.vbar = Some(y - bar.thumb_y);
             capture = true;
@@ -3738,7 +3740,10 @@ fn vbar_drag(hwnd: HWND, y: i32) -> bool {
         let Some(grab) = chat.vbar else {
             return false;
         };
+        // **A dragged view is the reader's**: it cancels a pending landing
+        // as it cancels a pending jump.
         chat.jump = None;
+        chat.land_bottom = false;
         let Some(feed) = chat.feed.as_ref() else {
             chat.vbar = None;
             release = true;
@@ -4511,8 +4516,10 @@ fn locate_hit(chat: &mut Chat, index: usize, hwnd: HWND) {
     match row_id {
         Some(id) => {
             // **`seek_in_map`**: the target is in the loaded map, so the
-            // scroll is set directly. No request, no correction.
+            // scroll is set directly. No request, no correction -- and no
+            // pending landing, which is a correction.
             chat.jump = None;
+            chat.land_bottom = false;
             chat.search_missing = false;
             chat.highlight = Some((id.clone(), std::time::Instant::now()));
             chat.follow = false;
@@ -4641,6 +4648,9 @@ fn apply_around(hwnd: HWND) -> bool {
             if let Some(y) = chat.layout.scroll_for(&id, 0) {
                 chat.scroll = chat.layout.clamp(y, chat.view_h.max(1));
             }
+            // A landing still owed from the entry would move the view off
+            // the row the search just landed on.
+            chat.land_bottom = false;
             chat.jump = Some(id);
             // **The window changed under any in-flight drag**: the old
             // plan's target and focus are dead, and the capture it may
@@ -6126,9 +6136,11 @@ fn scroll_by(hwnd: HWND, by: i32) {
         };
         let view_h = chat.view_h.max(1);
         // **The reader takes the view over**: a wheel or key move cancels a
-        // pending jump correction, so the next publish cannot pull the view
-        // back to a target the person just scrolled away from.
+        // pending jump correction and a pending landing, so the next
+        // publish cannot pull the view back to a target or to the bottom
+        // the person just scrolled away from.
         chat.jump = None;
+        chat.land_bottom = false;
         chat.scroll = chat.layout.clamp(chat.scroll - by, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -6187,6 +6199,7 @@ fn scroll_to(hwnd: HWND, at: i32) {
         };
         let view_h = chat.view_h.max(1);
         chat.jump = None;
+        chat.land_bottom = false;
         chat.scroll = chat.layout.clamp(at, view_h);
         let max = chat.layout.clamp(i32::MAX, view_h);
         chat.follow = chat.scroll >= max;
@@ -6662,9 +6675,20 @@ fn publish_heights(hwnd: HWND) {
                 }
             }
         }
+        // **A fresh entry lands on the latest end -- and only when there
+        // is a bottom to land on.** Spent on a tick whose map is still
+        // empty (the read is only in flight) or made entirely of one-line
+        // placeholders, the flag lands the view at 0, which is the
+        // "opened at the top" it exists to prevent, and it is gone before
+        // the real rows arrive. So it stays set until the map says where
+        // the bottom is, and until the rows in sight there are measured:
+        // the map grows under the view as their heights arrive, and a
+        // landing that forgot does stop short of the latest.
         if chat.land_bottom {
-            chat.scroll = chat.layout.clamp(i32::MAX, view_h);
-            chat.land_bottom = false;
+            if let Some(at) = chat.layout.land(view_h) {
+                chat.scroll = at.scroll;
+                chat.land_bottom = !at.settled;
+            }
         }
         chat.scroll = chat.layout.clamp(chat.scroll, view_h);
         invalidate = invalidate || changed;
