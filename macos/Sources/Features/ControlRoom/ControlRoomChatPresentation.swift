@@ -107,6 +107,58 @@ enum ControlRoomChatPresentation {
         String(localized: "Handover summary", comment: "总控台：群聊页，交接摘要标签")
     }
 
+    /// The name a row is drawn under: the author, or "You" for a message the
+    /// reader sent, or nothing at all when the record carries no name.
+    static func authorText(author: String, fromSelf: Bool) -> String {
+        if !author.isEmpty { return author }
+        if fromSelf {
+            return String(localized: "You", comment: "总控台：群聊页，自己发的消息作者名")
+        }
+        return ""
+    }
+
+    /// **Who a row is from**, as the rule above it compares it: the name it
+    /// is drawn under, the role the speaker wore, the channel it came in, and
+    /// whether it is a handover summary (nobody speaking). Two rows are the
+    /// same speaker only when all of those agree -- a new role or a new
+    /// channel is a change of subject even under one name (task 2999 ①).
+    struct Speaker: Equatable {
+        var author: String
+        var role: String?
+        var channel: UInt64
+        var summary: Bool
+
+        /// **An empty role is no role**: a record carrying `""` must not be
+        /// compared, or drawn, as one.
+        init(author: String, role: String?, channel: UInt64, summary: Bool) {
+            self.author = author
+            self.role = (role?.isEmpty ?? true) ? nil : role
+            self.channel = channel
+            self.summary = summary
+        }
+    }
+
+    /// Whether a hairline goes above `current`: the speaker is not the one
+    /// directly above it. **The first row has none** -- its day divider is
+    /// already the separation -- and the view draws this rule only where a
+    /// day divider is not drawn, so the two never stack (task 2999 ①).
+    static func needsSpeakerRule(previous: Speaker?, current: Speaker) -> Bool {
+        guard let previous else { return false }
+        return previous != current
+    }
+
+    /// The rule above every row of `speakers`, decided once so that a test
+    /// can hold the whole list ("A, A, B": no rule, no rule, rule) rather
+    /// than one pair at a time.
+    static func speakerRules(_ speakers: [Speaker]) -> [Bool] {
+        speakers.enumerated().map { index, speaker in
+            needsSpeakerRule(
+                previous: index > 0 ? speakers[index - 1] : nil,
+                current: speaker
+            )
+        }
+    }
+
     /// What a named terminal is drawn as. The title it had when it was named
     /// is the name a reader recognises; the id is only a fallback for a line
     /// that recorded no title.

@@ -452,6 +452,16 @@ final class ControlRoomChatFeed: ObservableObject {
         // A page that was out is not out any more, and no answer will come:
         // the top edge says it was cancelled rather than spinning.
         if older == .loading || older == .scanning { older = .cancelled }
+        // **A stop ends the showing, and the reader's place is the showing's,
+        // not the group's.** The rows stay so coming back shows what was
+        // there, but the page comes back **at the latest message**: a reading
+        // anchor kept across a stop reopened the group on a stale line --
+        // possibly one `loadOlder`'s fallback wrote while the reader had not
+        // moved at all (task 2999 ②). Restoring a place is for a layout
+        // change *within* one showing (the search sidebar opening, a narrower
+        // window), which does not stop the feed.
+        readingAnchor = nil
+        readingOffset = 0
         syncMarkdown()
     }
 
@@ -1508,8 +1518,19 @@ final class ControlRoomChatFeed: ObservableObject {
             locateTrouble = nil
             locating = false
             state = rows.isEmpty ? .empty : .ready
-            if let locatedAnchor {
-                reading(anchor: locatedAnchor, offset: 0)
+            // **The target must be a row the window kept.** `replaceWindow`
+            // trims to the window's bound, and with no reading anchor yet it
+            // drops from the front -- which can be the target itself. A
+            // located window whose row is not there has nothing to mark and
+            // nothing to put the viewport on; say so rather than leave the
+            // list at the top of a window with no mark in it (task 2999 ④).
+            switch locatedAnchor {
+            case let target? where byAnchor[target] != nil:
+                reading(anchor: target, offset: 0)
+            case .some:
+                locateTrouble = "TargetNotInWindow"
+            case .none:
+                locateTrouble = "NoTarget"
             }
         case let .context(page):
             handleContext(page, jobID: jobID)
@@ -1627,6 +1648,14 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     private func failLocate(_ why: String) {
+        // **A failure must not look like a success.** `locate()` writes the
+        // anchor optimistically, before the window around it exists; leaving
+        // it there drew the row it named as the located one while nothing
+        // had landed (task 2999 ④). Only a locate is rolled back: a context
+        // page's failure arrives after the around window did, with
+        // `locating` already false, and the window it was reading is still
+        // the right one.
+        if locating { locatedAnchor = nil }
         locateTrouble = why
         locating = false
         locateJobID = nil

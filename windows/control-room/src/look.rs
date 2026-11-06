@@ -1565,11 +1565,11 @@ pub struct Theme {
     /// The found word itself, over `search_hit`: the design's `--search-hl-fg`.
     /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
     pub search_hit_text: Rgba,
-    /// The ground of the message a search result located: the design's `--search-target-bg`.
-    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    /// The ground of the message a search result located: the group search's own yellow. **Weaker than `search_hit`**, so the found word inside the same row still stands out of it.
+    /// Source: the user's ruling of 2026-11-06 (task 2999 ④): the located message is drawn in the group search's own yellow (`search_hit` / `search_hit_text`), not the design's blue target ground. On the real app the blue was not seen at all; a yellow ground with the found word's colour down its left edge is the mark the user asked for.
     pub search_target: Rgba,
-    /// The located message's 3px left edge: the design's `--search-target-border`.
-    /// Source: 2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint).
+    /// The located message's left edge, in the found word's own colour (`search_hit_text`): 4pt on the mac host, 3 on Windows.
+    /// Source: the user's ruling of 2026-11-06 (task 2999 ④): the located message is drawn in the group search's own yellow (`search_hit` / `search_hit_text`), not the design's blue target ground. On the real app the blue was not seen at all; a yellow ground with the found word's colour down its left edge is the mark the user asked for.
     pub search_target_edge: Rgba,
     /// Measured: an unselected row as it comes out over the panel. For contrast, not for painting.
     /// Source: design v17, src/contrast.md (measured off the rendered pictures).
@@ -1824,8 +1824,8 @@ pub const LIGHT: Theme = Theme {
     task_hit: Rgba { r: 230, g: 232, b: 236, a: 1.0 },
     search_hit: Rgba { r: 255, g: 211, b: 61, a: 0.45 },
     search_hit_text: Rgba { r: 122, g: 75, b: 0, a: 1.0 },
-    search_target: Rgba { r: 9, g: 105, b: 218, a: 0.08 },
-    search_target_edge: Rgba { r: 9, g: 105, b: 218, a: 1.0 },
+    search_target: Rgba { r: 255, g: 211, b: 61, a: 0.22 },
+    search_target_edge: Rgba { r: 122, g: 75, b: 0, a: 1.0 },
     surface_row: Rgba { r: 244, g: 246, b: 248, a: 1.0 },
     surface_row_selected: Rgba { r: 253, g: 253, b: 253, a: 1.0 },
     surface_window_tab: Rgba { r: 217, g: 219, b: 222, a: 1.0 },
@@ -1969,8 +1969,8 @@ pub const DARK: Theme = Theme {
     task_hit: Rgba { r: 57, g: 62, b: 69, a: 1.0 },
     search_hit: Rgba { r: 242, g: 204, b: 96, a: 0.28 },
     search_hit_text: Rgba { r: 242, g: 204, b: 96, a: 1.0 },
-    search_target: Rgba { r: 56, g: 139, b: 253, a: 0.12 },
-    search_target_edge: Rgba { r: 88, g: 166, b: 255, a: 1.0 },
+    search_target: Rgba { r: 242, g: 204, b: 96, a: 0.16 },
+    search_target_edge: Rgba { r: 242, g: 204, b: 96, a: 1.0 },
     surface_row: Rgba { r: 31, g: 34, b: 37, a: 1.0 },
     surface_row_selected: Rgba { r: 60, g: 64, b: 67, a: 1.0 },
     surface_window_tab: Rgba { r: 15, g: 17, b: 18, a: 1.0 },

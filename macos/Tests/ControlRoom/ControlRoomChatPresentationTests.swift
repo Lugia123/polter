@@ -134,6 +134,45 @@ struct ControlRoomChatPresentationTests {
         #expect(P.showsBriefToggle(String(repeating: "长", count: 70)))
     }
 
+    // MARK: - The speaker's rule
+
+    /// **A hairline goes where the speaker changes, and nowhere else**
+    /// (task 2999 ①): "A, A, B" is no rule, no rule, rule.
+    @Test func testAPlaceHoldsOnlyWhereTheSpeakerChanges() {
+        let a = P.Speaker(author: "test-worker", role: "开发", channel: 2999, summary: false)
+        let b = P.Speaker(author: "reviewer", role: "审核", channel: 2999, summary: false)
+        #expect(P.speakerRules([a, a, b]) == [false, false, true])
+        #expect(P.speakerRules([b, a, b]) == [false, true, true])
+        #expect(P.speakerRules([a]) == [false])
+        #expect(P.speakerRules([P.Speaker]()) == [Bool]())
+    }
+
+    /// The comparison is over all four facts: a new role or a new channel
+    /// under one name is a change of subject, an empty role is no role, and
+    /// a handover summary is not the person who spoke before it.
+    @Test func testARoleOrChannelChangeIsASpeakerChange() {
+        let plain = P.Speaker(author: "w", role: nil, channel: 0, summary: false)
+        #expect(P.Speaker(author: "w", role: "", channel: 0, summary: false) == plain)
+        #expect(plain.role == nil)
+        #expect(P.needsSpeakerRule(
+            previous: plain,
+            current: .init(author: "w", role: "dev", channel: 0, summary: false)))
+        #expect(P.needsSpeakerRule(
+            previous: plain,
+            current: .init(author: "w", role: nil, channel: 2999, summary: false)))
+        #expect(P.needsSpeakerRule(
+            previous: plain,
+            current: .init(author: "", role: nil, channel: 0, summary: true)))
+        // The first row has no rule above it: its day divider is the line.
+        #expect(!P.needsSpeakerRule(previous: nil, current: plain))
+    }
+
+    @Test func testTheNameARowIsDrawnUnder() {
+        #expect(P.authorText(author: "worker", fromSelf: false) == "worker")
+        #expect(!P.authorText(author: "", fromSelf: true).isEmpty)
+        #expect(P.authorText(author: "", fromSelf: false) == "")
+    }
+
     // MARK: - The reader's anchor
 
     private var frames: [String: CGRect] {
@@ -185,7 +224,7 @@ struct ControlRoomChatPresentationTests {
         let order = ["a", "b", "c"]
         let moved = keeper.bounds(
             y: 25, order: order, frames: frames,
-            framesChanged: false, programmatic: false
+            user: true
         )
         #expect(moved)
         #expect(keeper.anchor == .init(id: "b", offset: 5))
@@ -195,7 +234,7 @@ struct ControlRoomChatPresentationTests {
         // The callback that arrives with the new frames and the old offset.
         let layoutBounds = keeper.bounds(
             y: 55, order: order, frames: frames,
-            framesChanged: true, programmatic: false
+            user: false
         )
         #expect(!layoutBounds)
         #expect(keeper.anchor == .init(id: "b", offset: 5))
@@ -217,20 +256,20 @@ struct ControlRoomChatPresentationTests {
             var keeper = A.Keeper()
             let start = keeper.bounds(
                 y: 25, order: ["a", "b", "c"], frames: frames,
-                framesChanged: false, programmatic: false
+                user: true
             )
             #expect(start)
             keeper.layoutWillChange()
             if framesFirst {
                 let layout = keeper.bounds(
                     y: 55, order: ["a", "b", "c"], frames: frames,
-                    framesChanged: true, programmatic: false
+                    user: false
                 )
                 #expect(!layout)
             } else {
                 let programmatic = keeper.bounds(
                     y: 55, order: ["a", "b", "c"], frames: frames,
-                    framesChanged: false, programmatic: true
+                    user: false
                 )
                 #expect(!programmatic)
             }
@@ -244,12 +283,12 @@ struct ControlRoomChatPresentationTests {
         var keeper = A.Keeper()
         _ = keeper.bounds(
             y: 25, order: ["a", "b", "c"], frames: frames,
-            framesChanged: false, programmatic: false
+            user: true
         )
         let anchor = keeper.anchor
         let programmatic = keeper.bounds(
             y: 0, order: ["a", "b", "c"], frames: frames,
-            framesChanged: false, programmatic: true
+            user: false
         )
         #expect(!programmatic)
         #expect(keeper.anchor == anchor)
@@ -270,18 +309,64 @@ struct ControlRoomChatPresentationTests {
         var keeper = A.Keeper()
         _ = keeper.bounds(
             y: 25, order: ["a", "b", "c"], frames: frames,
-            framesChanged: false, programmatic: false
+            user: true
         )
         keeper.layoutWillChange()
         #expect(keeper.restoring)
 
         let user = keeper.bounds(
             y: 45, order: ["a", "b", "c"], frames: frames,
-            framesChanged: false, programmatic: false
+            user: true
         )
         #expect(user)
         #expect(!keeper.restoring)
         #expect(keeper.anchor == .init(id: "c", offset: 5))
+    }
+
+    /// **A layout callback while a place is owed must not drop it** (task
+    /// 2999 ④/③). During a window replacement a bounds callback with
+    /// unchanged frames is ordinary; while the keeper inferred "the reader"
+    /// from that, it cleared the frozen place -- and the viewport stayed at
+    /// the top of the new window instead of the row a locate was going to.
+    @Test func testALayoutCallbackWithTheSameFramesKeepsTheOwedPlace() {
+        var keeper = A.Keeper()
+        keeper.seed(.init(id: "c", offset: 3))
+        keeper.layoutWillChange()
+        #expect(keeper.restoring)
+
+        // The new window's height moved; its frames preference has not
+        // arrived yet. This is layout and must change nothing.
+        let layout = keeper.bounds(
+            y: 0, order: ["a", "b", "c"], frames: frames, user: false)
+        #expect(!layout)
+        #expect(keeper.restoring)
+        #expect(keeper.anchor == .init(id: "c", offset: 3))
+
+        // The frames arrive: the owed place is still the target row.
+        let taller: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 100, height: 30),
+            "b": CGRect(x: 0, y: 40, width: 100, height: 10),
+            "c": CGRect(x: 0, y: 60, width: 100, height: 10),
+        ]
+        #expect(keeper.restoreTarget(frames: taller) == 63)
+        keeper.restored()
+        #expect(!keeper.restoring)
+    }
+
+    /// **And the reader still wins**: a wheel or a drag before the place is
+    /// put back cancels it, and the viewport stays where they left it.
+    @Test func testTheReaderCancelsTheOwedPlace() {
+        var keeper = A.Keeper()
+        keeper.seed(.init(id: "c", offset: 3))
+        keeper.layoutWillChange()
+        #expect(keeper.restoring)
+
+        let user = keeper.bounds(
+            y: 25, order: ["a", "b", "c"], frames: frames, user: true)
+        #expect(user)
+        #expect(!keeper.restoring)
+        #expect(keeper.restoreTarget(frames: frames) == nil)
+        #expect(keeper.anchor == .init(id: "b", offset: 5))
     }
 
     // MARK: - The probe's attach
@@ -331,6 +416,77 @@ struct ControlRoomChatPresentationTests {
             contentChanged: true, framesChanged: false,
             phaseIsLayout: false, programmatic: true, userScrolling: false
         ) == .programmatic)
+    }
+
+    /// **A wheel is the reader even when no live scroll started** (task 2999
+    /// ③). A wheel's bounds arriving together with a lazily measured row's
+    /// growth were classified layout, and the view put the list back at the
+    /// bottom under the reader's hand: "it only scrolls down".
+    @Test func testAWheelWinsOverALayoutInferenceWithoutALiveScroll() {
+        // The regression itself: content grew in the same callback as the
+        // wheel's own movement.
+        #expect(A.cause(
+            contentChanged: true, framesChanged: false,
+            phaseIsLayout: false, programmatic: false,
+            userScrolling: false, readerRecently: true
+        ) == .user)
+        // Frames too, and a layout transaction being waited on.
+        #expect(A.cause(
+            contentChanged: true, framesChanged: true,
+            phaseIsLayout: true, programmatic: false,
+            userScrolling: false, readerRecently: true
+        ) == .user)
+        // Our own scroll stays ours, whatever the wheel is doing.
+        #expect(A.cause(
+            contentChanged: true, framesChanged: false,
+            phaseIsLayout: false, programmatic: true,
+            userScrolling: false, readerRecently: true
+        ) == .programmatic)
+        // Without the signal the same facts are still layout -- the defect
+        // this parameter exists for, held here so it cannot come back.
+        #expect(A.cause(
+            contentChanged: true, framesChanged: false,
+            phaseIsLayout: false, programmatic: false,
+            userScrolling: false, readerRecently: false
+        ) == .layout)
+    }
+
+    /// The wheel signal itself: it is "recent" only inside its window, and a
+    /// burst says `began` once -- the view voids what it owed on the first
+    /// event, not on every one.
+    @Test func testTheWheelSignalLastsOnlyItsWindow() {
+        let handle = ControlRoomChatScrollHandle()
+        #expect(!handle.readerMovedRecently(now: 10))
+        #expect(handle.noteWheel(now: 10))
+        #expect(handle.readerMovedRecently(now: 10.2))
+        #expect(!handle.noteWheel(now: 10.2))
+        #expect(!handle.readerMovedRecently(now: 11))
+        #expect(handle.noteWheel(now: 11))
+        handle.forgetWheel()
+        #expect(!handle.readerMovedRecently(now: 11))
+    }
+
+    /// **The located mark waits until its row is measured and under the
+    /// viewport** (task 2999 ④). The locate's own arrival is before the
+    /// around window, so it is not the moment; neither is a row measured
+    /// off screen.
+    @Test func testTheMarkWaitsUntilTheLocatedRowIsOnScreen() {
+        let frames: [String: CGRect] = [
+            "a": CGRect(x: 0, y: 0, width: 300, height: 40),
+            "b": CGRect(x: 0, y: 40, width: 300, height: 40),
+            "c": CGRect(x: 0, y: 80, width: 300, height: 40),
+        ]
+        // A viewport from 50 to 70 has only b (40..80) under it.
+        #expect(A.locatedIsInView(located: "b", frames: frames, offset: 50, viewport: 20))
+        #expect(!A.locatedIsInView(located: "a", frames: frames, offset: 50, viewport: 20))
+        #expect(!A.locatedIsInView(located: "c", frames: frames, offset: 50, viewport: 20))
+        // A row that starts exactly at the viewport's bottom edge is not on
+        // screen, and one that has not been measured at all is not either.
+        #expect(!A.locatedIsInView(located: "c", frames: frames, offset: 60, viewport: 20))
+        #expect(A.locatedIsInView(located: "b", frames: frames, offset: 60, viewport: 20))
+        #expect(!A.locatedIsInView(located: "z", frames: frames, offset: 50, viewport: 20))
+        // No viewport has nothing on it.
+        #expect(!A.locatedIsInView(located: "b", frames: frames, offset: 0, viewport: 0))
     }
 
     /// A remembered bottom is only owed while the reader has not moved.

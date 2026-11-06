@@ -40,6 +40,7 @@
     "perf-v4": "design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149)",
     "task-2083": "design 2083 v1 (task 2083), CHANGES.md and src/task.css, as the user ruled it on 2026-10-23: plan A (the keys' strip under the list) and S2 (the chip with a bar at its left); its hit ground is design 2081 v1's neutral n2",
     "design-2793-v5": "2793 v5 (polter-artifacts/2793/v5/index.html, task 2793): `--search-hl-bg`/`--search-hl-fg` and `--search-target-bg`/`--search-target-border` in both themes, read for task 2970 under the user's ruling of 2026-11-05 (search is a button; 800 is the compact breakpoint)",
+    "task-2999": "the user's ruling of 2026-11-06 (task 2999 ④): the located message is drawn in the group search's own yellow (`search_hit` / `search_hit_text`), not the design's blue target ground. On the real app the blue was not seen at all; a yellow ground with the found word's colour down its left edge is the mark the user asked for",
     "perf5-2149": "design 2149 v2, src/perf5.css (task 2149): the left panel's bottom line, `.pself`, as the user ruled it on 2026-10-24 (entry A of v1's 04-entry)",
     "perf-2015": "task 2015, the supervisor's rulings of 2026-10-22: cards 16 apart as the whole-page picture measures, not the css's 12; a card's width fixed, as many to a row as fit",
     "perf-v4-svg": "design #1985 ui-v4, src/perf4.py: the dial's and the curve's drawing, read for task 2039 W2 (seq 166)",
@@ -766,8 +767,8 @@
 
     "search_hit": { "light": "#FFD33D@0.45", "dark": "#F2CC60@0.28", "src": "design-2793-v5", "doc": "The ground under a word the group search found: a result's snippet and the message's own text. The design's `--search-hl-bg` in both themes." },
     "search_hit_text": { "light": "#7A4B00", "dark": "#F2CC60", "src": "design-2793-v5", "doc": "The found word itself, over `search_hit`: the design's `--search-hl-fg`." },
-    "search_target": { "light": "#0969DA@0.08", "dark": "#388BFD@0.12", "src": "design-2793-v5", "doc": "The ground of the message a search result located: the design's `--search-target-bg`." },
-    "search_target_edge": { "light": "#0969DA", "dark": "#58A6FF", "src": "design-2793-v5", "doc": "The located message's 3px left edge: the design's `--search-target-border`." },
+    "search_target": { "light": "#FFD33D@0.22", "dark": "#F2CC60@0.16", "src": "task-2999", "doc": "The ground of the message a search result located: the group search's own yellow. **Weaker than `search_hit`**, so the found word inside the same row still stands out of it." },
+    "search_target_edge": { "light": "#7A4B00", "dark": "#F2CC60", "src": "task-2999", "doc": "The located message's left edge, in the found word's own colour (`search_hit_text`): 4pt on the mac host, 3 on Windows." },
 
     "surface_row": { "light": "#F4F6F8", "dark": "#1F2225", "src": "v17-contrast", "doc": "Measured: an unselected row as it comes out over the panel. For contrast, not for painting." },
     "surface_row_selected": { "light": "#FDFDFD", "dark": "#3C4043", "src": "v17-contrast", "doc": "Measured: the chip." },

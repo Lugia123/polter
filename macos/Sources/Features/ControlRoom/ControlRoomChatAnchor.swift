@@ -67,6 +67,27 @@ enum ControlRoomChatAnchor {
         offset <= threshold
     }
 
+    /// Whether the located row is really on screen: its frame has been
+    /// measured and it overlaps the viewport.
+    ///
+    /// **A locate arriving is not the moment to draw the eye to it** (task
+    /// 2999 ④). `locate(anchor:)` publishes the anchor at once, while the
+    /// rows are still the old window that is about to be replaced; the
+    /// around page then publishes the same anchor again, which changes
+    /// nothing. Breathing for the first of those spends the whole animation
+    /// on a row that is not on screen yet. The measured row under the
+    /// viewport is the moment, and it is the same answer for a page that
+    /// opens already located.
+    static func locatedIsInView(
+        located: String,
+        frames: [String: CGRect],
+        offset: Double,
+        viewport: Double
+    ) -> Bool {
+        guard viewport > 0, let frame = frames[located] else { return false }
+        return frame.maxY > offset && frame.minY < offset + viewport
+    }
+
     /// What a row list did between two of its states, as far as the reader's
     /// place is concerned. **A window that dropped rows from its front and
     /// added others is `replaced`**, not `appended`: neither end is the same
@@ -89,18 +110,33 @@ enum ControlRoomChatAnchor {
         case programmatic
     }
 
+    /// Who a bounds callback belongs to, from every signal the view has.
+    ///
+    /// **A reader who just moved the list wins over every layout inference.**
+    /// `userScrolling` is the live-scroll notification, which covers the
+    /// gesture while the fingers are on the trackpad. **It does not cover
+    /// what follows**: a trackpad's momentum after `didEndLiveScroll` posts
+    /// no live scroll, and neither does a plain mouse wheel. `readerRecently`
+    /// is the second signal -- a `.scrollWheel` event that reached this
+    /// scroll view, momentum included. Without it, a momentum callback
+    /// carrying a lazily measured row's growth was called layout, `atBottom`
+    /// was still the stale true, and the list was put back at the bottom
+    /// under the reader's hand -- "it only scrolls down" (task 2999 ③,
+    /// modelled against the real keeper).
     static func cause(
         contentChanged: Bool,
         framesChanged: Bool,
         phaseIsLayout: Bool,
         programmatic: Bool,
-        userScrolling: Bool
+        userScrolling: Bool,
+        readerRecently: Bool = false
     ) -> Cause {
         if programmatic { return .programmatic }
-        // **A real live-scroll wins over every layout inference.** While a
-        // restore waits for frames, a person dragging the list is reading;
-        // classifying their bounds as layout would put them back.
-        if userScrolling { return .user }
+        // **A real live-scroll, or a wheel, wins over every layout
+        // inference.** While a restore waits for frames, a person dragging
+        // the list is reading; classifying their bounds as layout would put
+        // them back.
+        if userScrolling || readerRecently { return .user }
         if phaseIsLayout || framesChanged { return .layout }
         if contentChanged { return .layout }
         return .user
@@ -144,17 +180,26 @@ enum ControlRoomChatAnchor {
         private(set) var userEpoch: UInt64 = 0
         private(set) var programmatic = 0
 
-        /// A bounds callback. `framesChanged` says the row frames are not the
-        /// ones the last callback saw; such a movement is layout, not the
-        /// reader. Returns whether this callback may move the anchor.
+        /// A bounds callback. **`user` is the view's classification, handed
+        /// down rather than inferred**: `false` means the movement is a
+        /// layout change (a measured row, a replaced window) or the view's
+        /// own scroll, and a layout change must touch none of the anchor,
+        /// the frozen place or `restoring`.
+        ///
+        /// ⚠️ This used to infer the reader from `!framesChanged`, and that
+        /// was the hole (task 2999 ④/③): during a window replacement a
+        /// bounds callback with unchanged frames is ordinary, and it cleared
+        /// the frozen place a locate was waiting to restore to -- so the
+        /// list stayed at the top of the new window and the located row was
+        /// never brought into view. **Who moved is known where the cause is
+        /// decided, and only there.**
         mutating func bounds(
             y: Double,
             order: [String],
             frames: [String: CGRect],
-            framesChanged: Bool,
-            programmatic isProgrammatic: Bool
+            user: Bool
         ) -> Bool {
-            guard !isProgrammatic, !framesChanged else { return false }
+            guard user else { return false }
             // **A real movement ends a restore.** A reader who grabs the list
             // while it is being put back is reading, and a restore that
             // ignored them would fight the scroll they are making.

@@ -1000,13 +1000,19 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
 
         rig.feed.reading(anchor: "p:10", offset: 12)
+        // **Within one showing the place is kept**: a layout change (the
+        // search sidebar opening, a narrower window) never stops the feed.
+        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 12))
         rig.feed.stop()
         let begins = rig.door.methods("chat_history_begin").count
         rig.feed.start(group: "polter")
         #expect(rig.door.methods("chat_history_begin").count == begins)
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        // The reading line survives the tab, not just the row.
-        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 12))
+        // **But a stop ends the showing**, and the place belongs to the
+        // showing (task 2999 ②): the page comes back at the latest message,
+        // not on the line it was left at -- which could be a stale one, or
+        // one `loadOlder`'s fallback wrote while the reader never moved.
+        #expect(rig.feed.savedReading == nil)
 
         rig.scheduler.run(2)
         #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])
@@ -1269,9 +1275,52 @@ struct ControlRoomChatFeedTests {
         rig.feed.locate(anchor: "p:2", location: nil)
         #expect(rig.feed.locating)
         #expect(rig.feed.locateTrouble == nil)
+        // The anchor is written before the window exists.
+        #expect(rig.feed.locatedAnchor == "p:2")
         #expect(rig.scheduler.run(0.2))
         #expect(!rig.feed.locating)
         #expect(rig.feed.locateTrouble == "malformed locate reply")
+        // **A failed locate must not leave its row drawn as the located
+        // one** (task 2999 ④): the failure rolled the optimistic anchor back.
+        #expect(rig.feed.locatedAnchor == nil)
+    }
+
+    /// **A located window whose target did not survive its own trim is
+    /// said, not drawn as a window with no mark in it** (task 2999 ④).
+    /// `replaceWindow` trims to the window's bound, and with no reading
+    /// anchor yet it drops from the front -- the target can be what goes.
+    @Test func testATargetTheWindowDroppedIsSaid() {
+        let rig = Rig()
+        let job = String(repeating: "a", count: 32)
+        // 501 messages, the target first: the window keeps 500.
+        let messages = (0...500).map {
+            self.message(seq: UInt64($0), log: UInt64($0), anchor: "p:\($0)")
+        }
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer("""
+                {"ok":true,"state":"pending","job_id":"\(job)",\
+                "group":"polter","session":"s1"}
+                """)
+            case "chat_history_poll":
+                return .answer("""
+                {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
+                "group":"polter","session":"s1",\
+                "messages":[\(messages.joined(separator: ","))],\
+                "stop":"full","older_token":null,"newer_token":null,\
+                "older_at_end":false,"newer_at_end":false,\
+                "gap":false,"restarted":false,"target_index":0}
+                """)
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.feed.locate(anchor: "p:0", location: nil)
+        #expect(rig.scheduler.run(0.2))
+        #expect(rig.feed.locateTrouble == "TargetNotInWindow")
+        #expect(!rig.feed.rows.contains { $0.id == "p:0" })
     }
 
     /// **A locate is a page generation like any other, and the Markdown

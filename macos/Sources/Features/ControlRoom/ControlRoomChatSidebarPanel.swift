@@ -235,25 +235,42 @@ struct ControlRoomChatSidebarPanel: View {
             onLocate?(hit)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
+                // **Nothing in this line wraps a word.** A name broken into
+                // `test-` / `worker` is what the card did at 330pt (task 2999
+                // ⑤): every piece is one line, the channel chip and the time
+                // keep their whole text, and the least important word gives
+                // way first -- the role before the name (its layout priority
+                // is lower), and the name truncates with an ellipsis rather
+                // than wrapping.
                 HStack(spacing: 6) {
                     if hit.message.summary {
                         Text(ControlRoomChatPresentation.summaryText())
                             .font(.system(size: Look.Font.min, weight: .semibold))
                             .foregroundStyle(theme.text.color)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     } else {
                         Text(hit.message.author)
                             .font(.system(size: Look.Font.min, weight: .semibold))
                             .foregroundStyle(theme.text.color)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .layoutPriority(2)
                         if let role = hit.message.role, !role.isEmpty {
                             Text(role)
                                 .font(.system(size: Look.Font.min))
                                 .foregroundStyle(theme.textSecondary.color)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(0)
                         }
                     }
                     Text(ControlRoomChatPresentation.channelText(channel: hit.message.channel))
                         .font(.system(size: Look.Font.min))
                         .foregroundStyle(theme.textSecondary.color)
-                    Spacer(minLength: 0)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 4)
                     // **A full local date and time**: a search spans days,
                     // and two equal clock times are not the same moment.
                     Text(ControlRoomChatPresentation.dateText(atMs: hit.message.atMs, nowMs: nowMs)
@@ -261,6 +278,8 @@ struct ControlRoomChatSidebarPanel: View {
                         .font(.system(size: Look.Font.min))
                         .monospacedDigit()
                         .foregroundStyle(theme.textSecondary.color)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 Text(Self.highlighted(hit, theme: theme))
                     .font(.system(size: Look.Font.min))

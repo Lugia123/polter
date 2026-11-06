@@ -79,6 +79,20 @@ struct ControlRoomNativeChatView: View {
     /// Bumped by appear/disappear so queued work from the previous showing
     /// is dropped.
     @State private var activeToken: UInt64 = 0
+    /// The located mark's own opacity: 1 is the steady highlight. Breathed
+    /// twice when a locate arrives, and then left alone (task 2999 ④).
+    /// **Opacity only**: the mark is drawn behind and beside the row, never
+    /// laid out, so the breathing cannot move the list.
+    @State private var locatedGlow: Double = 1
+    /// Which breathing is playing, so a step queued for an older locate
+    /// cannot move a newer mark.
+    @State private var glowToken: UInt64 = 0
+    /// The locate whose mark has already breathed: **the locate, not the
+    /// anchor's name**. `locate()` bumps the feed's generation for every
+    /// attempt, so picking the same result again is a new key and plays
+    /// again, while the around answer (which publishes the same anchor a
+    /// moment later) is the same one.
+    @State private var breathedLocate: String?
 
     private static let space = "poltergeist.chat.rows"
     private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
@@ -100,8 +114,15 @@ struct ControlRoomNativeChatView: View {
                             case let .message(id):
                                 if let index = indexByID[id], index < feed.rows.count {
                                     let row = feed.rows[index]
-                                    if needsDivider(index) {
+                                    let dayBreak = needsDivider(index)
+                                    // **One hairline, never two**: a day
+                                    // divider already separates this row, so
+                                    // the speaker's rule is not stacked on it.
+                                    let speakerBreak = !dayBreak && needsSpeakerRule(index)
+                                    if dayBreak {
                                         dayDivider(row.message.atMs, theme)
+                                    } else if speakerBreak {
+                                        speakerRule(theme)
                                     }
                                     let located = feed.locatedAnchor == row.id
                                     ControlRoomNativeChatRow(
@@ -113,7 +134,7 @@ struct ControlRoomNativeChatView: View {
                                         onReference: onReference
                                     )
                                     .background(located
-                                        ? theme.searchTarget.color
+                                        ? theme.searchTarget.color.opacity(locatedGlow)
                                         : Color.clear)
                                     .overlay(alignment: .leading) {
                                         // The located row's own edge, so the
@@ -122,7 +143,8 @@ struct ControlRoomNativeChatView: View {
                                         if located {
                                             Rectangle()
                                                 .fill(theme.searchTargetEdge.color)
-                                                .frame(width: 3)
+                                                .frame(width: 4)
+                                                .opacity(locatedGlow)
                                         }
                                     }
                                     .clipShape(RoundedRectangle(cornerRadius: Look.Radius.row))
@@ -180,6 +202,10 @@ struct ControlRoomNativeChatView: View {
                 atBottom = true
                 requestFollow()
             }
+            // A page that opens already located: the mark may breathe once
+            // the row is measured and under the viewport, which is what the
+            // frames preference and the bounds callbacks ask below.
+            breatheLocatedIfInView()
         }
         .onDisappear {
             visible = false
@@ -189,6 +215,10 @@ struct ControlRoomNativeChatView: View {
             lifecycleEpoch &+= 1
         }
         .onChange(of: feed.locatedAnchor) { target in
+            // **The breathing is not armed here**: this fires before the
+            // around window arrives, when the target row is not on screen
+            // yet. It is played from the bounds and frames callbacks, once
+            // the located row is measured and under the viewport.
             guard let target else { return }
             // A located window is history reading: do not follow, and put
             // the target at the top once its row exists.
@@ -222,6 +252,9 @@ struct ControlRoomNativeChatView: View {
                 scrollIntent = .restore
             }
             restoreSoon()
+            // The located row may have just been measured: that is one of
+            // the two moments its mark may breathe (task 2999 ④).
+            breatheLocatedIfInView()
         }
     }
 
@@ -245,6 +278,36 @@ struct ControlRoomNativeChatView: View {
         )
     }
 
+    /// Who a row is from, in the shape the rule compares (task 2999 ①).
+    private func speaker(_ index: Int) -> ControlRoomChatPresentation.Speaker {
+        let message = feed.rows[index].message
+        return ControlRoomChatPresentation.Speaker(
+            author: ControlRoomChatPresentation.authorText(
+                author: message.author, fromSelf: message.fromSelf),
+            role: message.role,
+            channel: message.channel,
+            summary: message.summary
+        )
+    }
+
+    /// Whether the speaker above this row is not the speaker of this row.
+    private func needsSpeakerRule(_ index: Int) -> Bool {
+        guard index > 0, index < feed.rows.count else { return false }
+        return ControlRoomChatPresentation.needsSpeakerRule(
+            previous: speaker(index - 1),
+            current: speaker(index)
+        )
+    }
+
+    /// A hairline across the row's width where the speaker changes, with
+    /// more air above it than two messages from one speaker have between
+    /// them. Same hairline as the day divider and the boundaries.
+    private func speakerRule(_ theme: Look.Theme) -> some View {
+        line(theme)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 6)
+    }
+
     /// The real list: messages and the released runs, decided once so the
     /// view cannot draw two rows next to each other that were not neighbours.
     private var listPlan: [ControlRoomChatPresentation.ListRow] {
@@ -262,6 +325,59 @@ struct ControlRoomNativeChatView: View {
             index[row.id] = offset
         }
         return index
+    }
+
+    // MARK: - The located mark
+
+    /// **The mark breathes when the located row is really on screen.** A
+    /// locate is published a moment before its window is, so the arrival is
+    /// not the moment: this is asked from the bounds callbacks and the
+    /// frames preference, once the row is measured and under the viewport.
+    /// One playing per locate (the feed's generation), so the same message
+    /// located again plays again.
+    private func breatheLocatedIfInView() {
+        guard let located = feed.locatedAnchor,
+              ControlRoomChatAnchor.locatedIsInView(
+                located: located,
+                frames: frames,
+                offset: Double(offsetY),
+                viewport: Double(viewportH)
+              )
+        else { return }
+        let key = "\(feed.generation):\(located)"
+        guard breathedLocate != key else { return }
+        breathedLocate = key
+        breatheLocatedMark()
+    }
+
+    /// **Two breaths, once.** The located row's ground and edge go 1 → 0.35 →
+    /// 1 twice inside one second, then stay at the steady highlight; nothing
+    /// repeats and nothing loops. The person's own answer wins: with Reduce
+    /// Motion on, the mark is drawn steady and nothing moves.
+    ///
+    /// The steps are queued rather than one auto-reversing `repeatCount`
+    /// animation: that one ends on its target value, which would leave the
+    /// mark dimmed. Here the last step is the steady 1, and only opacity is
+    /// touched -- the mark is drawn behind and beside the row, never laid
+    /// out, so the breathing cannot move the list (task 2999 ④).
+    private func breatheLocatedMark() {
+        glowToken &+= 1
+        let token = glowToken
+        locatedGlow = 1
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let steps: [(opacity: Double, duration: Double)] = [
+            (0.35, 0.25), (1, 0.25), (0.35, 0.25), (1, 0.25),
+        ]
+        var delay: Double = 0
+        for step in steps {
+            delay += step.duration
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard glowToken == token else { return }
+                withAnimation(.easeInOut(duration: step.duration)) {
+                    locatedGlow = step.opacity
+                }
+            }
+        }
     }
 
     // MARK: - Scrolling
@@ -297,9 +413,15 @@ struct ControlRoomNativeChatView: View {
             framesChanged: epochChanged,
             phaseIsLayout: phaseAtCallback == .layoutAwaitingFrames,
             programmatic: programmatic,
-            userScrolling: scroll.userScrolling
+            userScrolling: scroll.userScrolling,
+            // **A wheel is the reader even when no live scroll is running**:
+            // the live-scroll notification covers the touch, not the
+            // momentum after `didEndLiveScroll`. Without this, a momentum
+            // callback carrying a lazily measured row's growth was layout,
+            // and the list was put back down under the reader's hand (task
+            // 2999 ③).
+            readerRecently: scroll.readerMovedRecently
         )
-        let framesChanged = cause == .layout
         if cause == .programmatic { keeper.consumeProgrammaticCallback() }
         if phaseAtCallback != .layoutAwaitingFrames || epochChanged {
             scrollPhase = .idle
@@ -314,12 +436,16 @@ struct ControlRoomNativeChatView: View {
             }
         }
 
+        // **Who moved is decided here and handed down.** The keeper used to
+        // infer the reader from the frames not having changed, which is a
+        // fact about layout, not about who moved: a window replacement's
+        // ordinary bounds callback cleared the frozen place a locate was
+        // waiting to restore to (task 2999 ④/③).
         let user = keeper.bounds(
             y: y,
             order: feed.rows.map(\.id),
             frames: frames,
-            framesChanged: framesChanged,
-            programmatic: cause == .programmatic
+            user: cause == .user
         )
         if user {
             // The reader moved: no bottom is owed and a restore is over.
@@ -352,6 +478,9 @@ struct ControlRoomNativeChatView: View {
         if user, ControlRoomChatAnchor.shouldLoadOlder(offset: y), feed.canLoadOlder {
             feed.loadOlder()
         }
+        // **The viewport has moved**: if it has come to rest on the located
+        // row, that is the moment its mark breathes (task 2999 ④).
+        breatheLocatedIfInView()
     }
 
     private func rowsChanged(_ rows: [ControlRoomChatFeed.Row]) {
@@ -745,6 +874,39 @@ final class ControlRoomChatScrollHandle: ObservableObject {
     /// Set by the scroll view's own live-scroll notifications, which is the
     /// real signal that a person is moving it (not "not programmatic").
     var userScrolling = false
+    /// **The second signal, for the wheels the live scroll does not report.**
+    /// When a wheel event last reached this scroll view, on
+    /// `ProcessInfo.processInfo.systemUptime`'s clock -- the same clock the
+    /// view reads it with, so no event timestamp crosses a clock here.
+    private(set) var lastWheelAt: TimeInterval = 0
+    private static let wheelWindow: TimeInterval = 0.3
+
+    /// Whether a wheel is moving this list now, or did within the window a
+    /// bounds callback arrives in.
+    var readerMovedRecently: Bool {
+        readerMovedRecently(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    func readerMovedRecently(now: TimeInterval) -> Bool {
+        guard lastWheelAt > 0, now >= lastWheelAt else { return false }
+        return now - lastWheelAt <= Self.wheelWindow
+    }
+
+    /// A wheel event reached this scroll view. Says whether it began a burst
+    /// -- the view voids what it owed on the first event, not on every one.
+    @discardableResult
+    func noteWheel(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        let began = !readerMovedRecently(now: now)
+        lastWheelAt = now
+        return began
+    }
+
+    /// The scroll view is gone: a wheel that reached the old one says nothing
+    /// about the new one.
+    func forgetWheel() {
+        lastWheelAt = 0
+    }
+
     var isVisible: Bool {
         (probe as? ControlRoomChatScrollProbe.Probe)?.reallyVisible() ?? false
     }
@@ -806,6 +968,9 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
         private var observer: NSObjectProtocol?
         private var occlusionObserver: NSObjectProtocol?
         private var liveObservers: [NSObjectProtocol] = []
+        /// The wheel monitor: a reader signal that does not go through the
+        /// live-scroll notifications (task 2999 ③).
+        private var wheelMonitor: Any?
         /// One pending attach at most, and only the latest move may do it.
         private var ledger = ControlRoomChatAnchor.AttachLedger()
 
@@ -859,6 +1024,16 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
                     if value { self.onUserScroll?() }
                 })
             }
+            // **A plain mouse wheel does not always start a live scroll**,
+            // so the live-scroll notifications alone cannot say whether the
+            // reader moved the list. Only a wheel that lands on this scroll
+            // view counts; the first event of a burst voids the follow or
+            // restore the view still owed (task 2999 ③).
+            wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+                [weak self] event in
+                self?.noteWheel(event)
+                return event
+            }
             ledger.attached(clip, generation: generation)
             onAttach?(true)
             onVisible?(window?.occlusionState.contains(.visible) == true)
@@ -874,6 +1049,18 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
                 scrollView.contentView.bounds.height,
                 document.frame.height
             )
+        }
+
+        /// A wheel event arrived somewhere in this window: only one that
+        /// lands on the scroll view this probe belongs to is the reader
+        /// moving *this* list.
+        private func noteWheel(_ event: NSEvent) {
+            guard let scrollView = enclosingScrollView,
+                  event.window === scrollView.window
+            else { return }
+            let point = scrollView.convert(event.locationInWindow, from: nil)
+            guard scrollView.bounds.contains(point) else { return }
+            if handle?.noteWheel() == true { onUserScroll?() }
         }
 
         /// **The live answer**, not a cached flag: a hidden host or a hidden
@@ -906,11 +1093,16 @@ private struct ControlRoomChatScrollProbe: NSViewRepresentable {
                 NotificationCenter.default.removeObserver(occlusionObserver)
                 self.occlusionObserver = nil
             }
+            if let wheelMonitor {
+                NSEvent.removeMonitor(wheelMonitor)
+                self.wheelMonitor = nil
+            }
             for item in liveObservers { NotificationCenter.default.removeObserver(item) }
             liveObservers = []
             handle?.scrollView = nil
             handle?.probe = nil
             handle?.userScrolling = false
+            handle?.forgetWheel()
             ledger.detach()
         }
 
@@ -984,11 +1176,12 @@ private struct ControlRoomNativeChatRow: View {
     }
 
     private var authorText: String {
-        if !row.message.author.isEmpty { return row.message.author }
-        if row.message.fromSelf {
-            return String(localized: "You", comment: "总控台：群聊页，自己发的消息作者名")
-        }
-        return ""
+        // One rule with the speaker above the row: the list's rule compares
+        // the same name the row draws.
+        ControlRoomChatPresentation.authorText(
+            author: row.message.author,
+            fromSelf: row.message.fromSelf
+        )
     }
 
     private func header(_ theme: Look.Theme) -> some View {
