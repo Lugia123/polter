@@ -1194,13 +1194,13 @@ struct ControlRoomChatFeedTests {
         let newerJob = String(repeating: "e", count: 32)
         let aroundOlder = String(repeating: "b", count: 32)
         let aroundNewer = String(repeating: "c", count: 32)
-        var begins = 0
+        var beginsSent = 0
         var stage = 0
         rig.door.reply = { request in
             switch Door.method(request) {
             case "chat_history_begin":
-                begins += 1
-                switch begins {
+                beginsSent += 1
+                switch beginsSent {
                 case 1, 2: return .answer(self.begin(job: job))
                 case 3: return .answer(self.begin(job: olderJob))
                 default: return .answer(self.begin(job: newerJob))
