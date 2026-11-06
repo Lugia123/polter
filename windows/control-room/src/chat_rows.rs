@@ -28,6 +28,18 @@ pub const PAD_PT: f64 = 12.0;
 pub const ROW_GAP_PT: f64 = 6.0;
 /// A line's height as a multiple of the body size.
 pub const LINE_FACTOR: f64 = 1.35;
+/// The scrollbar's track width, in logical points.
+pub const BAR_W_PT: f64 = 10.0;
+/// The gap between the track and the window's right edge, in logical points.
+pub const BAR_GAP_PT: f64 = 6.0;
+/// The thumb is never shorter than this, in logical points.
+pub const THUMB_MIN_PT: f64 = 36.0;
+/// The smallest gap two scale marks may have, in logical points. Named
+/// here even though this host does not draw marks yet: the number belongs
+/// with the bar's other measures, not inside a paint routine.
+pub const BAR_TICK_GAP_PT: f64 = 5.0;
+/// How long a drag must rest before the bar settles (milliseconds).
+pub const BAR_REST_MS: u64 = 250;
 
 /// The page's measurements at one DPI. **Built once per size change**; the
 /// constants above are multiplied here and nowhere else.
@@ -917,12 +929,117 @@ impl Layout {
             .map(|r| r.top + offset)
     }
 
+    /// **The fallback when the row a view was anchored to is gone** (the
+    /// window budget dropped it): the published row whose top is nearest
+    /// `at`. A view lands beside where it was instead of jumping to the
+    /// top, and the host records the fallback once rather than silently
+    /// re-anchoring. A measured row is preferred over a failed one.
+    pub fn nearest_measured(&self, at: i32) -> Option<i32> {
+        let nearest = |measured: bool| {
+            self.rows
+                .iter()
+                .filter(|r| !r.placeholder && (!measured || !r.failed))
+                .min_by_key(|r| r.top.saturating_sub(at).saturating_abs())
+                .map(|r| r.top)
+        };
+        nearest(true).or_else(|| nearest(false))
+    }
+
     /// A scroll kept inside the content: never above the first row, never
     /// past the last.
     pub fn clamp(&self, scroll: i32, viewport: i32) -> i32 {
         let max = (self.total() - viewport).max(0);
         scroll.clamp(0, max)
     }
+
+    /// How many rows the viewport covers at `scroll`, at least one.
+    fn in_sight_rows(&self, scroll: i32, viewport: i32) -> usize {
+        let bottom = scroll.saturating_add(viewport);
+        self.rows
+            .iter()
+            .filter(|r| r.top.saturating_add(r.height) > scroll && r.top < bottom)
+            .count()
+            .max(1)
+    }
+
+    /// Where `scroll` sits in the loaded map, 0..=1: **the top row's index
+    /// plus how far into that row the view starts**, normalised by how far
+    /// the top row can travel (the rows below the viewport). Rows are the
+    /// unit; `log_seq` never enters this, and neither does anything the
+    /// bar would have to read.
+    pub fn position(&self, scroll: i32, viewport: i32) -> Option<f64> {
+        if self.rows.is_empty() || viewport <= 0 {
+            return None;
+        }
+        let i = self.rows.iter().rposition(|r| r.top <= scroll).unwrap_or(0);
+        let row = &self.rows[i];
+        let frac = if row.height > 0 {
+            ((scroll - row.top) as f64 / row.height as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let span = self.rows.len() as f64 - self.in_sight_rows(scroll, viewport) as f64;
+        if span <= 0.0 {
+            return Some(0.0);
+        }
+        Some(((i as f64 + frac) / span).clamp(0.0, 1.0))
+    }
+
+    /// The scroll that puts the view at `ratio` of the loaded map -- the
+    /// inverse of `position`, used by a drag. **It never leaves the loaded
+    /// map**: there is nothing beyond the rows the feed holds to drag to.
+    pub fn scroll_at_ratio(&self, ratio: f64, viewport: i32) -> Option<i32> {
+        if self.rows.is_empty() || viewport <= 0 {
+            return None;
+        }
+        let span = (self.rows.len() as f64 - self.in_sight_rows(0, viewport) as f64).max(0.0);
+        let at = (ratio.clamp(0.0, 1.0) * span).min(self.rows.len() as f64 - f64::EPSILON);
+        let index = at.floor().max(0.0) as usize;
+        let row = &self.rows[index.min(self.rows.len() - 1)];
+        let frac = at - index as f64;
+        Some(row.top.saturating_add((frac * row.height as f64).round() as i32))
+    }
+
+    /// The bar for `track`: its thumb sized by the rows in sight and
+    /// placed by `position`. **`ticks` is the loaded row count** -- what
+    /// the bar is graduated in.
+    pub fn string_bar(
+        &self,
+        scroll: i32,
+        viewport: i32,
+        track: (i32, i32, i32, i32),
+        min_thumb: i32,
+    ) -> Option<StringBar> {
+        let (x, y, w, h) = track;
+        if self.rows.is_empty() || viewport <= 0 || h <= 0 {
+            return None;
+        }
+        let in_sight = self.in_sight_rows(scroll, viewport);
+        let thumb_h = (((h as i64 * in_sight as i64) / self.rows.len() as i64) as i32)
+            .max(min_thumb)
+            .min(h);
+        let span = (h - thumb_h).max(0);
+        let pos = self.position(scroll, viewport).unwrap_or(0.0);
+        let thumb_y = y + ((pos * span as f64).round() as i32).clamp(0, span);
+        Some(StringBar {
+            track: (x, y, w, h),
+            thumb_y,
+            thumb_h,
+            ticks: self.rows.len(),
+        })
+    }
+}
+
+/// One vertical scrollbar's geometry. **Graduated in loaded rows**: the
+/// thumb's place is the top row's index plus its fraction, its size is the
+/// share of rows in sight. No `log_seq`, no message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringBar {
+    pub track: (i32, i32, i32, i32),
+    pub thumb_y: i32,
+    pub thumb_h: i32,
+    /// The loaded row count.
+    pub ticks: usize,
 }
 
 impl RowBox {
@@ -2245,6 +2362,96 @@ mod tests {
         assert_eq!(layout.rows()[0].date_height, m.date);
         assert_eq!(layout.rows()[1].date_height, 0);
         assert_eq!(layout.total(), 2 * (m.author + m.line + m.gap) + m.date);
+    }
+
+    #[test]
+    fn an_evicted_anchor_lands_on_the_nearest_measured_row() {
+        let m = Metrics::for_dpi(96);
+        let mut layout = Layout::new();
+        let rows = [row("a", 1, "one"), row("b", 1, "two"), row("c", 1, "three")];
+        layout.update(&rows, 300, &m, &measure(1));
+        let tops: Vec<i32> = layout.rows().iter().map(|r| r.top).collect();
+        // The row that was anchored is gone; the nearest published top is
+        // where the view lands -- never silently back at the top.
+        assert_eq!(layout.nearest_measured(0), Some(tops[0]));
+        assert_eq!(layout.nearest_measured(tops[1] + 1), Some(tops[1]));
+        assert_eq!(
+            layout.nearest_measured(i32::MAX / 2),
+            Some(*tops.last().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_placeholder_is_not_what_a_fallback_anchors_on() {
+        let m = Metrics::for_dpi(96);
+        let mut layout = Layout::new();
+        let first = [row("a", 1, "one")];
+        layout.update(&first, 300, &m, &measure(1));
+        // "new" has never been published: it is an explicit placeholder,
+        // so a fallback must land on "a" instead of the placeholder's top.
+        let ids = [
+            RowIdentity {
+                id: "a",
+                version: 1,
+                date: false,
+            },
+            RowIdentity {
+                id: "new",
+                version: 1,
+                date: false,
+            },
+        ];
+        layout.publish(&ids, &[], &m, 300);
+        assert!(layout.rows()[1].placeholder);
+        assert_eq!(layout.nearest_measured(i32::MAX / 2), Some(0));
+    }
+
+    #[test]
+    fn the_bar_is_graduated_in_loaded_rows_and_reaches_both_ends() {
+        let m = Metrics::for_dpi(96);
+        let mut layout = Layout::new();
+        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowInput> = ids.iter().map(|id| row(id, 1, "x")).collect();
+        layout.update(&rows, 300, &m, &measure(1));
+        let track = (100, 0, 10, 200);
+        let top = layout.string_bar(0, 200, track, 36).expect("a bar");
+        assert_eq!(top.thumb_y, track.1);
+        // **The graduation is the loaded row count**, not any message
+        // number: 20 rows here, and no `log_seq` was ever handed in.
+        assert_eq!(top.ticks, 20);
+        assert!(top.thumb_h >= 36);
+
+        let max = (layout.total() - 200).max(0);
+        let bottom = layout.string_bar(max, 200, track, 36).expect("a bar");
+        assert_eq!(bottom.thumb_y, track.1 + track.3 - bottom.thumb_h);
+    }
+
+    #[test]
+    fn a_drag_ratio_maps_back_into_the_loaded_map() {
+        let m = Metrics::for_dpi(96);
+        let mut layout = Layout::new();
+        let ids: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+        let rows: Vec<RowInput> = ids.iter().map(|id| row(id, 1, "x")).collect();
+        layout.update(&rows, 300, &m, &measure(1));
+        assert_eq!(layout.scroll_at_ratio(0.0, 200), Some(0));
+        // A round trip lands inside the row it started in, never outside
+        // the loaded map.
+        let at = layout.rows()[10].top + 5;
+        let ratio = layout.position(at, 200).expect("a position");
+        let back = layout.scroll_at_ratio(ratio, 200).expect("a scroll");
+        assert!(
+            (back - at).abs() <= layout.rows()[10].height,
+            "back {back} vs at {at}"
+        );
+        // Dragging to the bottom lands at the last scroll the content
+        // allows, not past it.
+        let highest = layout.scroll_at_ratio(1.0, 200).expect("a scroll");
+        let max = (layout.total() - 200).max(0);
+        assert!(highest <= max + 1, "highest {highest} vs max {max}");
+        assert!(
+            highest + layout.rows().last().unwrap().height >= max,
+            "highest {highest} vs max {max}"
+        );
     }
 
     #[test]
