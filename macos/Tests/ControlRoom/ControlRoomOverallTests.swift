@@ -25,7 +25,7 @@ struct ControlRoomOverallTests {
     /// `edit` replaces one `"key":value` of the `machine` block; `"null"` is
     /// how a number the machine would not give arrives. The two blocks are
     /// written whole, so that a caller can take one entry out by name.
-    static func fixture(edit: [String: String] = [:]) -> Data {
+    static func fixture(edit: [String: String] = [:], treeMib: String? = nil) -> Data {
         var machine: [String: String] = [
             "swap_used_mib": "19046",
             "swap_total_mib": "24576",
@@ -36,7 +36,8 @@ struct ControlRoomOverallTests {
             "swap_hour": "[[1700000000,1024],[1700000060,2048],[1700000120,4096]]",
         ]
         machine.merge(edit) { _, new in new }
-        let polter = "{\"cpu_cores\":\"2.6\",\"total_mib\":22938}"
+        let polter = treeMib.map { "{\"cpu_cores\":\"2.6\",\"total_mib\":22938,\"tree_mib\":\($0)}" }
+            ?? "{\"cpu_cores\":\"2.6\",\"total_mib\":22938}"
         let written = machine.sorted { $0.key < $1.key }.map { "\"\($0.key)\":\($0.value)" }.joined(separator: ",")
         return Data("{\"at\":\"2026-10-25T16:10:00+08:00\",\"machine\":{\(written)},\"polter\":\(polter)}".utf8)
     }
@@ -57,6 +58,28 @@ struct ControlRoomOverallTests {
         #expect(a.machine.diskLow)
         #expect(a.machine.swapHour.map(\.0) == [1700000000, 1700000060, 1700000120])
         #expect(a.machine.swapHour.map(\.1) == [1024, 2048, 4096])
+    }
+
+    /// **The row counts the whole tree, not Polter's own rows** (task 3012):
+    /// the core sends both, and the one a reader compares with Force Quit is
+    /// `tree_mib`. The name says which it is (`Entry.app`).
+    @Test func theWholeTreeIsWhatTheRowDraws() throws {
+        let a = try U.decode(Self.fixture(treeMib: "4000000"))
+        #expect(a.polter.treeMib == 4_000_000)
+        // The rows' own total is still read: the overall view's process
+        // table is drawn from it, and the first figure falls back to it.
+        #expect(a.totalMib == 22938)
+        let e = U.entry(a)
+        #expect(e.size == U.size(4_000_000))
+        #expect(e.size != U.size(a.totalMib))
+    }
+
+    /// **A core older than the field draws what it drew before.** No
+    /// `tree_mib` is not a tree of zero: the row keeps Polter's own total.
+    @Test func aCoreWithoutTheTreeLeavesTheRowWhereItWas() throws {
+        let a = try U.decode(Self.fixture())
+        #expect(a.polter.treeMib == nil)
+        #expect(U.entry(a).size == U.size(22938))
     }
 
     /// A refusal is the core's own words, and never an empty page: the row
@@ -125,7 +148,8 @@ struct ControlRoomOverallTests {
 
     @Test func theRowSaysTheSizeAndTheMachinesTwoNumbers() throws {
         let e = U.entry(try U.decode(Self.fixture()))
-        #expect(e.app == "Polter")
+        // The name and the number say the same thing (task 3012): the tree.
+        #expect(e.app == "Polter and its children")
         #expect(e.size == "22.4 GB")
         #expect(e.rising)
         #expect(e.diskLow)
@@ -752,8 +776,9 @@ struct ControlRoomOverallTests {
 
     /// A `polter` block with just the two lists the table is drawn from, for
     /// the tests that ask about the table and not about a reading.
-    static func whole(sections: [U.Section], processes: [U.Process]) -> U.Whole {
-        U.Whole(cpuDecimals: 0, monitorBytes: 0, untracked: 0, runStarted: "",
+    static func whole(sections: [U.Section], processes: [U.Process],
+                      treeMib: UInt64? = nil) -> U.Whole {
+        U.Whole(treeMib: treeMib, cpuDecimals: 0, monitorBytes: 0, untracked: 0, runStarted: "",
                 series: .none, processes: processes, sections: sections, rise: nil)
     }
 

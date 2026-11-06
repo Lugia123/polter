@@ -192,6 +192,16 @@ const Section = struct {
 
 const Polter = struct {
     total_mib: u64,
+    /// **The whole tree Polter is responsible for**, MiB: its own process
+    /// plus every terminal's tree, which is what the system charges to it
+    /// (task 3012; `Overall.treeMib`). **Not `total_mib`**, which is
+    /// Polter's own rows. Converted by the same whole-MiB rule as every
+    /// other number here.
+    ///
+    /// **Optional on the host's side too**, so a core that does not send it
+    /// leaves a host drawing `total_mib` instead of a tree of zero. Null
+    /// before the first reading.
+    tree_mib: ?u64,
     /// Tenths of a core, all of Polter's rows together.
     cpu_ds: u32,
     /// The same as "2.6", which is how the card writes it.
@@ -387,6 +397,7 @@ pub fn render(arena: Allocator, overall: *const Overall, in: In) Allocator.Error
         },
         .polter = .{
             .total_mib = overall.totalMib(),
+            .tree_mib = overall.treeMib(),
             .cpu_ds = cpu_ds,
             .cpu_cores = try tenths(arena, cpu_ds),
             .monitor_bytes = overall.monitorBytes(),
@@ -918,6 +929,33 @@ test "2149: the answer names every process, with the five things a supervisor re
     try testing.expectEqual(@as(i64, 128), try num(own, "tasks"));
     try testing.expectEqual(@as(i64, 23), try num(own, "tasks_open"));
     try testing.expectEqual(@as(i64, 4_404_019), try num(own, "record_bytes"));
+}
+
+test "3012: the answer carries the whole tree as well as Polter's own rows" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    var scratch = Scratch.init();
+    defer scratch.deinit();
+
+    // Before a reading there is no tree, and the field says so by being null
+    // rather than by a zero a host would draw.
+    {
+        const json = try scratch.reply(o, .{ .now_ms = 1_700_000_000_000, .offset_ms = 0 });
+        const p = try obj(try scratch.parse(json), "polter");
+        try testing.expect(p.get("tree_mib") != null and p.get("tree_mib").? == .null);
+    }
+
+    // Two readings of `reading()`'s climb, the last of which is main 401 MiB
+    // and a chat of 212 MiB. The tree is both; the rows' total is the main
+    // process, the chat, the monitor -- and **not** a worker's tree, which is
+    // where an agent CLI lives and has no row here at all.
+    const now = climb(o, 2);
+    const json = try scratch.reply(o, .{ .now_ms = now, .offset_ms = 0 });
+    const p = try obj(try scratch.parse(json), "polter");
+    try testing.expectEqual(@as(i64, 401 + 212), try num(p, "tree_mib"));
+    // The two are different numbers, and that is the point of the field: the
+    // rows are a subset of the tree.
+    try testing.expect((try num(p, "total_mib")) > (try num(p, "tree_mib")));
 }
 
 // **Which group of the process table each kind is drawn in** (task 2149,

@@ -856,7 +856,7 @@
 "Sidecar for %@" = "边车 · %@";
 
 /* 总控台：整体视图（task 2149，设计 v2 的 02）：四块数字、面积图、两条小曲线、进程表 */
-"Polter's own cost" = "Polter 合计";
+"Polter and its children" = "Polter 及其子进程";
 "Polter CPU" = "Polter CPU";
 "Swap" = "交换区";
 "Disk left" = "磁盘剩";

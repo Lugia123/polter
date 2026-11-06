@@ -171,7 +171,11 @@ struct ControlRoomOverallPage: View {
         let w = words
         switch i {
         case 0:
-            let size = U.size(answer.totalMib)
+            // **The whole tree, as the row that opens this view draws it**
+            // (task 3012): the figure is what the system charges to Polter,
+            // and the process table below is how it comes apart. A core
+            // without `tree_mib` leaves the figure on Polter's own rows.
+            let size = U.size(answer.polter.treeMib ?? answer.totalMib)
             return (w.totalLabel, Self.number(size), Self.unit(size), w.steady, .normal)
         case 1:
             return (w.cpuLabel, answer.cpuCores, w.cores, w.steady, .normal)
@@ -637,7 +641,9 @@ struct ControlRoomOverallPage: View {
     /// Every word this page says, in the person's language. **One struct**,
     /// so that the same sentence cannot be written twice and drift.
     private struct Words {
-        let totalLabel = String(localized: "Polter's own cost", comment: "总控台：整体视图第一块，Polter 自己的总占用")
+        // The first figure is the whole tree (task 3012), so it is named the
+        // same way the row that opens this view names it.
+        let totalLabel = String(localized: "Polter and its children", comment: "总控台：整体视图第一块，Polter 加上它开起来的终端")
         let cpuLabel = String(localized: "Polter CPU", comment: "总控台：整体视图第二块，Polter 的 CPU")
         let swapLabel = String(localized: "Swap", comment: "总控台：整体视图第三块，交换区")
         let diskLabel = String(localized: "Disk left", comment: "总控台：整体视图第四块，启动盘剩余")

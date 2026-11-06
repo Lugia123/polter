@@ -370,6 +370,12 @@
 "Duplicate" = "Duplicate";
 "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller." = "Added to the agent's system prompt when it starts. Leave it empty to add nothing. Drag the bottom edge to make the box taller.";
 "Polter" = "Polter";
+
+/* The control room's bottom line and the overall view's first figure
+   (task 3012): the number is Polter's own process plus every terminal's
+   tree, which is what the system charges to it. */
+"Polter and its children" = "Polter and its children";
+
 "Make this terminal a supervisor" = "Make this terminal a supervisor";
 "Let the supervisor answer this terminal's permission prompts" = "Let the supervisor answer this terminal's permission prompts";
 "Shield it: no tool can reach it, a supervisor's included" = "Shield it: no tool can reach it, a supervisor's included";

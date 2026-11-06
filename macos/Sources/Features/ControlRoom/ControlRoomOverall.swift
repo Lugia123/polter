@@ -166,6 +166,15 @@ enum ControlRoomOverall {
     /// The whole answer's `polter` block: the numbers the four figures draw
     /// and the three stacked layers.
     struct Whole {
+        /// **The whole tree Polter is responsible for**, MiB: its own process
+        /// and every terminal's tree, which is what the system charges to it
+        /// (task 3012, `OverallPage.zig`'s `Polter.tree_mib`). **Not
+        /// `Answer.totalMib`**, which is Polter's own rows.
+        ///
+        /// Null when the core did not send it (an older core) or before the
+        /// first reading; the row then draws `totalMib`, as it did before
+        /// this field existed, rather than a tree of zero.
+        var treeMib: UInt64?
         /// Tenths of a core, all of Polter's rows together.
         var cpuDecimals: UInt64
         /// What the monitor itself holds, for the last row of the process
@@ -399,6 +408,7 @@ enum ControlRoomOverall {
     private static func readWhole(_ r: ControlRoomAnswerReader, _ p: ControlRoomAnswerReader.Object) -> Whole {
         let series = r.obj(p, "polter", "series")
         return Whole(
+            treeMib: r.int(p, "polter", "tree_mib"),
             cpuDecimals: r.int(p, "polter", "cpu_ds") ?? 0,
             monitorBytes: r.int(p, "polter", "monitor_bytes") ?? 0,
             untracked: r.int(p, "polter", "untracked") ?? 0,
@@ -789,8 +799,10 @@ enum ControlRoomOverall {
             break
         }
         // A fact that did not arrive leaves the application's own name
-        // rather than half a sentence.
-        return String(localized: "Polter", comment: "总控台：整体视图进程表，主进程那一行，也是左栏底部那一行的应用名")
+        // rather than half a sentence. This is the main process's row in the
+        // table -- still the application alone, not the tree the left
+        // panel's bottom line counts (task 3012).
+        return String(localized: "Polter", comment: "总控台：整体视图进程表，主进程那一行")
     }
 
     /// **The last row of the table**, which is the monitor's: it is the one
@@ -930,9 +942,13 @@ enum ControlRoomOverall {
     /// What the row says, in the person's language, and the two verdicts
     /// that colour it: everything else is drawing.
     struct Entry {
-        /// The application's own name.
+        /// What the name says the number is about: **Polter and the
+        /// terminals under it**, not Polter's own processes alone. The
+        /// figure is what the system charges to Polter (task 3012), so a
+        /// reader comparing it with Force Quit is comparing like with like.
         var app: String
-        /// "22.4 GB".
+        /// "22.4 GB": the whole tree when the core sent it, Polter's own
+        /// rows when it did not.
         var size: String
         /// Whether the swap is rising: the size is then in the warning ink.
         var rising: Bool
@@ -963,8 +979,16 @@ enum ControlRoomOverall {
             line = String(localized: "Disk \(disk) left", comment: "总控台：左栏底部那一行，只有磁盘剩余")
         }
         return Entry(
-            app: String(localized: "Polter", comment: "总控台：左栏底部那一行，应用自己的名字"),
-            size: size(a.totalMib),
+            // **The name says what the number counts** (task 3012): the main
+            // process and every terminal's tree under it. The old name
+            // ("Polter") read as the application's own cost, and that is the
+            // one number this row no longer shows -- `totalMib` is drawn on
+            // the overall view's process table instead.
+            app: String(localized: "Polter and its children",
+                        comment: "总控台：左栏底部那一行，应用自己加上它开起来的终端"),
+            // A core that does not send `tree_mib` (one older than task
+            // 3012) leaves the row drawing what it drew before.
+            size: size(a.polter.treeMib ?? a.totalMib),
             rising: a.machine.swapRising,
             machine: line,
             diskLow: a.machine.diskLow,
