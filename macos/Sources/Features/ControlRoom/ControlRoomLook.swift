@@ -257,11 +257,20 @@ enum ControlRoomLook {
         static let overlayLeftExpose: Double = 40.0
     }
 
-    /// The chat page's one right-hand slot (search or preview, task 2982): its width and the widths it is held between. **The threshold is `preview.cell_min_width_side_by_side`**, the same number the terminal's preview rule uses and not a second one; what is this group's own is only the slot's width.
+    /// The chat page's one right-hand slot (search or preview, task 2982): its width and the widths it is held between. **The threshold is `preview.cell_min_width_side_by_side`**, the same number the terminal's preview rule uses and not a second one; what is this group's own is only the slot's width. The three below are the message list's own scroll bar (task 3002), shared because both hosts draw it.
     enum Chat {
         /// The chat's right-hand slot, side by side and over the message column alike (the v5 prototype's `.window-shell.narrow-view .chat-right-sidebar { width: 330px }`, the 1000px narrow screenshot 04). At a page at least `preview.cell_min_width_side_by_side` wide the message column keeps what is left (at least 470); below it the slot lies over the message column's right edge and the column keeps its full width.
         /// Source: design 2793 v5 (task 2979's prototype, `polter-artifacts/2793/v5/index.html`): `--search-hl-bg` / `--search-hl-fg` for matched text, `--search-target-bg` / `--search-target-border` for the located row; read for task 2982.
         static let sidebarWidth: Double = 330.0
+        /// The least height of the bar's thumb. **A bar whose thumb shrinks with the row count stops being grabbable**: a night's messages would make it a sliver, so past this ratio the thumb stays this tall and the drag covers more rows instead.
+        /// Source: the user's ruling of 2026-11-06 (tasks 3002 and 3004): the chat's own scroll bar, graduated in loaded rows. The thumb keeps a 36pt minimum so a night's messages stay grabbable, the track is 10pt wide with 6pt to the window's edge -- the same three numbers on both hosts, which is why they are here rather than in either host's source.
+        static let barThumbMin: Double = 36.0
+        /// The drawn track's width, and the whole of its hit area -- the bar must not take clicks meant for the list beside it.
+        /// Source: the user's ruling of 2026-11-06 (tasks 3002 and 3004): the chat's own scroll bar, graduated in loaded rows. The thumb keeps a 36pt minimum so a night's messages stay grabbable, the track is 10pt wide with 6pt to the window's edge -- the same three numbers on both hosts, which is why they are here rather than in either host's source.
+        static let barWidth: Double = 10.0
+        /// Between the track and the window's trailing edge.
+        /// Source: the user's ruling of 2026-11-06 (tasks 3002 and 3004): the chat's own scroll bar, graduated in loaded rows. The thumb keeps a 36pt minimum so a night's messages stay grabbable, the track is 10pt wide with 6pt to the window's edge -- the same three numbers on both hosts, which is why they are here rather than in either host's source.
+        static let barGap: Double = 6.0
     }
 
     /// The badge at the left end of a supervisor's title, the mark before a supervisor's name on a stack's tab, and the edge round a supervisor's pane when panes wear no frames (task 1692).
