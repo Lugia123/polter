@@ -357,6 +357,19 @@ struct ControlRoomNativeChatView: View {
             scrollIntent = .none
             activeToken &+= 1
             lifecycleEpoch &+= 1
+            // **The hand is not on a page that is gone.** A gesture
+            // interrupted by leaving the page would otherwise leave the view
+            // believing the reader is still touching the list, and it would
+            // never announce the next one -- the feed would keep holding
+            // pages for a hand that left. **Not `readerIdle()`**: a page may
+            // be merged when the hand leaves a list that is still there, not
+            // because the page went away (`feed.stop` is that moment).
+            if toldReaderActive {
+                toldReaderActive = false
+                feed.readerActive(false)
+            }
+            // Any quiet check still queued belongs to the page that left.
+            quietToken &+= 1
         }
         // **The locate's own epoch drives the landing** (task 3002 review A).
         // The anchor's value could not: picking the same search result twice
@@ -381,7 +394,10 @@ struct ControlRoomNativeChatView: View {
         // size): the moment the reproduced blank chat came back from.
         .onChange(of: viewportH) { height in
             guard height > 0 else { return }
-            DispatchQueue.main.async { recoverVisiblePlace("viewport") }
+            DispatchQueue.main.async {
+                recoverVisiblePlace("viewport")
+                publishViewportRows()
+            }
         }
         .onPreferenceChange(RowFramesPreference.self) { value in
             frames = value
@@ -404,6 +420,7 @@ struct ControlRoomNativeChatView: View {
             // the two moments its mark may breathe (task 2999 ④).
             breatheLocatedIfInView()
             recoverVisiblePlace("frames")
+            publishViewportRows()
         }
     }
 
@@ -668,6 +685,7 @@ struct ControlRoomNativeChatView: View {
         // row, that is the moment its mark breathes (task 2999 ④).
         breatheLocatedIfInView()
         recoverVisiblePlace("scrolled")
+        publishViewportRows()
     }
 
     private func rowsChanged(_ rows: [ControlRoomChatFeed.Row]) {
@@ -767,6 +785,34 @@ struct ControlRoomNativeChatView: View {
            ControlRoomChatAnchor.shouldLoadOlder(offset: target, threshold: viewportH) {
             askForMore(.older)
         }
+        // **The mirror of the top edge**: a programmatic page never comes
+        // back as `user`, so the near-bottom ask in `scrolled` can never fire
+        // for it. In a located window that leaves the lower half of the
+        // screen empty -- the boundary row that used to offer the next page
+        // is gone.
+        if direction > 0, feed.context != nil,
+           ControlRoomChatAnchor.isAtBottom(
+                offset: Double(target), viewport: Double(viewportH),
+                content: Double(contentH), tolerance: Double(viewportH)) {
+            askForMore(.newer)
+        }
+    }
+
+    /// **The feed asks for blocks the size of this window and cannot measure
+    /// it.** The count is the index bar's own coverage -- one algorithm, so
+    /// the bar and the page the feed asks for cannot disagree about how tall
+    /// a screen is. Written from callbacks only, never from `body`.
+    private func publishViewportRows() {
+        guard viewportH > 0, !frames.isEmpty else { return }
+        guard let covered = ControlRoomChatIndexBar.viewportTicks(
+            order: feed.rows.map(\.id),
+            frames: frames,
+            offset: Double(offsetY),
+            viewport: Double(viewportH)
+        ) else { return }
+        let rows = max(1, Int(covered))
+        guard rows != feed.viewportRows else { return }
+        feed.viewportRows = rows
     }
 
     private enum AskDirection {
@@ -805,10 +851,11 @@ struct ControlRoomNativeChatView: View {
         case .gap:
             return String(localized: "Some earlier records could not be read.",
                           comment: "总控台：群聊页，更早记录有损坏（索引条提示）")
-        case .cancelled:
-            return String(localized: "Loading earlier messages was cancelled.",
-                          comment: "总控台：群聊页，更早记录加载被取消（索引条提示）")
-        case .idle, .loading, .scanning, .atEnd:
+        case .idle, .loading, .scanning, .atEnd, .cancelled:
+            // **A cancellation says nothing.** It is the state `stop()`
+            // leaves behind, so a page shown again would carry a sentence
+            // about the session before it -- and a reader who stopped the
+            // scan already knows.
             return nil
         }
     }

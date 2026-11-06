@@ -23,14 +23,19 @@ import SwiftUI
 enum ControlRoomChatIndexBar {
     /// **A thumb shorter than this is not grabbable**, whatever the ratio
     /// says. Below it the bar stops being draggable by hand and a night's
-    /// worth of messages could not be navigated.
-    static let minThumb: CGFloat = 36
+    /// worth of messages could not be navigated. **From the shared look
+    /// table** (task 3002): the Windows host draws the same bar and reads
+    /// the same number from `look.rs`, and neither source carries its own
+    /// copy of it.
+    static let minThumb = CGFloat(Look.Chat.barThumbMin)
     /// The drawn track's width, and the whole of its hit area: the bar must
     /// not take clicks meant for the list beside it.
-    static let trackWidth: CGFloat = 10
+    static let trackWidth = CGFloat(Look.Chat.barWidth)
     /// Between the track and the window's edge.
-    static let trackInset: CGFloat = 6
-    /// The least height between two drawn ticks.
+    static let trackInset = CGFloat(Look.Chat.barGap)
+    /// The least height between two drawn ticks. **Mac-local on purpose**:
+    /// Windows' chat draws no ticks, so this is not in the shared look table
+    /// (which carries only the 36 / 10 / 6 the two hosts agree on).
     static let tickSpacing: CGFloat = 5
 
     /// Where the bar is, for one map and one camera.
