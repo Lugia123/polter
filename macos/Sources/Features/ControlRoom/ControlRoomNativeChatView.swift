@@ -119,6 +119,15 @@ struct ControlRoomNativeChatView: View {
     @State private var rowHeightEstimatePasses = 0
     /// The debug injector is armed once per surface (`CHAT_INJECT_*`).
     @State private var debugInjectionArmed = false
+    /// The debug jump is armed once per surface (`CHAT_JUMP_*`).
+    @State private var debugJumpArmed = false
+    /// **A landing screen is showing placeholders** (design §26). Set only by
+    /// `jump(to:)` -- a scroll never sets it, which is what keeps the
+    /// placeholders off the scrolling path; cleared the moment the screen's
+    /// rows are all settled, or by the cap.
+    @State private var placeholdersOn = false
+    /// Invalidates the cap queued for an earlier landing.
+    @State private var placeholderToken: UInt64 = 0
     /// How many drawn rows make an estimate worth freezing.
     private static let estimateFreezeSample = 10
     /// The cap: after this many passes the estimate freezes whatever it is.
@@ -544,6 +553,7 @@ struct ControlRoomNativeChatView: View {
         // two moments its mark may breathe (task 2999 ④).
         breatheLocatedIfInView()
         publishViewportRows()
+        endPlaceholdersIfSettled()
     }
 
     // MARK: - Rows and frames
@@ -825,6 +835,7 @@ struct ControlRoomNativeChatView: View {
                     syncClip("attach")
                     startAutoScrollIfAsked()
                     startDebugInjectionIfAsked()
+                    startDebugJumpIfAsked()
                 }
             },
             onVisible: { shown in
@@ -897,6 +908,7 @@ struct ControlRoomNativeChatView: View {
                     group: feed.group ?? "",
                     generation: feed.generation,
                     markdown: feed.markdown,
+                    placeholder: placeholdersOn,
                     hit: located ? locatedHit : nil,
                     onReference: onReference
                 )
@@ -1015,6 +1027,89 @@ struct ControlRoomNativeChatView: View {
                     feed.injectDebugMessage(text: text)
                 }
             }
+        }
+    }
+
+    /// **The landing screen's placeholders** (design §26).
+    ///
+    /// A jump lands a window of rows whose Markdown has not been parsed yet;
+    /// drawing them at their real heights means the picture moves as each row
+    /// measures. Instead every unsettled row draws a fixed-height block, the
+    /// header above it is already final, and the whole screen switches to real
+    /// heights **once**.
+    ///
+    /// **Only a jump sets this.** Scrolling never does -- the placeholders
+    /// exist for a landing, where nothing has been measured yet; a scroll has
+    /// measured rows under it and a block appearing mid-scroll is the flicker
+    /// they are meant to remove.
+    private func beginPlaceholders() {
+        placeholdersOn = true
+        placeholderToken &+= 1
+        let token = placeholderToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChatPlaceholder.cap) {
+            guard placeholderToken == token else { return }
+            placeholdersOn = false
+        }
+    }
+
+    /// **How many rows a landing screen covers before anything is measured.**
+    /// No frames exist at that moment, so this is the constant split, not a
+    /// measurement: the viewport divided by the placeholder row.
+    private var firstScreenRowCount: Int {
+        guard viewportH > 0 else { return 1 }
+        return max(1, Int((viewportH / ControlRoomChatPlaceholder.rowHeight).rounded(.up)))
+    }
+
+    /// **The screen may switch when every row on it has stopped changing.**
+    /// Walks the drawn rows from the top of the window; the first unsettled
+    /// one leaves the placeholders up. The cap in `beginPlaceholders` is the
+    /// other way out.
+    private func endPlaceholdersIfSettled() {
+        guard placeholdersOn, let group = feed.group else { return }
+        let generation = feed.markdown.formGeneration
+        var checked = 0
+        for id in feed.rows.map(\.id) {
+            guard checked < firstScreenRowCount else { break }
+            guard let frame = frames[id], frame.height > 1 else { continue }
+            checked += 1
+            let form = feed.markdown.form(id: id, group: group, generation: generation)
+            guard ControlRoomChatMarkdownStore.isSettled(form: form) else { return }
+        }
+        guard checked > 0 else { return }
+        placeholdersOn = false
+        Self.windowLog.notice(
+            "placeholder: switched screen rows=\(checked, privacy: .public)"
+        )
+    }
+
+    /// **`CHAT_JUMP_AFTER_MS` / `CHAT_JUMP_TO_INDEX` jump the list once**, for
+    /// measuring the landing screen (design §26) where a search cannot be
+    /// typed and a locate cannot be clicked. It calls **the product path**,
+    /// `jump(to:)`, so the placeholder screen opens because the product opens
+    /// it -- there is no debug branch inside the row.
+    ///
+    ///     CHAT_JUMP_AFTER_MS=2000   ms after the surface attaches
+    ///     CHAT_JUMP_TO_INDEX=600    a `feed.rows` index; clamped, and said so
+    ///
+    /// Absent variables: nothing is read and no timer is armed, like the
+    /// other `CHAT_*` switches.
+    private func startDebugJumpIfAsked() {
+        guard !debugJumpArmed else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["CHAT_JUMP_AFTER_MS"], let ms = Double(raw), ms >= 0
+        else { return }
+        debugJumpArmed = true
+        let wanted = Int(env["CHAT_JUMP_TO_INDEX"] ?? "") ?? 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + ms / 1000) {
+            guard let last = feed.rows.indices.last else {
+                Self.windowLog.notice("jumpdebug: skipped no-rows")
+                return
+            }
+            let index = min(max(0, wanted), last)
+            Self.windowLog.notice(
+                "jumpdebug: index=\(index, privacy: .public) wanted=\(wanted, privacy: .public) clamped=\(index == wanted ? 0 : 1, privacy: .public)"
+            )
+            jump(to: feed.rows[index].id)
         }
     }
 
@@ -2264,6 +2359,10 @@ struct ControlRoomNativeChatView: View {
     /// the anchor, and the projection that follows is the same one every
     /// other layout change uses.
     private func jump(to id: String, centered: Bool = false) {
+        // **A jump is the one path that lands on unmeasured rows** (design
+        // §26): everything on that screen is drawn as a fixed block until it
+        // stops changing.
+        beginPlaceholders()
         camera.pinned = false
         newBelow = false
         pendingReturnToLatest = false
@@ -2774,6 +2873,25 @@ struct ControlRoomNativeChatView: View {
 
 // MARK: - Row frames
 
+/// **What a landing screen shows before its Markdown exists** (design §26).
+///
+/// The numbers are look-table numbers, not estimates:
+/// `Look.Font.min` is 13 pt and a text line is 16; the row stack's spacing is
+/// 4 and the row pads 4 above and below. So the body block is three lines and
+/// the row it makes is `16 + 4 + 48 + 8 = 76`.
+enum ControlRoomChatPlaceholder {
+    /// The body block: three text lines.
+    static let bodyHeight: CGFloat = 48
+    /// The whole row a placeholder makes, used to answer "how many rows is
+    /// one screen" before anything has been measured.
+    static let rowHeight: CGFloat = 16 + 4 + bodyHeight + 8
+    /// **How long a landing may wait for its rows.** The real measurements of
+    /// `pending -> markdown` are p50 9 ms / p99 308 ms / max 495 ms, so this
+    /// is "the slowest row still arrives"; longer and the landing reads as
+    /// stuck.
+    static let cap: TimeInterval = 0.6
+}
+
 /// The plan behind `CHAT_AUTO_SCROLL`.
 private final class ControlRoomChatAutoScroll {
     /// About one text line a step, so the window moves the way a wheel moves
@@ -3187,6 +3305,9 @@ private struct ControlRoomNativeChatRow: View {
     var group: String
     var generation: UInt64
     @ObservedObject var markdown: ControlRoomChatMarkdownStore
+    /// **This row is on a landing screen that has not settled** (design §26):
+    /// its body is drawn as a fixed block until its form stops changing.
+    var placeholder: Bool = false
     /// The search hit this row was located to, when it is the located one.
     var hit: ControlRoomChatSearch.Hit?
     var onReference: ((ControlRoomChatData.Message, String?) -> Void)? = nil
@@ -3214,7 +3335,13 @@ private struct ControlRoomNativeChatRow: View {
             if let mentions = row.message.mentions, !mentions.isEmpty {
                 mentionsRow(mentions, theme)
             }
-            content
+            if placeholder, !ControlRoomChatMarkdownStore.isSettled(
+                form: markdown.form(id: row.id, group: group, generation: generation)
+            ) {
+                placeholderBlock
+            } else {
+                content
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -3300,6 +3427,25 @@ private struct ControlRoomNativeChatRow: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// **A fixed block where the body will be** (design §26): a constant
+    /// height, never an estimate -- a height taken from `rowHeightEstimate`
+    /// would be the "one number multiplied by every row" defect of §25 again.
+    /// Three text lines, with the material saying "not developed yet" rather
+    /// than a grey rectangle.
+    private var placeholderBlock: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(.ultraThinMaterial)
+            .frame(maxWidth: .infinity)
+            .frame(height: ControlRoomChatPlaceholder.bodyHeight)
+            .overlay(alignment: .leading) {
+                Text(verbatim: "…")
+                    .font(.system(size: Look.Font.min))
+                    .foregroundStyle(Look.theme(scheme).textSecondary.color.opacity(0.55))
+                    .padding(.leading, 8)
+            }
+            .accessibilityLabel(Text("loading"))
     }
 
     private func tag(_ text: String, theme: Look.Theme) -> some View {

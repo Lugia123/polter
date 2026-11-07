@@ -290,6 +290,34 @@ final class ControlRoomChatMarkdownStore: ObservableObject {
     /// like "this row got shorter": a missing demand, another group, a
     /// generation the store has moved past, a row outside its window, a key
     /// that is queued/admitted, a parse over budget, or a cache miss.
+    /// **Whether a row's form has stopped changing** (design §26): the landing
+    /// screen switches from placeholders to real heights when every row on it
+    /// is settled, so the question is "will this form still change", not "is
+    /// it Markdown".
+    ///
+    /// Settled:
+    /// - `markdown:cache` -- parsed; its height is final.
+    /// - `markdown:oversized` -- **never** parsed, and that is its final
+    ///   height. Counting it as pending makes every landing wait out the whole
+    ///   cap.
+    /// - `plain:uncached` -- the store has nothing to give and nothing in
+    ///   flight; the row is drawn as text and stays drawn as text.
+    ///
+    /// **Not settled**: everything that names work still to come --
+    /// `pending:queued` / `pending:inFlight` / `pending:admitted` /
+    /// `deferred:budget`, and the `plain:` forms that mean "not yet" rather
+    /// than "never": `no-demand` (the row has not registered yet: that is the
+    /// landing frame itself), `no-window`, `demand-gen`, `store-gen`,
+    /// `other-group`. Each becomes a cache hit once the demand catches up.
+    static func isSettled(form: String) -> Bool {
+        switch form {
+        case "markdown:cache", "markdown:oversized", "plain:uncached":
+            return true
+        default:
+            return false
+        }
+    }
+
     func form(id: String, group: String, generation: UInt64) -> String {
         guard let demand = demands[id] else { return "plain:no-demand" }
         if demand.group != group { return "plain:other-group" }

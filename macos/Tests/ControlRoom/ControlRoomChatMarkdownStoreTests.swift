@@ -330,4 +330,26 @@ struct ControlRoomChatMarkdownStoreTests {
         #expect(redraws.count == 0)
         #expect(executor.startsCount == 1)
     }
+
+    /// **Which forms have stopped changing** (design §26): a landing screen
+    /// switches from placeholders when every row on it is settled, so the two
+    /// halves of this list are the rule itself. `oversized` and `uncached`
+    /// belong on the settled side because they have final heights -- counting
+    /// them as pending would make every landing wait out the cap.
+    @Test func testAFormIsSettledOnlyWhenItStopsChanging() {
+        #expect(Store.isSettled(form: "markdown:cache"))
+        #expect(Store.isSettled(form: "markdown:oversized"))
+        #expect(Store.isSettled(form: "plain:uncached"))
+
+        #expect(!Store.isSettled(form: "pending:queued"))
+        #expect(!Store.isSettled(form: "pending:inFlight"))
+        #expect(!Store.isSettled(form: "pending:admitted"))
+        #expect(!Store.isSettled(form: "deferred:budget"))
+        // The landing frame itself: a row that has not registered yet.
+        #expect(!Store.isSettled(form: "plain:no-demand"))
+        #expect(!Store.isSettled(form: "plain:no-window"))
+        #expect(!Store.isSettled(form: "plain:demand-gen"))
+        #expect(!Store.isSettled(form: "plain:store-gen"))
+        #expect(!Store.isSettled(form: "plain:other-group"))
+    }
 }
