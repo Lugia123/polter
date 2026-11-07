@@ -198,16 +198,10 @@ EXCEPTIONS = {
     ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
      "guard index > 0, index < feed.rows.count else { return false }"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
-     "guard index >= 0, index < feed.rows.count else { return }"):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
 
     ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
      "\"window: disagree top=\\(Int(self.cameraTopY()), privacy: .public) offset=\\(Int(offset), privacy: .public) intake=\\(n, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) above=\\(self.feed.aboveCount, privacy: .public) below=\\(self.feed.belowCount, privacy: .public)\""):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "let ticks = feed.rows.count"):
-        (1, "the index bar draws the window it is handed: its tick count is the rows already loaded into it, never the number a group has"),
     ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
      "\"window: side=\\(side, privacy: .public) dir=\\(direction, privacy: .public) moved=\\(moved, privacy: .public) want=\\(want, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) pinned=\\(self.camera.pinned ? 1 : 0, privacy: .public) place=\\(self.camera.place.map { \"\\($0.id)@\\(Int($0.offset))\" } ?? \"-\", privacy: .public) contentH=\\(Int(self.contentH), privacy: .public) live=\\(Int(self.liveDocumentHeight), privacy: .public) topID=\\(topIDBefore, privacy: .public) topIDAfter=\\(topIDAfter, privacy: .public) drawnAbove=\\(Int(drawnAbove), privacy: .public) loadedAbove=\\(Int(drawnAbove + apronAbove), privacy: .public) drawnBelow=\\(Int(drawnBelow), privacy: .public) loadedBelow=\\(Int(drawnBelow + apronBelow), privacy: .public) apronAbove=\\(self.feed.aboveCount, privacy: .public) apronBelow=\\(self.feed.belowCount, privacy: .public) viewport=\\(Int(reading.viewport), privacy: .public) margin=\\(Int(ControlRoomChatWindow.marginScreens * reading.viewport), privacy: .public) hasEarlier=\\(self.feed.hasEarlier ? 1 : 0, privacy: .public) hasNewer=\\(self.feed.hasNewer ? 1 : 0, privacy: .public) offset=\\(Int(self.offsetY), privacy: .public) content=\\(Int(reading.content), privacy: .public)\""):
         (1, "the window's own trace: the rows already loaded into its document and its two aprons, never the number a group has"),

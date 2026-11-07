@@ -1596,66 +1596,74 @@ struct ControlRoomChatPresentationTests {
 
     /// **The thumb is the viewport's share of the loaded map**, and it is
     /// never shorter than a hand can grab.
-    @Test func testTheThumbIsTheShareOfTheMapTheViewportCovers() {
+    @Test func testTheThumbIsTheShareOfTheDocumentTheViewportCovers() {
         let all: CGFloat = 300
-        #expect(I.thumbHeight(totalTicks: 10, viewportTicks: 10, trackH: all) == all)
-        #expect(I.thumbHeight(totalTicks: 20, viewportTicks: 10, trackH: all) == 150)
-        #expect(I.thumbHeight(totalTicks: 100, viewportTicks: 10, trackH: all) == 36)
-        // A night's messages: the ratio would be under a point, the floor
+        #expect(I.thumbHeightPoints(totalPoints: 1_000, viewportPoints: 1_000, trackH: all) == all)
+        #expect(I.thumbHeightPoints(totalPoints: 2_000, viewportPoints: 1_000, trackH: all) == 150)
+        #expect(I.thumbHeightPoints(totalPoints: 10_000, viewportPoints: 1_000, trackH: all) == 36)
+        // A night's document: the ratio would be under a point, the floor
         // holds, and the thumb is still no taller than its track.
-        #expect(I.thumbHeight(totalTicks: 5_000, viewportTicks: 10, trackH: all) == 36)
+        #expect(I.thumbHeightPoints(totalPoints: 500_000, viewportPoints: 1_000, trackH: all) == 36)
         // A track shorter than the floor is the limit, not the floor.
-        #expect(I.thumbHeight(totalTicks: 5_000, viewportTicks: 10, trackH: 30) == 30)
-        #expect(I.thumbHeight(totalTicks: 20, viewportTicks: 10, trackH: 20) == 20)
-        #expect(I.thumbHeight(totalTicks: 0, viewportTicks: 0, trackH: all) == all)
+        #expect(I.thumbHeightPoints(totalPoints: 500_000, viewportPoints: 1_000, trackH: 30) == 30)
+        #expect(I.thumbHeightPoints(totalPoints: 2_000, viewportPoints: 1_000, trackH: 20) == 20)
+        #expect(I.thumbHeightPoints(totalPoints: 0, viewportPoints: 0, trackH: all) == all)
     }
 
     /// **The thumb reaches the end of its travel exactly at the bottom**:
     /// that is what makes the bar's end read as the newest message and not as
     /// "somewhere near it".
-    @Test func testTheThumbReachesTheEndOnlyAtTheBottom() {
-        let top = I.geometry(totalTicks: 500, viewportTicks: 10, topTick: 0, trackH: 300)
+    @Test func testTheThumbReachesTheEndOnlyAtTheBottomInPointSpace() {
+        // 500 points of document, a 10 point viewport: the deepest point
+        // reached is the document's top, `depth == total`.
+        let top = I.geometryPoints(
+            totalPoints: 500, viewportPoints: 10, depthPoints: 500, trackH: 300)
         #expect(top.thumbY == 0)
         #expect(top.thumbH == 36)
-        let bottom = I.geometry(
-            totalTicks: 500, viewportTicks: 10, topTick: 490, trackH: 300)
+        let bottom = I.geometryPoints(
+            totalPoints: 500, viewportPoints: 10, depthPoints: 10, trackH: 300)
         let travel: CGFloat = 300 - 36
         #expect(bottom.thumbY == travel)
-        let middle = I.geometry(
-            totalTicks: 500, viewportTicks: 10, topTick: 245, trackH: 300)
+        let middle = I.geometryPoints(
+            totalPoints: 500, viewportPoints: 10, depthPoints: 255, trackH: 300)
         #expect(middle.thumbY == travel / 2)
         // Past the end is still the end: an estimate that overshoots must not
         // draw the thumb outside the track.
-        let past = I.geometry(totalTicks: 500, viewportTicks: 10, topTick: 900, trackH: 300)
+        let past = I.geometryPoints(
+            totalPoints: 500, viewportPoints: 10, depthPoints: -900, trackH: 300)
         #expect(past.thumbY == travel)
     }
 
     /// **A drag lands on a row of the loaded map**, from the first to the
     /// last, and never past either end.
-    @Test func testADragLandsOnARowAndNeverPastTheEnds() {
-        #expect(I.seekIndex(fraction: 0, totalTicks: 101, step: 1) == 0)
-        #expect(I.seekIndex(fraction: 1, totalTicks: 101, step: 1) == 100)
-        #expect(I.seekIndex(fraction: 0.5, totalTicks: 101, step: 1) == 50)
-        #expect(I.seekIndex(fraction: -1, totalTicks: 101, step: 1) == 0)
-        #expect(I.seekIndex(fraction: 2, totalTicks: 101, step: 1) == 100)
-        // One drawn cell is `step` rows, so a drag lands on a cell boundary:
-        // 50 with steps of 3 goes to the nearest multiple, 51.
-        #expect(I.seekIndex(fraction: 0.5, totalTicks: 100, step: 3) == 51)
-        let last = I.seekIndex(fraction: 1, totalTicks: 100, step: 3)
-        #expect(last == 99)
-        #expect(I.seekIndex(fraction: 0, totalTicks: 0, step: 1) == 0)
+    @Test func testADragLandsOnADepthAndNeverPastTheEnds() {
+        // 101 points of document, a 1 point viewport: the travel spans
+        // 1...101 in depth, and the ends are the two ends.
+        let total = 101.0
+        let viewport = 1.0
+        #expect(I.seekDepth(fraction: 0, totalPoints: total, viewportPoints: viewport, step: 1) == total)
+        #expect(I.seekDepth(fraction: 1, totalPoints: total, viewportPoints: viewport, step: 1) == viewport)
+        #expect(I.seekDepth(fraction: 0.5, totalPoints: total, viewportPoints: viewport, step: 1) == 51)
+        #expect(I.seekDepth(fraction: -1, totalPoints: total, viewportPoints: viewport, step: 1) == total)
+        #expect(I.seekDepth(fraction: 2, totalPoints: total, viewportPoints: viewport, step: 1) == viewport)
+        // One drawn cell is `step` points, so a drag lands on a cell edge.
+        let snapped = I.seekDepth(
+            fraction: 0.5, totalPoints: 100, viewportPoints: 1, step: 3)
+        let expected = 51.0
+        #expect(snapped == expected)
+        #expect(I.seekDepth(fraction: 0, totalPoints: 0, viewportPoints: 0, step: 1) == 0)
     }
 
     /// **How many rows one drawn tick stands for**: one while they fit, more
     /// once they do not.
-    @Test func testAStepIsHowManyRowsOneTickStandsFor() {
+    @Test func testAStepIsHowManyPointsOneTickStandsFor() {
         // 300pt of track, one tick every 5pt: sixty fit.
-        #expect(I.step(totalTicks: 60, trackH: 300) == 1)
-        #expect(I.step(totalTicks: 61, trackH: 300) == 2)
-        #expect(I.step(totalTicks: 120, trackH: 300) == 2)
-        #expect(I.step(totalTicks: 601, trackH: 300) == 11)
-        #expect(I.step(totalTicks: 0, trackH: 300) == 1)
-        let fractions = I.tickFractions(totalTicks: 601, step: 11)
+        #expect(I.stepPoints(totalPoints: 60, trackH: 300) == 1)
+        #expect(I.stepPoints(totalPoints: 61, trackH: 300) == 2)
+        #expect(I.stepPoints(totalPoints: 120, trackH: 300) == 2)
+        #expect(I.stepPoints(totalPoints: 601, trackH: 300) == 11)
+        #expect(I.stepPoints(totalPoints: 0, trackH: 300) == 1)
+        let fractions = I.tickFractionsPoints(totalPoints: 601, step: 11)
         #expect(fractions.count == 55)
         #expect(fractions.first == 0)
         #expect(fractions.last == 1)
@@ -1672,18 +1680,17 @@ struct ControlRoomChatPresentationTests {
     /// **The camera's place is a continuous tick, not the index of a row**:
     /// half way into a row is half a tick. A scroll of one pixel must move
     /// the thumb by one pixel's worth, not by a whole row.
-    @Test func testTheTopTickIsARowPlusHowFarIntoItTheReaderIs() {
-        let list = frameMap([40, 40, 40])
-        // Row r1 spans 50..90. Offset 60 is a quarter into it.
-        let quarter = I.topTick(
-            order: list.order, frames: list.frames, offset: 60, viewport: 20)
-        #expect(quarter == 1.25)
-        let atTop = I.topTick(
-            order: list.order, frames: list.frames, offset: 0, viewport: 20)
-        #expect(atTop == 0)
-        // Nothing measured is "not known", not "at the top".
-        #expect(I.topTick(order: ["x"], frames: [:], offset: 0, viewport: 20) == nil)
-        #expect(I.topTick(order: list.order, frames: list.frames, offset: 0, viewport: 0) == nil)
+    @Test func testTheDepthIsPointsBelowTheDocumentsBottom() {
+        // The document ends at 5_614; at the bottom the viewport's top is
+        // one screen (968) below it, and at the oldest edge it is the whole
+        // document below it.
+        let bottom = I.topPoints(documentBottom: 5_614, offset: 5_614 - 968)
+        let oldest = I.topPoints(documentBottom: 5_614, offset: 0)
+        // Past the bottom is still the bottom, not a negative depth.
+        let past = I.topPoints(documentBottom: 5_614, offset: 9_000)
+        #expect(bottom == 968)
+        #expect(oldest == 5_614)
+        #expect(past == 0)
     }
 
     /// The viewport's coverage is counted over the frames it really overlaps,
@@ -1700,11 +1707,13 @@ struct ControlRoomChatPresentationTests {
         #expect(I.viewportTicks(order: list.order, frames: list.frames, offset: 900, viewport: 20) == nil)
     }
 
-    /// The bubble says which row and when, and never invents a clock the row
-    /// does not have.
-    @Test func testTheBubbleNamesTheRowAndItsClock() {
-        #expect(I.bubbleText(index: 0, time: "10:12:05") == "#1  10:12:05")
-        #expect(I.bubbleText(index: 99, time: "") == "#100")
+    /// The bubble says when, and never invents a clock the row does not
+    /// have. **A point is not a row** (design §23.3), so there is no `#n` any
+    /// more -- the bar is in points and the caller hands in the nearest row's
+    /// time.
+    @Test func testTheBubbleNamesTheClockAndNothingElse() {
+        #expect(I.bubbleText(time: "10:12:05") == "10:12:05")
+        #expect(I.bubbleText(time: "") == "")
     }
 
     // The old spent-restore test and the old nearest-measured test moved to
@@ -1712,4 +1721,60 @@ struct ControlRoomChatPresentationTests {
     // AnsweredByTheFramesItWasFrozenAgainst` and
     // `testAFallbackPicksTheNearestMeasuredRow`. Nothing here was dropped --
     // the assertion for each old one is still exactly once in the file.
+
+    // MARK: - The bar in point space (design §23.3, step one)
+
+    /// **The high-water mark only grows.** This is the user's whole rule:
+    /// reaching 100 keeps 100, and coming back to the newest does not shrink
+    /// it. It is a pure function so it can be read here instead of only
+    /// living in a `@State`.
+    @Test func testTheHighWaterOnlyGrows() {
+        let first = 1_000.0
+        let back = 40.0
+        let deeper = 1_800.0
+        var reached = I.reached(previous: 0, top: first)
+        #expect(reached == first)
+        reached = I.reached(previous: reached, top: back)
+        #expect(reached == first)
+        reached = I.reached(previous: reached, top: deeper)
+        #expect(reached == deeper)
+    }
+
+    /// **The thumb sits at the ends it should**: the end of its travel at the
+    /// newest edge, the start of it at the deepest point reached. `depth` is
+    /// measured from the newest and the travel from the oldest, so this is
+    /// where that inversion would show up if the conversion were wrong.
+    @Test func testTheThumbSitsAtTheEndsItShouldInPointSpace() {
+        let total = 5_614.0
+        let viewport = 968.0
+        let trackH: CGFloat = 300
+        let newest = I.geometryPoints(
+            totalPoints: total, viewportPoints: viewport,
+            depthPoints: viewport, trackH: trackH)
+        let deepest = I.geometryPoints(
+            totalPoints: total, viewportPoints: viewport,
+            depthPoints: total, trackH: trackH)
+        let travel = trackH - newest.thumbH
+        #expect(newest.thumbY == travel)
+        #expect(deepest.thumbY == 0)
+    }
+
+    /// **A drag lands between the two ends it was given**, and the middle of
+    /// the travel is the middle of the document.
+    @Test func testASeekLandsBetweenTheEndsItWasGiven() {
+        let total = 5_614.0
+        let viewport = 968.0
+        let newest = I.seekDepth(
+            fraction: 1, totalPoints: total, viewportPoints: viewport, step: 1)
+        let deepest = I.seekDepth(
+            fraction: 0, totalPoints: total, viewportPoints: viewport, step: 1)
+        let middle = I.seekDepth(
+            fraction: 0.5, totalPoints: total, viewportPoints: viewport, step: 1)
+        let expectedMiddle = (total + viewport) / 2
+        #expect(newest == viewport)
+        #expect(deepest == total)
+        #expect(middle == expectedMiddle)
+    }
+
+
 }
