@@ -63,7 +63,6 @@ struct ControlRoomNativeChatView: View {
     /// inside its 0.3 s window (the 2026-11-07 red: the auto-scroll raised
     /// the wheel signal every 30 ms, so every projection's own callback was
     /// read as a scroll and wrote the bottom into the anchor).
-    @State private var ownScroll: ControlRoomChatNativeOwnScroll?
     /// **The clip's y that the anchor was last reconciled with.**
     ///
     /// Every move is a **difference against this**, never an absolute read of
@@ -93,6 +92,30 @@ struct ControlRoomNativeChatView: View {
     @State private var lastSyncSeen: Double?
     /// The last `content:` line, so it is written once per change.
     @State private var lastRulerLine = ""
+    /// The last `bottoms:` line written, so it is one per change (the reading
+    /// is a comparison of four heights, not a per-frame trace).
+    @State private var lastBottomsLine = ""
+    /// The last `contentHeight` written, for the `ruler:` line: only a jump
+    /// worth explaining is printed (the 2026-11-07 entry run: 11414 -> 14742
+    /// in one pass, and back).
+    @State private var lastRulerHeight: Double = 0
+    /// **The estimate is taken once and then never changes** (the 2026-11-07
+    /// entry run, `ruler:`: `measured=27 estimated=166 estimate=64` and then
+    /// `estimate=46` with nothing else different -- 166 rows x 18 = 2988 of
+    /// the 3328 pt jump the person sees).
+    ///
+    /// `measuredRowHeight` is a **median over the rows drawn right now**, and
+    /// the sample is bimodal: 46 for a settled row, 64 for one still showing
+    /// its "formatting" line. Every conversion moves the median between those
+    /// two modes, and every unmeasured row in the document is multiplied by
+    /// it. **The two families are not two kinds of message** -- they are the
+    /// same rows in two forms, which is why splitting the estimate by shape
+    /// cannot help here, and a mean would still move with the sample and would
+    /// be pulled up by the tall rows. So: the first sample big enough to mean
+    /// anything is the answer, and after that the number stops.
+    @State private var rowHeightEstimateSettled = false
+    /// How many drawn rows make an estimate worth freezing.
+    private static let estimateFreezeSample = 10
     /// **The document's frame was set by this view, this tick.** Not "the
     /// content's height differs from last time" -- that is true on every tick
     /// a page grows in, and gating on it swallowed six reader steps in a row
@@ -404,7 +427,7 @@ struct ControlRoomNativeChatView: View {
             }
             heights[id] = Double(frame.height)
         }
-        feed.rowHeightEstimate = measuredRowHeight(order: feed.rows.map(\.id))
+        publishRowHeightEstimate(order: feed.rows.map(\.id))
         if measuredChanged || abs(estimateBefore - feed.rowHeightEstimate) > 0.5 {
             rulerEpoch &+= 1
         }
@@ -472,6 +495,39 @@ struct ControlRoomNativeChatView: View {
             lastRulerLine = contentLine
             Self.windowLog.notice("content: \(contentLine, privacy: .public)")
         }
+        // **The four heights that are supposed to be one number** (design
+        // §24, the 2026-11-07 entry jump): the bottom this view computes
+        // (`doc`), the ruler's total (`contentH`), the height the surface's
+        // scroll document really has (`surfaceDoc`), and the last message's
+        // own drawn bottom (`lastY`). `pad` is the bottom padding between
+        // `lastY` and the end of the document.
+        //
+        // **Steady state is all four agreeing.** While the page is still
+        // measuring they may differ; the line says which one arrives first
+        // and by how much -- the reading that decides who may win, instead of
+        // taking the ruler away and finding out.
+        let lastY = lastMessageBottom(rowsNow)
+        let surfaceDoc = scroll.documentHeight.map { Int($0) } ?? -1
+        let bottoms = "doc=\(Int(documentBottom(plan: rowsNow, layout: layoutNow))) contentH=\(Int(layoutNow.contentHeight)) surfaceDoc=\(surfaceDoc) lastY=\(Int(lastY)) pad=\(Int(ControlRoomChatScrollSurface.bottomPadding))"
+        if bottoms != lastBottomsLine {
+            lastBottomsLine = bottoms
+            Self.windowLog.notice("bottoms: \(bottoms, privacy: .public)")
+        }
+        // **A jump in the ruler, and what it was made of** (the 2026-11-07
+        // entry run: `contentH` went 11414 -> 14742 -> 11388, two families
+        // ~3300 apart). `measured` and `estimated` are the two halves
+        // `scrollLayout` fills: a row with a usable `heights[id]` and a row
+        // with the feed's single estimate. Which of them moved says whether a
+        // row changed height or the ruler changed its mind about all the rest.
+        let contentNow = Double(layoutNow.contentHeight)
+        if lastRulerHeight > 0, abs(contentNow - lastRulerHeight) > 500 {
+            let measuredRows = layoutNow.measured.filter { $0 }.count
+            let estimatedRows = layoutNow.measured.filter { !$0 }.count
+            Self.windowLog.notice(
+                "ruler: from=\(Int(self.lastRulerHeight), privacy: .public) to=\(Int(contentNow), privacy: .public) measured=\(measuredRows, privacy: .public) estimated=\(estimatedRows, privacy: .public) heights=\(self.heights.count, privacy: .public) frames=\(self.frames.count, privacy: .public) estimate=\(Int(self.feed.rowHeightEstimate), privacy: .public)"
+            )
+        }
+        lastRulerHeight = contentNow
         // **A measured row moves the document under the anchor**: rows above
         // the viewport that were estimated are now exact, so the anchor's own
         // y has moved by the difference. The clip is put back there -- the
@@ -666,6 +722,23 @@ struct ControlRoomNativeChatView: View {
     ///
     /// The plan's last item is the end mark only when the list is not
     /// following the newest row, and then the mark's own height stands in.
+    /// **The last message's own drawn bottom**, or `-1` when that row has no
+    /// usable frame. Reading only: it is what §24.3 would use, printed beside
+    /// the ruler so the two can be compared before either is allowed to
+    /// decide.
+    private func lastMessageBottom(
+        _ plan: [ControlRoomChatPresentation.ListRow]
+    ) -> CGFloat {
+        guard let index = plan.lastIndex(where: {
+            if case .message = $0 { return true }
+            return false
+        }), case let .message(id) = plan[index],
+            let frame = frames[id],
+            frame.height > ControlRoomChatScrollSurface.anchorFrameMinimumHeight
+        else { return -1 }
+        return Double(frame.maxY)
+    }
+
     private func documentBottom(
         plan: [ControlRoomChatPresentation.ListRow],
         layout: ControlRoomChatScrollSurface.Layout
@@ -765,7 +838,8 @@ struct ControlRoomNativeChatView: View {
                 ? max(0, documentHeight - viewport)
                 : nil,
             onFrames: framesArrived,
-            onGeometry: { geometryJustChanged = true }
+            onGeometry: { geometryJustChanged = true },
+            onStartPosition: { y in registerStartPosition(y) }
         )
     }
 
@@ -1350,6 +1424,39 @@ struct ControlRoomNativeChatView: View {
 
     /// One scroll the view asks for. **It is registered before it happens**,
     /// so the callback it causes is recognised as the view's own.
+    /// **The surface's own first placement, registered before it happens.**
+    /// The same clamp and the same "nothing to do" test the surface applies
+    /// in `scroll(to:)`, so a registration exists exactly when a callback
+    /// will follow. Nothing is scrolled here: the surface is already doing
+    /// it, and a second scroll would be a second callback.
+    private func registerStartPosition(_ y: CGFloat) {
+        // **Every guard says so when it refuses** (the 2026-11-07 entry run:
+        // the surface's first placement was still read as a hand and
+        // `own: start matched` never appeared -- with no line here, "not
+        // called" and "refused by a guard" read the same).
+        guard let maximum = scroll.maximumOriginY else {
+            Self.windowLog.notice("own: start skipped no-maximum")
+            return
+        }
+        guard let live = scroll.originY.map(Double.init) else {
+            Self.windowLog.notice("own: start skipped no-live")
+            return
+        }
+        let target = min(max(0, Double(y)), Double(maximum))
+        guard abs(target - live) > 0.5 else {
+            Self.windowLog.notice(
+                "own: start skipped no-move target=\(Int(target), privacy: .public) live=\(Int(live), privacy: .public)"
+            )
+            return
+        }
+        scroll.ownScroll = ControlRoomChatNativeOwnScroll(
+            y: target, at: ProcessInfo.processInfo.systemUptime, start: true
+        )
+        Self.windowLog.notice(
+            "own: start registered y=\(Int(target), privacy: .public) live=\(Int(live), privacy: .public) maximum=\(Int(maximum), privacy: .public)"
+        )
+    }
+
     private func scrollOwn(to y: Double) {
         // **The target is clamped here, before the scroll**, so the number
         // recorded is the number the clip will really take. A callback is
@@ -1360,7 +1467,7 @@ struct ControlRoomNativeChatView: View {
         let target = min(max(0, y), Double(maximum))
         guard let live = scroll.originY.map(Double.init) else { return }
         guard abs(target - live) > 0.5 else { return }
-        ownScroll = ControlRoomChatNativeOwnScroll(
+        scroll.ownScroll = ControlRoomChatNativeOwnScroll(
             y: target, at: ProcessInfo.processInfo.systemUptime
         )
         _ = scroll.scroll(toY: CGFloat(target))
@@ -1472,10 +1579,18 @@ struct ControlRoomNativeChatView: View {
         // anchor and pin the page (the 2026-11-07 red).
         let now = ProcessInfo.processInfo.systemUptime
         var ours = false
-        if let own = ownScroll, now - own.at < 1.0,
+        if let own = scroll.ownScroll, now - own.at < 1.0,
            abs(own.y - Double(y)) <= 0.6 {
             ours = true
-            ownScroll = nil
+            scroll.ownScroll = nil
+            // **The reading for the entry fix**: the surface's first
+            // placement, recognised as the view's own. One per opening, and
+            // the `bounds:` line beside it must say `hand=0`.
+            if own.start {
+                Self.windowLog.notice(
+                    "own: start matched y=\(Int(y), privacy: .public) planned=\(Int(own.y), privacy: .public) dt=\(Int((now - own.at) * 1000), privacy: .public)"
+                )
+            }
         }
         // **Any move the view did not make is the reader's** (review E, MF2):
         // the wheel's own signals only cover the wheel and the trackpad. A
@@ -1683,8 +1798,10 @@ struct ControlRoomNativeChatView: View {
     private func maintainWindow(fromInput: Bool) {
         guard viewportH > 0, !feed.rows.isEmpty else { return }
         let order = feed.rows.map(\.id)
-        let height = measuredRowHeight(order: order)
-        feed.rowHeightEstimate = height
+        publishRowHeightEstimate(order: order)
+        // **The number the layout uses**, so this reading and `scrollLayout`
+        // cannot be two estimates.
+        let height = max(1, feed.rowHeightEstimate)
         let reading = windowReading(order: order, height: height)
         // **The row the reader is standing on, before this tick acts.** The
         // pair of ids `sayWindowAction` writes is the one reading of "did the
@@ -1910,6 +2027,22 @@ struct ControlRoomNativeChatView: View {
     /// out; the feed's default stands in before anything is measured. Not a
     /// mean: one 300 pt message must not drag a screen of 16 pt rows into a
     /// "half a screen is two rows" step.
+    /// **Publish the estimate, until it is settled.** One place decides, so
+    /// `framesArrived` and `maintainWindow` cannot disagree about it, and
+    /// `scrollLayout` reads the same number the window's arithmetic does.
+    private func publishRowHeightEstimate(order: [String]) {
+        guard !rowHeightEstimateSettled else { return }
+        var drawn = 0
+        for id in order {
+            if let frame = frames[id], frame.height > 1 { drawn += 1 }
+        }
+        guard drawn > 0 else { return }
+        feed.rowHeightEstimate = measuredRowHeight(order: order)
+        if drawn >= Self.estimateFreezeSample {
+            rowHeightEstimateSettled = true
+        }
+    }
+
     private func measuredRowHeight(order: [String]) -> Double {
         var heights: [Double] = []
         for id in order {
@@ -1981,6 +2114,10 @@ struct ControlRoomNativeChatView: View {
             // them lands somewhere that does not exist any more; the drag the
             // index bar is in the middle of was aimed at the old map too.
             frames = [:]
+            // **A new map gets a new estimate**: the frozen one was measured
+            // on rows from another group. (Within one map it stays frozen --
+            // that is §25.2's rule.)
+            rowHeightEstimateSettled = false
             mapEpoch &+= 1
             if feed.locatedAnchor != nil {
                 newBelow = false
@@ -2634,6 +2771,11 @@ private final class ControlRoomChatAutoScroll {
 struct ControlRoomChatNativeOwnScroll {
     var y: Double
     var at: TimeInterval
+    /// **The surface's first placement, not one of the view's projections.**
+    /// It is the one that has to be recognised as `ours`, and the one whose
+    /// matching is logged (the 2026-11-07 "opens in the middle": 2 of 13
+    /// openings read this placement as a hand and lost `pinned`).
+    var start = false
 }
 
 struct RowFramesPreference: PreferenceKey {
@@ -2660,6 +2802,18 @@ final class ControlRoomChatScrollHandle: ObservableObject {
     /// `ProcessInfo.processInfo.systemUptime`'s clock -- the same clock the
     /// view reads it with, so no event timestamp crosses a clock here.
     private(set) var lastWheelAt: TimeInterval = 0
+    /// **The one scroll the view has asked for and not yet seen.**
+    ///
+    /// **On this object, not in the view's `@State`** (the 2026-11-07 entry
+    /// run: the surface's first placement registered at `19:57:58.236`, and
+    /// the bounds callback one millisecond later -- same y, `|Δ| = 0`,
+    /// `dt = 1 ms` -- found no registration at all, so the placement was read
+    /// as a hand and wrote an anchor from a document that did not exist yet).
+    /// `registerStartPosition` runs inside `updateNSView`, i.e. during a view
+    /// update, and a `@State` written there is bookkeeping the reader may not
+    /// see. This is a stored property on the object both sides already share;
+    /// `userScrolling` next door is written the same way for the same reason.
+    var ownScroll: ControlRoomChatNativeOwnScroll?
     /// The window a wheel still counts as "the reader is moving". Also the
     /// wait before a restore the hand interrupted is taken back.
     static let wheelWindow: TimeInterval = 0.3

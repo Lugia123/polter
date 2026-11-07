@@ -52,12 +52,21 @@ struct ControlRoomChatScrollSurfaceView: NSViewRepresentable {
     /// reader's move: the first must not write the anchor, the second must.
     /// One call per actual change, and the caller clears it immediately.
     var onGeometry: () -> Void
+    /// **The surface is about to place itself for the first time**, with the
+    /// y it will take. The caller registers that y as its own scroll, so the
+    /// bounds callback this positioning causes is not read as the reader's
+    /// hand: it is the view's first act, and reading it as a hand wrote an
+    /// anchor from a document that did not exist yet and cleared `pinned`
+    /// (2 of 13 real openings -- the 2026-11-07 "opens somewhere in the
+    /// middle").
+    var onStartPosition: ((CGFloat) -> Void)?
 
     func makeNSView(context: Context) -> ControlRoomChatSurfaceClip {
         let view = ControlRoomChatSurfaceClip()
         view.space = space
         view.onFrames = onFrames
         view.onGeometry = onGeometry
+        view.onStartPosition = onStartPosition
         view.apply(
             documentHeight: documentHeight,
             viewport: viewport,
@@ -72,6 +81,7 @@ struct ControlRoomChatScrollSurfaceView: NSViewRepresentable {
         view.space = space
         view.onFrames = onFrames
         view.onGeometry = onGeometry
+        view.onStartPosition = onStartPosition
         view.apply(
             documentHeight: documentHeight,
             viewport: viewport,
@@ -492,6 +502,11 @@ final class ControlRoomChatSurfaceClip: NSView {
     /// Called the moment `document.frame` really changes (see the
     /// representable's note). Never called when the height is the same.
     var onGeometry: (() -> Void)?
+    /// **Called immediately before the one placement this surface makes on
+    /// its own**, with the y it is about to take. The view registers that y
+    /// as a scroll it made, so the callback it causes is `ours` and not a
+    /// reader's (2 of 13 real openings lost `pinned` to it).
+    var onStartPosition: ((CGFloat) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -617,6 +632,10 @@ final class ControlRoomChatSurfaceClip: NSView {
             positioned = true
             if let start = pendingStart {
                 pendingStart = nil
+                // **Say so before it happens**: the callback below arrives
+                // synchronously, and the view has to have registered this y
+                // by then or it reads its own first act as a hand.
+                onStartPosition?(start)
                 scroll(to: start)
             }
         }
