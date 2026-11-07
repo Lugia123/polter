@@ -1100,26 +1100,90 @@ struct ControlRoomNativeChatView: View {
     /// `jump(to:)`, so the placeholder screen opens because the product opens
     /// it -- there is no debug branch inside the row.
     ///
-    ///     CHAT_JUMP_AFTER_MS=2000   ms after the surface attaches
-    ///     CHAT_JUMP_TO_INDEX=600    a `feed.rows` index; clamped, and said so
+    ///     CHAT_JUMP_AFTER_MS=8000   the cap, and what arms the hook
+    ///     CHAT_JUMP_TO_INDEX=500    a `feed.rows` index. **The jump waits
+    ///                               until that row is loaded**: a first
+    ///                               screen holds at most two hundred rows,
+    ///                               so the hook asks the product's loader
+    ///                               for older pages until the index exists,
+    ///                               and only then jumps (`clamped=0`).
     ///
-    /// Absent variables: nothing is read and no timer is armed, like the
+    /// **The cap is a fallback, not the moment** (2026-11-08): a measured run
+    /// asked for index 500 in a window holding 40 rows, the timer fired
+    /// anyway, and the log said `index=39 wanted=500 clamped=1` -- the
+    /// instrument measured the clamp, not the landing.
+    ///
+    /// **`CHAT_JUMP_TO_INDEX` absent keeps the old shape**: the hook is a
+    /// plain timer at `CHAT_JUMP_AFTER_MS` and jumps to the oldest loaded
+    /// row, because a measurement may want the jump itself timed. Absent
+    /// `CHAT_JUMP_AFTER_MS`: nothing is read and no timer is armed, like the
     /// other `CHAT_*` switches.
     private func startDebugJumpIfAsked() {
         guard !debugJumpArmed else { return }
-        let env = ProcessInfo.processInfo.environment
-        guard let raw = env["CHAT_JUMP_AFTER_MS"], let ms = Double(raw), ms >= 0
+        guard let plan = ControlRoomChatDebugJump(env: ProcessInfo.processInfo.environment)
         else { return }
         debugJumpArmed = true
-        let wanted = Int(env["CHAT_JUMP_TO_INDEX"] ?? "") ?? 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + ms / 1000) {
-            guard let last = feed.rows.indices.last else {
+        switch plan.mode {
+        case let .row(wanted):
+            waitForDebugJumpRow(plan, wanted: wanted, startedAt: .now())
+        case .afterCap:
+            DispatchQueue.main.asyncAfter(deadline: .now() + plan.cap) {
+                applyDebugJump(plan, step: plan.step(rows: feed.rows.endIndex, elapsed: .infinity))
+            }
+        }
+    }
+
+    /// Look again, ask for the next older page while the row is missing, and
+    /// jump the moment it is there. **The page comes from the product's own
+    /// loader** (`loadOlder`), at the largest page the window may request;
+    /// the hook only decides when to ask and when to stop.
+    private func waitForDebugJumpRow(
+        _ plan: ControlRoomChatDebugJump,
+        wanted: Int,
+        startedAt: DispatchTime
+    ) {
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- startedAt.uptimeNanoseconds)
+            / 1_000_000_000
+        // **`endIndex` is how many rows are loaded.** It is the feed's own
+        // bounded window, not a number a group has: the rule only needs to
+        // know whether index `wanted` exists yet.
+        let loaded = feed.rows.endIndex
+        let step = plan.step(rows: loaded, elapsed: elapsed)
+        guard step == .wait else {
+            applyDebugJump(plan, step: step)
+            return
+        }
+        if feed.canLoadOlder {
+            feed.loadOlder(limit: ControlRoomChatWindow.maxRequestRows)
+            Self.windowLog.notice(
+                "jumpdebug: older rows=\(loaded, privacy: .public) wanted=\(wanted, privacy: .public)"
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChatDebugJump.pollInterval) {
+            waitForDebugJumpRow(plan, wanted: wanted, startedAt: startedAt)
+        }
+    }
+
+    /// Do what the plan says, saying so: the index, the row asked for, and
+    /// whether the two differ.
+    private func applyDebugJump(
+        _ plan: ControlRoomChatDebugJump,
+        step: ControlRoomChatDebugJump.Step
+    ) {
+        switch step {
+        case .wait:
+            // The waiters never call this with `.wait`; a cap that is read as
+            // one leaves the list alone rather than jumping at a guess.
+            break
+        case .nothingLoaded:
+            Self.windowLog.notice("jumpdebug: skipped no-rows")
+        case let .jump(index, clamped):
+            guard feed.rows.indices.contains(index) else {
                 Self.windowLog.notice("jumpdebug: skipped no-rows")
                 return
             }
-            let index = min(max(0, wanted), last)
             Self.windowLog.notice(
-                "jumpdebug: index=\(index, privacy: .public) wanted=\(wanted, privacy: .public) clamped=\(index == wanted ? 0 : 1, privacy: .public)"
+                "jumpdebug: index=\(index, privacy: .public) wanted=\(plan.wanted ?? 0, privacy: .public) clamped=\(clamped ? 1 : 0, privacy: .public)"
             )
             jump(to: feed.rows[index].id)
         }
@@ -3765,5 +3829,84 @@ struct ControlRoomNativeChatPane: View {
         .font(.system(size: Look.Font.min))
         .foregroundStyle(.secondary)
         .padding(12)
+    }
+}
+
+/// **The debug jump's wait rule** (`CHAT_JUMP_AFTER_MS` /
+/// `CHAT_JUMP_TO_INDEX`): whether there is a row to jump to yet, and what to
+/// do when the cap is up and there is not.
+///
+/// **An index means a row in `feed.rows`, and the rows are paged.** A first
+/// screen asks for at most two hundred, so an index in the middle of a
+/// thousand-message group does not exist until older pages have come in; a
+/// jump on a timer measures whatever happens to be loaded, which is how the
+/// 2026-11-08 run came back with `index=39 wanted=500 clamped=1`. The rule
+/// lives here, apart from the view, so the table is driven by tests that do
+/// not need a surface.
+struct ControlRoomChatDebugJump {
+    enum Mode: Equatable {
+        /// `CHAT_JUMP_TO_INDEX`: wait until `feed.rows` holds this index.
+        case row(Int)
+        /// `CHAT_JUMP_AFTER_MS` alone: the timer is the moment, as before.
+        case afterCap
+    }
+
+    enum Step: Equatable {
+        /// The row is not loaded and the cap is not up; look again.
+        case wait
+        /// The cap is up and nothing is loaded: there is no index to jump to.
+        case nothingLoaded
+        /// Jump to this `feed.rows` index; `clamped` says the row asked for
+        /// is not the row reached.
+        case jump(index: Int, clamped: Bool)
+    }
+
+    /// How often the wait looks again. A page takes far longer than this, so
+    /// the poll is never what a landing waits on; it is short enough that the
+    /// jump lands a frame or two after the page that made the row.
+    static let pollInterval: TimeInterval = 0.05
+
+    let mode: Mode
+    /// Seconds after the surface attached at which the wait gives up.
+    let cap: TimeInterval
+
+    /// The index the environment asked for, for the log line; nil when the
+    /// hook was given only a cap.
+    var wanted: Int? {
+        if case let .row(wanted) = mode { return wanted }
+        return nil
+    }
+
+    /// What to do now, given how many rows are loaded and how long the wait
+    /// has run. **`wanted < rows` is the test for existence**: index `wanted`
+    /// is the last row when `rows == wanted + 1`.
+    func step(rows: Int, elapsed: TimeInterval) -> Step {
+        switch mode {
+        case let .row(wanted):
+            if wanted < rows { return .jump(index: wanted, clamped: false) }
+            guard elapsed >= cap else { return .wait }
+            guard rows > 0 else { return .nothingLoaded }
+            let index = min(wanted, rows - 1)
+            return .jump(index: index, clamped: index != wanted)
+        case .afterCap:
+            guard elapsed >= cap else { return .wait }
+            guard rows > 0 else { return .nothingLoaded }
+            return .jump(index: 0, clamped: false)
+        }
+    }
+
+    /// The environment's answer, or nil when the hook is not asked for.
+    /// **`CHAT_JUMP_AFTER_MS` arms it**: without it nothing is read and no
+    /// timer is armed, which is the contract the other `CHAT_*` switches
+    /// keep.
+    init?(env: [String: String]) {
+        guard let raw = env["CHAT_JUMP_AFTER_MS"], let ms = Double(raw), ms >= 0
+        else { return nil }
+        cap = ms / 1000
+        if let wanted = Int(env["CHAT_JUMP_TO_INDEX"] ?? "") {
+            mode = .row(max(0, wanted))
+        } else {
+            mode = .afterCap
+        }
     }
 }

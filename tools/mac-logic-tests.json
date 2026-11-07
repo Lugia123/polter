@@ -348,6 +348,7 @@
   "macos/Tests/ControlRoom/ControlRoomChatDisplayHighlightTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatSidebarTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatScrollSurfaceTests.swift",
+      "macos/Tests/ControlRoom/ControlRoomChatDebugJumpTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatHistoryTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatTransportTests.swift",
