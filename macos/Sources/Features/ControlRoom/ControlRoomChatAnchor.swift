@@ -122,11 +122,27 @@ enum ControlRoomChatAnchor {
 
     /// Whether the viewport is at the bottom. A content shorter than the
     /// viewport is at both ends at once.
+    ///
+    /// **The band is 8 pt, and both ends of that number are measured**
+    /// (2026-11-07, the three follow runs on the real machine):
+    ///
+    /// - **It must be smaller than the view's own measurement jitter**, which
+    ///   moves the offset by 16–18 pt when a row above the viewport is
+    ///   re-measured. A band of a full line (16) would read that push as "the
+    ///   reader is still at the bottom" and yank them down with the next
+    ///   message -- the exact complaint the band exists to prevent.
+    /// - **It must be smaller than a deliberate scroll**: one wheel notch is
+    ///   20–40 pt, so a reader who means to go up is outside the band on the
+    ///   first event.
+    ///
+    /// 2 pt was the old value and is effectively no band at all: the third run
+    /// left the reader 120 pt up (correctly not following), but the measured
+    /// jitter alone is enough to leave it.
     static func isAtBottom(
         offset: Double,
         viewport: Double,
         content: Double,
-        tolerance: Double = 2
+        tolerance: Double = 8
     ) -> Bool {
         guard viewport > 0, content > 0 else { return true }
         return content - (offset + viewport) <= tolerance

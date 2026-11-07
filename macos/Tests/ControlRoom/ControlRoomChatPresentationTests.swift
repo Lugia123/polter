@@ -306,6 +306,20 @@ struct ControlRoomChatPresentationTests {
         #expect(A.isAtBottom(offset: 0, viewport: 400, content: 100))
     }
 
+    /// **The band is 8 pt**: half a text line, which is above the view's own
+    /// measurement jitter (16–18 pt, so the jitter is *outside* it) and below
+    /// one wheel notch (20–40 pt, so a deliberate scroll is outside it too).
+    /// This pins the number itself -- the default, not a passed tolerance --
+    /// because that is the one thing the run was changed for.
+    @Test func testTheBottomBandIsEightPoints() {
+        let atTheEdge = 600.0 - (192.0 + 400.0)   // 8 pt above the end
+        let justOutside = 600.0 - (191.0 + 400.0) // 9 pt
+        #expect(A.isAtBottom(offset: 192, viewport: 400, content: 600))
+        #expect(!A.isAtBottom(offset: 191, viewport: 400, content: 600))
+        #expect(atTheEdge == 8)
+        #expect(justOutside == 9)
+    }
+
     // MARK: - The camera's state machine (the old Keeper's tests)
 
     /// **Only a callback the reader caused writes the place** (old tests
