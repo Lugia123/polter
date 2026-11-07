@@ -452,6 +452,13 @@ final class ControlRoomChatFeed: ObservableObject {
     /// state word; never ids, tokens, bodies or replies.
     private static let traceOn =
         ProcessInfo.processInfo.environment["POLTER_CHAT_TRACE"] == "1"
+    /// **A resume that could not reach the reader's anchor** (design §23.1
+    /// rule 3): rare, one line, and never gated -- it is the one place the
+    /// "came back at the newest" decision says which row it could not find.
+    private static let resumeLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-window"
+    )
     private static let traceLog = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
         category: "chat-trace"
@@ -610,8 +617,30 @@ final class ControlRoomChatFeed: ObservableObject {
             // lands on the real last message rather than on the end of a
             // window the reader walked away from.
             if locatedAnchor == nil {
-                goToLatest()
-                armLive()
+                // **§23.1 rule 2: a page the person has read comes back where
+                // they left it.** `recentre` rebuilds the window around that
+                // row, which is what keeps it *in* the window -- without it
+                // the document is rebuilt at the newest and the anchor is not
+                // in it at all, so the projection can only rebase to the new
+                // window's top. **That was the real cause of "always comes
+                // back at the latest"; clearing the anchor in `stop()` was
+                // only half of it.**
+                if let saved = readingAnchor, recentre(on: saved) {
+                    armLive()
+                } else {
+                    // **§23.1 rule 3, said out loud**: the row is not in what
+                    // is loaded, so this resumption cannot reach it. Falling
+                    // back to the newest is allowed; doing it *silently* is
+                    // what made the old behaviour look like a decision.
+                    // **The anchor is kept** -- the next resume may have it.
+                    if let saved = readingAnchor {
+                        Self.resumeLog.notice(
+                            "resume: anchor-not-loaded id=\(saved, privacy: .public) → latest"
+                        )
+                    }
+                    goToLatest()
+                    armLive()
+                }
             }
             armOlderAfterResume()
             return
@@ -651,16 +680,25 @@ final class ControlRoomChatFeed: ObservableObject {
         // A page that was out is not out any more, and no answer will come:
         // the top edge says it was cancelled rather than spinning.
         if older == .loading || older == .scanning { older = .cancelled }
-        // **A stop ends the showing, and the reader's place is the showing's,
-        // not the group's.** The rows stay so coming back shows what was
-        // there, but the page comes back **at the latest message**: a reading
-        // anchor kept across a stop reopened the group on a stale line --
-        // possibly one `loadOlder`'s fallback wrote while the reader had not
-        // moved at all (task 2999 ②). Restoring a place is for a layout
-        // change *within* one showing (the search sidebar opening, a narrower
-        // window), which does not stop the feed.
-        readingAnchor = nil
-        readingOffset = 0
+        // **The reader's place survives the showing** (design §23.1, written
+        // down 2026-11-08). It used to be cleared here, on the reasoning that
+        // a kept anchor reopened the group on a stale line -- possibly one
+        // `loadOlder`'s fallback wrote while the reader had not moved
+        // (task 2999 ②). **That reasoning answered "what if the row is
+        // gone?" with "always the newest"**, which is the one answer the
+        // person ruled out: coming back to a place they were reading, and
+        // being thrown to the bottom, is the jump they complained about.
+        //
+        // The honest answer to a stale row is `recentre(on:)` when it is
+        // still loaded and `nearestMessage` when it is not -- both in
+        // `start()`, which is where a resume is decided. Clearing it here
+        // made §23.1 impossible to implement at all: the row is not even
+        // named any more by the time the resume runs.
+        //
+        // **§23.1 has three rules and all three are needed**: not-seen ->
+        // newest; seen -> this anchor; anchor gone -> its nearest neighbour.
+        // Doing this line alone is a false fix: `start()` would still rebuild
+        // the document at the newest and the projection would land there.
         syncMarkdown()
     }
 

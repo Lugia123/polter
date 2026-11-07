@@ -1578,11 +1578,13 @@ struct ControlRoomChatFeedTests {
         rig.feed.start(group: "polter")
         #expect(rig.door.methods("chat_history_begin").count == begins)
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        // **But a stop ends the showing**, and the place belongs to the
-        // showing (task 2999 ②): the page comes back at the latest message,
-        // not on the line it was left at -- which could be a stale one, or
-        // one `loadOlder`'s fallback wrote while the reader never moved.
-        #expect(rig.feed.savedReading == nil)
+        // **And a stop does not end the place any more** (design §23.1, which
+        // reverses task 2999 ② on purpose): coming back to a page the person
+        // was reading must land where they left it, not at the bottom.
+        // `start()` then recentres on this row, or -- if it is no longer
+        // loaded -- says `resume: anchor-not-loaded` and keeps this anchor for
+        // the next resume. Clearing it here is what made that impossible.
+        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 12))
 
         rig.scheduler.run(2)
         #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])

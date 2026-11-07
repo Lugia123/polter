@@ -127,6 +127,12 @@ struct ControlRoomNativeChatView: View {
     /// not shrink it. Reset when the map is replaced (a different group is a
     /// different document).
     @State private var barReached: Double = 0
+    /// **The first valid reading is taken as it is**, not `max`ed against a
+    /// zero: `max(0, depth)` publishes whatever the very first frame
+    /// computed, and the first frame's document is not the one that settles
+    /// (the 2026-11-08 entry: `totalP` 11574 and then 1008, one bar that
+    /// jumped backwards as soon as it appeared).
+    @State private var barReachedSeeded = false
     /// **A landing screen is showing placeholders** (design §26). Set only by
     /// `jump(to:)` -- a scroll never sets it, which is what keeps the
     /// placeholders off the scrolling path; cleared the moment the screen's
@@ -2274,8 +2280,11 @@ struct ControlRoomNativeChatView: View {
             // that is §25.2's rule.)
             rowHeightEstimateSettled = false
             // **And a new high-water mark**: group B must not inherit group
-            // A's depth. §23.3's rule is one document's.
+            // A's depth. §23.3's rule is one document's -- and the seed is
+            // dropped with it, or the new document's first plan would be
+            // `max`ed against the old depth.
             barReached = 0
+            barReachedSeeded = false
             rowHeightEstimatePasses = 0
             mapEpoch &+= 1
             if feed.locatedAnchor != nil {
@@ -2315,6 +2324,19 @@ struct ControlRoomNativeChatView: View {
             frames = frames.filter { present.contains($0.key) }
         }
         lastIDs = ids
+        // **§23.1 rule 2, on the view's side.** The feed keeps the reader's
+        // place across a stop; the camera is what the projection reads, and
+        // while the page was away it may have been cleared. Take the place
+        // back when there is one to take -- **and only when the camera has
+        // none**, so a place the reader has made since is never overwritten.
+        // The three rules of §23.1 need all three pieces (`stop()` keeps the
+        // anchor, `start()` recentres on it, this restores the offset); any
+        // one alone is a false fix.
+        if camera.place == nil, let saved = feed.savedReading {
+            camera.place = saved
+            camera.pinned = false
+            clipSeen = nil
+        }
         // **R1-8: a located window's way out lands when the new map does.**
         if pendingReturnToLatest, !isLocated {
             pendingReturnToLatest = false
@@ -2588,7 +2610,15 @@ struct ControlRoomNativeChatView: View {
         let depthNow = ControlRoomChatIndexBar.topPoints(
             documentBottom: documentNow, offset: Double(offsetY)
         )
-        barReached = ControlRoomChatIndexBar.reached(previous: barReached, top: depthNow)
+        if barReachedSeeded {
+            barReached = ControlRoomChatIndexBar.reached(previous: barReached, top: depthNow)
+        } else if !plan.isEmpty {
+            // **Seeded on the first plan that exists**, not on the frame
+            // before it: an empty plan's `documentBottom` is the padding, and
+            // taking that would freeze the bar at 24 points for the session.
+            barReached = depthNow
+            barReachedSeeded = true
+        }
         guard let covered = ControlRoomChatIndexBar.viewportTicks(
             order: feed.rows.map(\.id),
             frames: frames,
