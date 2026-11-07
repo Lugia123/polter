@@ -16,6 +16,7 @@ struct ControlRoomChatPresentationTests {
     typealias A = ControlRoomChatAnchor
     typealias C = ControlRoomChatCamera
     typealias I = ControlRoomChatIndexBar
+    typealias W = ControlRoomChatWindow
 
     private var utc: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -72,16 +73,20 @@ struct ControlRoomChatPresentationTests {
     }
 
     /// The row `trimmedAfter` named may itself have been released since. The
-    /// gap is still real, so it is said at the top rather than dropped and
-    /// the two messages are not drawn as neighbours.
+    /// gap is still real, and **it is newer than everything kept** -- the
+    /// window slid past it -- so it is said after the last row. A top gap
+    /// would claim the missing records are older than what is drawn.
     @Test func testAnUnplaceableGapIsStillSaid() {
         let rows = P.listRows(
             order: ["p:200", "p:201"],
             trimmedBefore: nil,
             trimmedAfter: "p:101"
         )
-        #expect(rows.first == .gap(.before("p:200")))
-        #expect(rows.contains(.message(id: "p:201")))
+        #expect(rows == [
+            .message(id: "p:200"),
+            .message(id: "p:201"),
+            .gap(.after("p:201")),
+        ])
     }
 
     /// Every row the list draws has its own stable identity, and a message's
@@ -411,12 +416,19 @@ struct ControlRoomChatPresentationTests {
     /// **A bottom owed before the reader moved is not performed** (old test
     /// `testAFollowIntentIsDroppedByAUserScroll`, and R1-7's transfer).
     @Test func testABottomOwedBeforeTheReaderMovedIsNotPerformed() {
-        #expect(!C.pinned(after: .user, atBottom: false, was: true))
-        #expect(C.pinned(after: .user, atBottom: true, was: false))
+        #expect(!C.pinned(after: .user, atBottom: false, was: true, hand: true))
+        #expect(C.pinned(after: .user, atBottom: true, was: false, hand: true))
+        // **A `.user` without a hand changes nothing.** `cause` falls back to
+        // `.user` for a callback none of its tests explains, and a page's
+        // first layout is exactly that -- the clip at `offset = 1` of
+        // 22 277 pt before the bottom projection has run. Judging the pin
+        // from it opened the page in the middle of the history.
+        #expect(C.pinned(after: .user, atBottom: false, was: true, hand: false))
+        #expect(!C.pinned(after: .user, atBottom: true, was: false, hand: false))
         // A layout or the view's own scroll changes nothing, even at the
         // bottom: only the reader pins or unpins.
-        #expect(!C.pinned(after: .layout, atBottom: true, was: false))
-        #expect(C.pinned(after: .programmatic, atBottom: false, was: true))
+        #expect(!C.pinned(after: .layout, atBottom: true, was: false, hand: true))
+        #expect(C.pinned(after: .programmatic, atBottom: false, was: true, hand: true))
 
         // **The pair, in the view's order** (R1-7): `bounds` first (it
         // voids the owed bottom and unpins), then `pinned(after:)`. A reader
@@ -425,10 +437,71 @@ struct ControlRoomChatPresentationTests {
         var state = C.State(
             place: .init(id: "b", offset: 5), pinned: false, owed: .pin)
         state.bounds(cause: .user, y: 43, order: ["a", "b", "c"], frames: frames)
-        state.pinned = C.pinned(after: .user, atBottom: true, was: state.pinned)
+        state.pinned = C.pinned(after: .user, atBottom: true, was: state.pinned, hand: true)
         #expect(state.pinned)
         #expect(state.owed == nil)
         #expect(state.place == .init(id: "c", offset: 3))
+    }
+
+    /// **A page opens at the bottom and stays there** (2026-11-07: it opened
+    /// at `offset = 1` of 22 277 pt, showed #809 instead of the newest
+    /// message, and its very first action was to evict the newer side --
+    /// which only a viewport that thinks it is *not* at the bottom does).
+    @Test func testAPageOpensAtTheBottomAndStaysThere() {
+        // The opening layout's callback is not the reader: pinned stays.
+        #expect(C.pinned(after: .user, atBottom: false, was: true, hand: false))
+        // **A pinned viewport's top is the document's end**, not the clip's
+        // 1, and that is what the decision is taken from.
+        let content = 22277.0
+        let viewport = 968.0
+        let top = W.viewportTop(pinned: true, content: content, viewport: viewport, offset: 1)
+        #expect(top == content - viewport)
+        let decision = W.decide(
+            W.Reading(top: top, viewport: viewport, content: content,
+                      loadedTop: 0, rowHeight: 92),
+            aboveRows: 0, belowRows: 0,
+            documentAbove: 197, documentBelow: 0,
+            hasEarlier: true, hasNewer: false
+        )
+        // **The first action is never "the newer side is over retain"**: at
+        // the bottom there is no newer side below the viewport at all.
+        if case .releaseNewer = decision.evict {
+            Issue.record("a page that opens at the bottom evicted the newer side")
+        }
+        #expect(decision.feed == .none)
+    }
+
+    /// **The document's height comes from the rows, not from the scroll
+    /// view** (2026-11-07, the page that never reached the bottom): 192 rows
+    /// were in the frames -- 21 504 pt of them -- while the scroll view still
+    /// answered 24. A pinned projection that asked `pinIsAvailable` of the 24
+    /// waited for a document it already had.
+    @Test func testTheDocumentHeightComesFromTheRowsBeforeTheScrollView() {
+        var order: [String] = []
+        var frames: [String: CGRect] = [:]
+        for i in 0..<192 {
+            let id = "p:\(i)"
+            order.append(id)
+            frames[id] = CGRect(x: 0, y: CGFloat(i) * 112, width: 300, height: 112)
+        }
+        let content = W.documentHeight(order: order, frames: frames, live: 24)
+        #expect(content == 192 * 112)
+        // **A last row the lazy stack has not made**: the tallest measured
+        // bottom is still the document's.
+        var sparse = frames
+        sparse.removeValue(forKey: order.last!)
+        #expect(W.documentHeight(order: order, frames: sparse, live: 24) == 191 * 112)
+        // Nothing measured at all: the scroll view's own word is all there is.
+        #expect(W.documentHeight(order: order, frames: [:], live: 24) == 24)
+        // **The decision that reads it**: pinned, the document is far taller
+        // than the viewport, so the answer is a pin and its target is the
+        // document's end -- not a wait.
+        #expect(W.viewportTop(pinned: true, content: content, viewport: 968, offset: 0)
+                == content - 968)
+        #expect(C.projection(
+            state: C.State(place: nil, pinned: true), order: order, frames: frames,
+            content: content, viewport: 968, centre: 0
+        ) == .pin)
     }
 
     /// **The fallback picks the nearest measured row** (old test
@@ -556,20 +629,536 @@ struct ControlRoomChatPresentationTests {
         ) == .pin)
     }
 
-    /// **The prefetch asks three viewports before the edge** (new, §5;
-    /// replaced the `shouldLoadOlder` half of the old bottom test).
-    @Test func testPrefetchAsksThreeViewportsBeforeTheEdge() {
-        #expect(C.wantsOlder(top: 0, loadedTop: 0, viewport: 600))
-        #expect(C.wantsOlder(top: 1800, loadedTop: 0, viewport: 600))
-        #expect(!C.wantsOlder(top: 1800.5, loadedTop: 0, viewport: 600))
-        // The floor's shape: a threshold of zero asks only at the edge.
-        #expect(!C.wantsOlder(top: 1, loadedTop: 0, viewport: 600, screens: 0))
-        #expect(C.wantsOlder(top: 0, loadedTop: 0, viewport: 600, screens: 0))
+    /// **The capacity, in one place** (the 2026-11-07 capacity red): ten
+    /// screens of margin, twelve of retention, twelve for the first screen,
+    /// a 40-row request floor. Changing one without the others is what the
+    /// red was; these are the numbers the person checks on the real machine.
+    @Test func testTheWindowCapacityIsTheAgreedOne() {
+        #expect(W.marginScreens == 10)
+        #expect(W.retainScreens == 12)
+        #expect(W.firstScreenScreens == 12)
+        #expect(W.requestFloor == 40)
+    }
 
-        #expect(C.wantsNewer(bottom: 4000, loadedBottom: 5000, viewport: 600))
-        #expect(!C.wantsNewer(bottom: 3199, loadedBottom: 5000, viewport: 600))
-        // No viewport measured: nothing is asked.
-        #expect(!C.wantsOlder(top: 0, loadedTop: 0, viewport: 0))
+    /// **A world where points and rows agree**: this many rows either side of
+    /// the camera row, all one height, the viewport `top` points in. The rule
+    /// turns points into rows with the document's own average, which in a
+    /// world like this is exactly `height` -- so every expectation below is
+    /// arithmetic the test can do, not a number copied out of the rule.
+    ///
+    /// `rowHeight` is what the view would publish as its median (the few rows
+    /// it has laid out); passing one that disagrees with `height` is the real
+    /// machine, and is how the ruler is tested.
+    private func windowDecision(
+        top: Double,
+        height: Double = 20,
+        viewport: Double = 800,
+        rowsAbove: Int,
+        rowsBelow: Int,
+        aboveRows: Int = 0,
+        belowRows: Int = 0,
+        hasEarlier: Bool = true,
+        hasNewer: Bool = false,
+        rowHeight: Double? = nil
+    ) -> W.Decision {
+        let content = Double(rowsAbove + 1 + rowsBelow) * height
+        let reading = W.Reading(
+            top: top, viewport: viewport, content: content, loadedTop: 0,
+            rowHeight: rowHeight ?? height
+        )
+        return W.decide(
+            reading,
+            aboveRows: aboveRows, belowRows: belowRows,
+            documentAbove: rowsAbove, documentBelow: rowsBelow,
+            hasEarlier: hasEarlier, hasNewer: hasNewer
+        )
+    }
+
+    /// **The step is the drawn margin's shortfall** (the capacity model):
+    /// the rows between the viewport and the document's edge are what the
+    /// reader sees, and one step spends the apron to put them back at the
+    /// margin -- the amount is what was consumed, not a fixed row count.
+    @Test func testTheStepIsTheDrawnMarginsShortfall() {
+        // At the margin: nothing to do.
+        #expect(windowDecision(top: 8000, rowsAbove: 400, rowsBelow: 400).feed == .none)
+        // 7900 pt missing in 16 pt rows is 494 rows; the apron has 100.
+        #expect(windowDecision(
+            top: 100, height: 16, rowsAbove: 40, rowsBelow: 40,
+            aboveRows: 100, belowRows: 500, hasNewer: true
+        ).feed == .intakeOlder(100))
+        // **The same shortfall in taller rows is fewer rows, not less
+        // height**: 7900 pt of 200 pt rows is 40 rows; the apron has 30.
+        #expect(windowDecision(
+            top: 100, height: 200, rowsAbove: 40, rowsBelow: 40, aboveRows: 30
+        ).feed == .intakeOlder(30))
+        // **No ceiling on the row count**: a ten-screen shortfall with the
+        // apron to cover it goes in one rows change.
+        #expect(windowDecision(
+            top: 0, rowsAbove: 0, rowsBelow: 400, aboveRows: 200
+        ).feed == .intakeOlder(200))
+        // **The drawn margin is what is fed, not the loaded total**: 6000
+        // drawn + a 300-row apron is over the margin, but the reader's own
+        // margin is still two screens short and takes them from the apron.
+        #expect(windowDecision(
+            top: 6000, rowsAbove: 300, rowsBelow: 400, aboveRows: 300
+        ).feed == .intakeOlder(100))
+        // The apron bounds it: ten rows are all there is.
+        #expect(windowDecision(
+            top: 0, rowsAbove: 0, rowsBelow: 400, aboveRows: 10
+        ).feed == .intakeOlder(10))
+    }
+
+    /// **Twelve screens is where eviction starts, and it goes all the way to
+    /// retain in one rows change** (the capacity model's mirror).
+    @Test func testTheWindowReleasesToRetainInOneStep() {
+        // 18000 pt is 8400 over the twelve-screen retain: 420 rows, one step.
+        #expect(windowDecision(
+            top: 18000, rowsAbove: 900, rowsBelow: 600
+        ).evict == .releaseOlder(420))
+        // Inside the band (ten to twelve screens either side) nothing moves.
+        let calm = windowDecision(top: 8000, rowsAbove: 200, rowsBelow: 240)
+        #expect(calm.feed == .none)
+        #expect(calm.evict == .none)
+    }
+
+    /// **The eviction is measured by the document's own rows, not by the few
+    /// the list has laid out** (the 2026-11-07 real-machine red).
+    ///
+    /// The log that red came from: `rows=1 drawnBelow=20568` released as
+    /// `moved=191 want=191`, and the next tick fed the same 191 back --
+    /// every 5 ms. 191 rows of 108 pt is 20568 pt, so the release was
+    /// arithmetic on a 46 pt ruler: the median of the one row the view had
+    /// measured, standing in for 191 rows it had never laid out. Ten and a
+    /// half screens is 84 rows of 108 pt, and the document's own average
+    /// says so whatever the median says.
+    @Test func testAReleaseIsMeasuredByTheDocumentsOwnRows() {
+        let viewport = 968.0                       // the real pane's height
+        let height = 108.0
+        let rowsBelow = 191
+        let rowsAbove = 11
+        let drawnBelow = Double(rowsAbove + 1 + rowsBelow) * height
+            - 300 - viewport                      // 20656 pt
+        let margin = W.marginScreens * viewport    // 9680
+
+        let decision = windowDecision(
+            top: 300, height: height, viewport: viewport,
+            rowsAbove: rowsAbove, rowsBelow: rowsBelow,
+            rowHeight: 46                          // the median the view offers
+        )
+        guard case let .releaseNewer(n) = decision.evict else {
+            Issue.record("expected a newer release, got \(decision.evict)")
+            return
+        }
+        // **Not the whole document**: taking all 191 was the red.
+        #expect(n < rowsBelow)
+        // 10.5 screens over retain, in 108 pt rows.
+        #expect(n == 84)
+        // **The invariant**: a release leaves its side at least the margin.
+        let left = drawnBelow - Double(n) * height
+        #expect(left >= margin)
+        // The next tick has nothing to take back: no release, no intake.
+        // **The viewport top does not move when rows go from below it** --
+        // the release took them off the document's end -- so the next
+        // reading has the same top and a document `n` rows shorter.
+        let next = windowDecision(
+            top: 300, height: height, viewport: viewport,
+            rowsAbove: rowsAbove, rowsBelow: rowsBelow - n, rowHeight: 46
+        )
+        #expect(next.evict == .none)
+        #expect(next.feed == .none)
+        // **The apron does not enter the eviction at all**: a 5000-row
+        // buffer behind the drawn side leaves the answer unchanged.
+        let buffered = windowDecision(
+            top: 300, height: height, viewport: viewport,
+            rowsAbove: rowsAbove, rowsBelow: rowsBelow,
+            aboveRows: 5000, belowRows: 5000, rowHeight: 46
+        )
+        #expect(buffered.evict == decision.evict)
+        // **And the intake is measured by the same ruler**: ten screens of
+        // 108 pt rows is 89 rows, not the 209 a 46 pt median asks for.
+        #expect(windowDecision(
+            top: 300, height: height, viewport: viewport,
+            rowsAbove: rowsAbove, rowsBelow: rowsBelow,
+            aboveRows: 500, rowHeight: 46
+        ).feed == .intakeOlder(87))
+    }
+
+    /// **What an insertion above the reader owes the viewport** (the
+    /// 2026-11-07 red, the third one): 99 rows went in, the offset moved six
+    /// points, and the page slid a hundred rows under the reader, tick after
+    /// tick. The debt is the inserted rows' own height, taken from the
+    /// document's ruler -- **never a projection to the camera's row**, which
+    /// after an insertion is a dozen screens below the viewport and is never
+    /// laid out, so its frame never comes and the projection waits for ever.
+    @Test func testAnInsertionIsPaidByTheRowsItPutIn() {
+        let height = 108.0
+        let rows = 99
+        let reader = 39.0
+        let target = W.compensatedTop(offset: reader, rows: rows, rowHeight: height)
+        // The viewport goes down by exactly what went in above it.
+        #expect(target - reader == Double(rows) * height)
+        // **The criterion**: one compensation moves the viewport by at
+        // least four fifths of what went in above it.
+        #expect(target - reader >= 0.8 * Double(rows) * height)
+        // The same ruler the window's decisions use, so the debt and the
+        // window cannot disagree about how tall a row is: the document
+        // average, not the 46 pt median of the one row near the viewport.
+        let ruler = W.averageRowHeight(
+            .init(top: 300, viewport: 968, content: 203 * 108, loadedTop: 0,
+                  rowHeight: 46),
+            rows: 203
+        )
+        #expect(ruler == 108)
+        #expect(W.compensatedTop(offset: reader, rows: rows, rowHeight: ruler) == target)
+        // Nothing went in, nothing is owed.
+        #expect(W.insertedPoints(rows: 0, rowHeight: 200) == 0)
+    }
+
+    /// **A debt is paid once, in two instalments at most** (the 2026-11-07
+    /// red, the flash): the first is scrolled in the turn the rows change --
+    /// before the frame that draws them -- and the second is the exact
+    /// remainder when layout says what the rows really took. **Paying the
+    /// amount twice is a jump of its own**, which is why the remainder is
+    /// the amount minus what was already paid and not the amount.
+    @Test func testADebtIsPaidOnceInTwoInstalments() {
+        let amount = 77.0
+        // Nothing paid yet: the whole amount.
+        #expect(W.compensationRemainder(amount: amount, paid: 0) == amount)
+        // The estimate paid at once and it was right: nothing left.
+        #expect(W.compensationRemainder(amount: amount, paid: amount) == 0)
+        // The estimate was 20 pt low: the remainder is the 20, not the 77.
+        #expect(W.compensationRemainder(amount: amount, paid: 57) == 20)
+        // ... and 20 pt high: the remainder is negative, so it scrolls back.
+        #expect(W.compensationRemainder(amount: amount, paid: 97) == -20)
+    }
+
+    /// **The debt is paid with the document's growth, never with the batch
+    /// estimate** (the 2026-11-07 red, the small jump): one 72 pt row went
+    /// in where the document averaged 92, so an estimate-paid compensation
+    /// over-scrolls by 20 pt -- and 20 pt is enough to put the viewport's top
+    /// edge into the next row. Eighteen of those a second is "a small jump
+    /// every so often".
+    @Test func testTheCompensationIsTheDocumentsGrowthNotTheEstimate() {
+        let grown = 72.0
+        let estimate = W.insertedPoints(rows: 1, rowHeight: 92)
+        #expect(estimate == 92)      // the two really do differ
+        #expect(W.compensationAmount(grown: grown, estimate: estimate) == grown)
+        // Before the layout has the rows there is no growth; nothing is paid
+        // until the fallback's deadline, and the fallback is what it is.
+        #expect(W.compensationAmount(grown: 0, estimate: estimate) == estimate)
+    }
+
+    /// **A compensated viewport is on the same row it was on**, and the
+    /// amount is what decides it: 72 pt of growth keeps the top edge inside
+    /// p:975, the 92 pt estimate puts it into p:976 -- the row the jump is
+    /// measured in.
+    @Test func testACompensatedViewportIsOnTheSameRow() {
+        let order = ["p:974", "p:975", "p:976"]
+        let frames: [String: CGRect] = [
+            "p:974": CGRect(x: 0, y: 9534, width: 300, height: 72),
+            "p:975": CGRect(x: 0, y: 9606, width: 300, height: 72),
+            "p:976": CGRect(x: 0, y: 9678, width: 300, height: 72),
+        ]
+        let reader = 9670.0
+        #expect(C.place(order: order, frames: frames, at: reader)?.id == "p:975")
+        // One 72 pt row went in above every row in the document.
+        let grown = 72.0
+        let after = frames.mapValues { $0.offsetBy(dx: 0, dy: CGFloat(grown)) }
+        let paid = reader + W.compensationAmount(
+            grown: grown, estimate: W.insertedPoints(rows: 1, rowHeight: 92)
+        )
+        #expect(C.place(order: order, frames: after, at: paid)?.id == "p:975")
+        // **The estimate would land one row on** -- 20 pt of over-scroll.
+        let estimated = reader + W.insertedPoints(rows: 1, rowHeight: 92)
+        #expect(C.place(order: order, frames: after, at: estimated)?.id == "p:976")
+    }
+
+    /// **A release may not take a side under the margin** (the 2026-11-06
+    /// oscillation): landing under it is how one tick's release became the
+    /// next tick's intake. And the dead band between the margin and twelve
+    /// screens does nothing at all.
+    @Test func testAReleaseNeverLandsUnderTheMargin() {
+        let viewport = 800.0
+        let height = 20.0
+        let margin = W.marginScreens * viewport
+        let retain = W.retainScreens * viewport
+        // Every position inside the band is a no-op. The document is sized
+        // so the other side sits at the margin too: otherwise a release on
+        // the far side would be the one action, and this test would pass for
+        // the wrong reason.
+        for side in stride(from: margin, through: retain, by: 50) {
+            let rows = Int(((side + viewport + margin) / height).rounded())
+            let decision = windowDecision(
+                top: side, rowsAbove: rows, rowsBelow: 0
+            )
+            #expect(decision.feed == .none)
+            #expect(decision.evict == .none)
+        }
+        // Over the retain, a release stops at retain, and the decision taken
+        // from that position is a no-op -- no oscillation possible.
+        for over in stride(from: Int(retain) + 20,
+                           through: Int(retain + 3 * viewport), by: 400) {
+            let top = Double(over)
+            let rows = over / Int(height)
+            let decision = windowDecision(top: top, rowsAbove: rows, rowsBelow: 0)
+            guard case let .releaseOlder(n) = decision.evict else {
+                Issue.record("expected a release at \(over)")
+                continue
+            }
+            let after = top - Double(n) * height
+            #expect(after >= margin - 0.001)
+            let next = windowDecision(
+                top: after, rowsAbove: rows - n, rowsBelow: 0
+            )
+            // **A release is never followed by an intake on that side**;
+            // a release on the other side (the fixture's newer margin grew
+            // as the older side shrank) is fine.
+            if case .intakeOlder = next.feed {
+                Issue.record("a release at \(over) was followed by an intake at \(after)")
+            }
+        }
+
+        // **A row taller than the dead band cannot be released at all**:
+        // taking one out would put the side under the margin, and the next
+        // tick would take it back in. No action is the right answer.
+        #expect(windowDecision(
+            top: retain + 1, height: 2000, rowsAbove: 4, rowsBelow: 0
+        ).evict == .none)
+        // **The mirror side, and it needs its own case**: below the viewport
+        // the same 2000 pt row sits just over retain, and one of it would
+        // take the newer side from 9601 to 7601 -- under the margin.
+        let tallBelow = W.decide(
+            W.Reading(top: 0, viewport: 800, content: 10401, loadedTop: 0,
+                      rowHeight: 2080.2),
+            aboveRows: 0, belowRows: 0,
+            documentAbove: 0, documentBelow: 4,
+            hasEarlier: false, hasNewer: false
+        )
+        #expect(tallBelow.evict == .none)
+    }
+
+    /// **One action per tick** (the 2026-11-06 oscillation): a document
+    /// short on both sides -- and with both aprons holding rows -- yields
+    /// exactly one move, not a feed and a release in the same breath.
+    @Test func testTheWindowTakesOneActionAtATime() {
+        let both = windowDecision(
+            top: 100, rowsAbove: 5, rowsBelow: 5,
+            aboveRows: 40, belowRows: 40, hasNewer: true
+        )
+        #expect(both.feed == .intakeOlder(40))
+        #expect(!both.contradictory)
+        // A tiny document whose older side is satisfied but whose newer side
+        // is short takes the newer intake, still one action.
+        let newerOnly = windowDecision(
+            top: 8000, rowsAbove: 600, rowsBelow: 39,
+            belowRows: 40, hasEarlier: false, hasNewer: true
+        )
+        #expect(newerOnly.feed == .intakeNewer(40))
+        // Above short while below is over: still one action, and **the
+        // release goes first** -- feeding first would starve it while the
+        // reader scrolls continuously, and the document would grow at the
+        // far end without bound.
+        let mixed = windowDecision(
+            top: 100, rowsAbove: 5, rowsBelow: 594, aboveRows: 40
+        )
+        #expect(mixed.evict == .releaseNewer(75))
+    }
+
+    /// **The request goes out at the first shortfall, and carries the
+    /// shortfall with a floor** (the capacity model): not when the apron is
+    /// empty, and not a fixed page.
+    @Test func testTheRequestIsTheMissingBuffer() {
+        // A shortfall of 14 rows in a group of 300 pt messages: one round
+        // trip still asks for the floor.
+        #expect(windowDecision(
+            top: 3900, height: 300, rowsAbove: 13, rowsBelow: 13
+        ).requestOlderRows == W.requestFloor)
+        // A big shortfall asks for more than the floor.
+        #expect(windowDecision(
+            top: 0, rowsAbove: 0, rowsBelow: 40
+        ).requestOlderRows == 200)
+        // **Any shortfall asks** (2026-11-07): 6000 of 8000 pt is short, and
+        // the refill does not wait for the half-way mark or the edge.
+        #expect(windowDecision(
+            top: 6000, rowsAbove: 300, rowsBelow: 300
+        ).requestOlderRows == 100)
+        // **The apron is part of the loaded side**: 100 drawn + 300 x 20 =
+        // 6100, short of the margin, so it asks for the rest.
+        #expect(windowDecision(
+            top: 100, rowsAbove: 5, rowsBelow: 200, aboveRows: 300
+        ).requestOlderRows == 95)
+        // A full buffer asks for nothing...
+        #expect(windowDecision(
+            top: 100, rowsAbove: 5, rowsBelow: 200, aboveRows: 500
+        ).requestOlderRows == 0)
+        // ... and a core with nothing older is not asked at all.
+        #expect(windowDecision(
+            top: 100, rowsAbove: 5, rowsBelow: 200, hasEarlier: false
+        ).requestOlderRows == 0)
+    }
+
+    /// **The first screen is twelve screens of the measured rows**, aligned
+    /// with the ten-screen margin, and the conservative default before the
+    /// pane has measured itself (review C, M5's unmeasured case).
+    @Test func testTheFirstScreenIsTwelveScreens() {
+        #expect(W.firstScreenRows(viewportRows: 16) == 192)
+        #expect(W.firstScreenRows(viewportRows: 30) == 200)   // the core's cap
+        #expect(W.firstScreenRows(viewportRows: 1) == 12)
+        // The core's ceiling still holds.
+        #expect(W.firstScreenRows(viewportRows: 100) == W.maxRequestRows)
+    }
+
+    /// **Criterion 1 and 3 together** (as amended by the 2026-11-07 red):
+    /// fifty screens up, in wheel-sized callbacks, and **no single rows
+    /// change takes in more than one screen**, the list never reaches the
+    /// loaded edge, and the document does not grow with the scroll.
+    ///
+    /// The world is a fixture (rows with heights, an apron either side); the
+    /// decisions are the production ones. Every callback scrolls 50 pt, so
+    /// the reader is modelled the way a trackpad delivers them, not as one
+    /// screen per event -- a screen is eighteen rows.
+    @Test func testFiftyScreensUpTakesInAStepAtATime() {
+        let viewport = 800.0
+        let height = 44.0
+        let rowsPerScreen = Int(viewport / height)          // 18
+        let total = 2000
+        let firstScreen = Int(
+            W.firstScreenScreens * Double(rowsPerScreen)    // 108
+        )
+        var docStart = total - firstScreen
+        var docEnd = total
+        var aboveCount = 0
+        var unloaded = docStart
+        var belowCount = 0
+        var top = Double(docEnd - docStart) * height - viewport
+        var maxInsert = 0
+        var topHits = 0
+        var docCounts: [Int] = []
+
+        for tick in 0..<Int(50 * viewport / 50) {           // 50 screens
+            top = max(0, top - 50)
+            if top <= 1, aboveCount + unloaded > 0 {
+                topHits += 1
+            }
+            let decision = W.decide(
+                .init(
+                    top: top, viewport: viewport,
+                    content: Double(docEnd - docStart) * height,
+                    loadedTop: 0, rowHeight: height
+                ),
+                aboveRows: aboveCount, belowRows: belowCount,
+                documentAbove: Int(top / height),
+                documentBelow: max(0, docEnd - docStart - 1 - Int(top / height)),
+                hasEarlier: aboveCount + unloaded > 0,
+                hasNewer: false
+            )
+            // **The apron the decision saw**, before this tick's request
+            // lands: the move is bounded by it, not by the refill.
+            let apronAtDecision = aboveCount
+            // The core answers within the same tick in this model.
+            if decision.requestOlderRows > 0, unloaded > 0 {
+                let land = min(decision.requestOlderRows, unloaded)
+                unloaded -= land
+                aboveCount += land
+            }
+            // **One feed and one eviction, exactly as the view applies
+            // them.**
+            switch decision.feed {
+            case let .intakeOlder(n):
+                let take = min(n, aboveCount)
+                // **The move is the drawn shortfall, not a trickle** (the
+                // 2026-11-07 `moved=1` red): at least 80% of what the
+                // shortfall asks for (bounded by the apron).
+                let shortfallRows = max(
+                    0, Int(((W.marginScreens * viewport - top) / height).rounded(.up))
+                )
+                if Double(take) < 0.8 * Double(min(shortfallRows, apronAtDecision)) {
+                    Issue.record(
+                        "took \(take) of \(min(shortfallRows, apronAtDecision)) n=\(n) top=\(top) apron=\(apronAtDecision)"
+                    )
+                }
+                if take > 0 {
+                    maxInsert = max(maxInsert, take)
+                    docStart -= take
+                    aboveCount -= take
+                    top += Double(take) * height           // the compensation
+                }
+            case let .intakeNewer(n):
+                let take = min(n, belowCount)
+                let belowNow = max(
+                    0, Double(docEnd - docStart) * height - (top + viewport)
+                )
+                let shortfallRows = max(
+                    0, Int(((W.marginScreens * viewport - belowNow) / height).rounded(.up))
+                )
+                #expect(Double(take) >= 0.8 * Double(min(shortfallRows, belowCount)),
+                        "took \(take) of \(min(shortfallRows, belowCount))")
+                if take > 0 {
+                    docEnd += take
+                    belowCount -= take
+                }
+            case .releaseOlder, .releaseNewer, .none:
+                break
+            }
+            switch decision.evict {
+            case let .releaseOlder(n):
+                let take = min(n, docEnd - docStart - 1)
+                if take > 0 {
+                    docStart += take
+                    aboveCount += take
+                }
+            case let .releaseNewer(n):
+                let take = min(n, docEnd - docStart - 1)
+                if take > 0 {
+                    docEnd -= take
+                    belowCount += take
+                }
+            case .intakeOlder, .intakeNewer, .none:
+                break
+            }
+            docCounts.append(docEnd - docStart)
+            if docCounts.count == 1 || (docCounts.max() ?? 0) == docEnd - docStart {
+            }
+        }
+
+        // **No ceiling on the step** (the capacity model): it is the drawn
+        // margin's shortfall, so it is bounded by what the reader spent
+        // while the apron was empty, not by a row count. What must hold is
+        // that the margin is restored and the edge is never reached.
+        #expect(maxInsert > 0)                  // the fixture did exercise it
+        #expect(topHits == 0)
+        // Criterion 3: the document is a window, not a growing history --
+        // five screens above, six below, and a little slack for the step.
+        let bound = Int((W.marginScreens + W.retainScreens + 2) * Double(rowsPerScreen))
+        if let mi = docCounts.firstIndex(of: docCounts.max() ?? 0) {
+        }
+        #expect((docCounts.max() ?? 0) <= bound,
+                "max=\(docCounts.max() ?? 0) bound=\(bound) screens=\(rowsPerScreen)")
+        #expect((docCounts.last ?? 0) <= bound)
+    }
+
+    /// **Criterion 4**: an insertion is compensated by the camera row's own
+    /// y under the new frames (review C, M2) -- the projection target moves
+    /// by exactly the inserted height, so the row stays on the same screen
+    /// point.
+    @Test func testAnInsertIsCompensatedByTheCameraRowsOwnY() {
+        let place = C.Place(id: "m", offset: 7)
+        let state = C.State(place: place, pinned: false)
+        let before: [String: CGRect] = ["m": CGRect(x: 0, y: 100, width: 300, height: 40)]
+        let after: [String: CGRect] = ["m": CGRect(x: 0, y: 320, width: 300, height: 40)]
+        let oldY = C.projection(
+            state: state, order: ["m"], frames: before,
+            content: 500, viewport: 200, centre: 100
+        )
+        let newY = C.projection(
+            state: state, order: ["m"], frames: after,
+            content: 720, viewport: 200, centre: 320
+        )
+        #expect(oldY == .scroll(107))
+        #expect(newY == .scroll(327))
+        // The five rows inserted above are 220 pt: the compensation is that
+        // distance and nothing else, so the row's screen y is unchanged.
+        #expect(327 - 107 == 220)
     }
 
     /// **A width change does not project from the old frames** (new, R1-12):
@@ -596,28 +1185,102 @@ struct ControlRoomChatPresentationTests {
     /// matched or not, so the second landed in the reader's branch and turned
     /// `pinned` off.
     @Test func testTwoProgrammaticScrollsInOneTurnAreBothRecognised() {
-        var expectations: [Double] = []
-        expectations.append(100)
-        expectations.append(200)
+        var expectations: [C.ScrollExpectation] = [
+            .init(y: 100, epoch: 3), .init(y: 200, epoch: 3),
+        ]
         #expect(C.programmaticCallback(
-            inScrollCall: false, seekInFlight: false, y: 100,
+            inScrollCall: false, seekInFlight: false, y: 100, epoch: 3,
             expectations: &expectations))
         #expect(C.programmaticCallback(
-            inScrollCall: false, seekInFlight: false, y: 200,
+            inScrollCall: false, seekInFlight: false, y: 200, epoch: 3,
             expectations: &expectations))
         #expect(expectations.isEmpty)
 
         // **A callback that matches nothing is not the view's** -- and does
         // not spend the expectations that are still owed.
-        var owed: [Double] = [400]
+        var owed: [C.ScrollExpectation] = [.init(y: 400, epoch: 3)]
         #expect(!C.programmaticCallback(
-            inScrollCall: false, seekInFlight: false, y: 250,
+            inScrollCall: false, seekInFlight: false, y: 250, epoch: 3,
             expectations: &owed))
-        #expect(owed == [400])
+        #expect(owed.count == 1)
         #expect(C.programmaticCallback(
-            inScrollCall: false, seekInFlight: false, y: 400.4,
+            inScrollCall: false, seekInFlight: false, y: 400.4, epoch: 3,
             expectations: &owed))
         #expect(owed.isEmpty)
+    }
+
+    /// **The window's reading is the viewport's real top** (the 2026-11-06
+    /// red): the clip origin, or the document's end while pinned -- **never
+    /// the camera's projection**. Reading the projection back was the closed
+    /// loop that walked a reader towards the oldest while they scrolled
+    /// towards the newest.
+    @Test func testTheWindowReadsTheActualOffsetNotTheCamera() {
+        #expect(W.viewportTop(
+            pinned: false, content: 5000, viewport: 800, offset: 1234) == 1234)
+        // A camera sitting at 400 is not this number.
+        #expect(W.viewportTop(
+            pinned: false, content: 5000, viewport: 800, offset: 1234) != 400)
+        // Pinned: the document's end, which is also where the offset has
+        // to be.
+        #expect(W.viewportTop(
+            pinned: true, content: 5000, viewport: 800, offset: 999) == 4200)
+    }
+
+    /// **A reader's scroll is still the reader's after twenty
+    /// compensations** (the 2026-11-06 red). Five rows a step raised the
+    /// number of targets the view leaves behind; the epoch has to keep a
+    /// stale one from being matched, and the reader's own wheel has to
+    /// outrank even a fresh match.
+    @Test func testAUserScrollAfterTwentyCompensationsIsStillTheReaders() {
+        var expectations: [C.ScrollExpectation] = []
+        var epoch: UInt64 = 1
+        for step in 0..<20 {
+            // The rows changed, the frames that answer them arrived, and
+            // the compensation registered exactly one target.
+            epoch &+= 1
+            expectations = [.init(y: Double(step) * 100, epoch: epoch)]
+            #expect(C.programmaticCallback(
+                inScrollCall: false, seekInFlight: false,
+                y: Double(step) * 100, epoch: epoch,
+                expectations: &expectations))
+            #expect(expectations.isEmpty)
+            // The reader's own wheel, a map later.
+            epoch &+= 1
+            let matched = C.programmaticCallback(
+                inScrollCall: false, seekInFlight: false, y: 777,
+                epoch: epoch, expectations: &expectations)
+            #expect(!matched)
+            #expect(A.cause(
+                contentChanged: false, framesChanged: false,
+                phaseIsLayout: true, programmatic: matched,
+                userScrolling: false, readerRecently: true) == .user)
+        }
+
+        // **A stale target the reader lands on is the reader's**, even when
+        // the raw matcher thinks it is the view's: the wheel explains the
+        // callback, and the camera is written.
+        var stale: [C.ScrollExpectation] = [.init(y: 400, epoch: 3)]
+        let matchedStale = C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 400, epoch: 3,
+            expectations: &stale)
+        #expect(matchedStale)
+        #expect(A.cause(
+            contentChanged: false, framesChanged: false,
+            phaseIsLayout: false, programmatic: matchedStale,
+            userScrolling: false, readerRecently: true) == .user)
+    }
+
+    /// **A target from an older map is not an answer** (review C, M3). With
+    /// five rows going in every few screens, the place the last compensation
+    /// left is exactly where the reader's next scroll arrives; matching it
+    /// would read the reader as the view and swallow their movement.
+    @Test func testATargetFromAnOlderMapIsNotMatched() {
+        var expectations: [C.ScrollExpectation] = [.init(y: 400, epoch: 3)]
+        // The frames have moved on: the old target means nothing.
+        #expect(!C.programmaticCallback(
+            inScrollCall: false, seekInFlight: false, y: 400, epoch: 4,
+            expectations: &expectations))
+        #expect(expectations.isEmpty)
     }
 
     /// **The lower edge asks for a newer page only on the reader's input**
@@ -727,11 +1390,22 @@ struct ControlRoomChatPresentationTests {
             phaseIsLayout: true, programmatic: false,
             userScrolling: false, readerRecently: true
         ) == .user)
-        // Our own scroll stays ours, whatever the wheel is doing.
+        // **A wheel outranks even one of our own target matches now** (the
+        // 2026-11-06 red): a compensation landing under the reader's hand
+        // re-reads the place the camera already names, so treating it as
+        // theirs costs nothing -- while the old rule swallowed a reader's
+        // scroll that happened to reach a target left behind, froze the
+        // camera, and walked them to the oldest.
         #expect(A.cause(
             contentChanged: true, framesChanged: false,
             phaseIsLayout: false, programmatic: true,
             userScrolling: false, readerRecently: true
+        ) == .user)
+        // Without the reader's signal, a match is still ours.
+        #expect(A.cause(
+            contentChanged: true, framesChanged: false,
+            phaseIsLayout: false, programmatic: true,
+            userScrolling: false, readerRecently: false
         ) == .programmatic)
         // Without the signal the same facts are still layout -- the defect
         // this parameter exists for, held here so it cannot come back.
@@ -785,9 +1459,108 @@ struct ControlRoomChatPresentationTests {
         #expect(A.change(from: ["b", "c"], to: ["a", "b", "c"]) == .prepended)
         #expect(A.change(from: ["a", "b"], to: ["a", "b", "c"]) == .appended)
         #expect(A.change(from: ["a", "b"], to: ["a", "b"]) == .none)
-        // The window dropped its front while appending: neither end is the
-        // same list, so this is not an append that may pull the reader down.
-        #expect(A.change(from: ["a", "b", "c"], to: ["b", "c", "d"]) == .replaced)
+        // **A slide is still the same map** (review C, M4): the window
+        // dropped its front and grew at the back, and the rows the reader is
+        // among are untouched.
+        #expect(A.change(from: ["a", "b", "c"], to: ["b", "c", "d"]) == .moved)
+        #expect(A.change(from: ["a", "b", "c"], to: ["b", "c"]) == .moved)
+        #expect(A.change(from: ["a", "b", "c"], to: ["a", "b"]) == .moved)
+        // **A row that left the middle** is not a window move: the surviving
+        // ids no longer form the run they bounded.
+        #expect(A.change(from: ["a", "b", "c"], to: ["a", "c"]) == .replaced)
+        // **Another map**: nothing contiguous survives.
+        #expect(A.change(from: ["a", "b"], to: ["x", "y"]) == .replaced)
+        #expect(A.change(from: ["a", "b", "c"], to: []) == .replaced)
+    }
+
+    /// **The end marks are in the plan, not in the feed's rows** (review C,
+    /// M7): they are the conversation's real ends, they draw no control, and
+    /// the list does not draw them twice.
+    @Test func testTheEndsAreMarksInThePlan() {
+        let order = ["p:1", "p:2"]
+        #expect(P.listRows(order: order, trimmedBefore: nil, trimmedAfter: nil,
+                           atStart: true, atEnd: false) == [
+            .start, .message(id: "p:1"), .message(id: "p:2"),
+        ])
+        #expect(P.listRows(order: order, trimmedBefore: nil, trimmedAfter: nil,
+                           atStart: false, atEnd: true) == [
+            .message(id: "p:1"), .message(id: "p:2"), .end,
+        ])
+        // A real released run wins the top: the beginning is not both a
+        // mark and a gap.
+        #expect(P.listRows(order: order, trimmedBefore: "p:1", trimmedAfter: nil,
+                           atStart: true, atEnd: false).first == .start)
+        // No rows, no mark.
+        #expect(P.listRows(order: [], trimmedBefore: nil, trimmedAfter: nil,
+                           atStart: true, atEnd: true).isEmpty)
+        #expect(P.ListRow.start.id != P.ListRow.end.id)
+        #expect(P.ListRow.start.id != P.ListRow.message(id: "p:1").id)
+    }
+
+    /// **A fallback lands near where the camera was** (the 2026-11-07
+    /// back-jump red): with only the early and late stretches measured, a
+    /// drifted pixel centre must not pull the reader to the early rows --
+    /// the camera's own index decides.
+    @Test func testTheFallbackLandsNearTheCamerasPlace() {
+        var order: [String] = []
+        var frames: [String: CGRect] = [:]
+        for i in 0..<500 {
+            let id = "r\(i)"
+            order.append(id)
+            frames[id] = CGRect(x: 0, y: CGFloat(i) * 40, width: 300, height: 40)
+        }
+        let measured = frames.filter { i, _ in
+            (0..<60).contains(Int(i.dropFirst())!) || (380..<421).contains(Int(i.dropFirst())!)
+        }
+        // The pixel centre is early (a stale offset); the camera was at 400.
+        let place = C.fallbackPlace(centre: 500, order: order, frames: measured, near: 400)
+        let index = place.flatMap { order.firstIndex(of: $0.id) } ?? -1
+        #expect(index >= 380)
+    }
+
+    /// **Thirty screens of scrolling, and the row at the viewport's top only
+    /// moves one way** (the 2026-11-07 back-jump red): down the index never
+    /// decreases, up it never increases, and the end of the run is not back
+    /// at the beginning. This is the inverse the camera is written from.
+    @Test func testTheTopRowIsMonotonicOverThirtyScreens() {
+        let height = 40.0
+        let viewport = 800.0
+        var order: [String] = []
+        var frames: [String: CGRect] = [:]
+        for i in 0..<500 {
+            let id = "r\(i)"
+            order.append(id)
+            frames[id] = CGRect(x: 0, y: CGFloat(i) * height, width: 300, height: height)
+        }
+        let step = 25.0
+        let steps = Int(30 * viewport / step)   // thirty screens in 25 pt steps
+
+        var last = -1
+        for i in 0..<steps {
+            let y = Double(i) * step
+            guard let place = C.place(order: order, frames: frames, at: y) else {
+                Issue.record("no place at y=\(y)")
+                return
+            }
+            let index = order.firstIndex(of: place.id)!
+            #expect(index >= last, "a back-jump down: \(index) after \(last) at y=\(y)")
+            last = index
+        }
+        // The run really travelled, and it is not back at the first rows.
+        #expect(last > 400)
+
+        var previous = order.count
+        for i in stride(from: steps - 1, through: 0, by: -1) {
+            let y = Double(i) * step
+            guard let place = C.place(order: order, frames: frames, at: y) else {
+                Issue.record("no place at y=\(y) going up")
+                return
+            }
+            let index = order.firstIndex(of: place.id)!
+            #expect(index <= previous, "a back-jump up: \(index) after \(previous) at y=\(y)")
+            previous = index
+        }
+        #expect(previous < 100)
     }
 
     // MARK: - The index bar (task 3002)

@@ -1533,6 +1533,11 @@
 "Later context" = "Later context";
 "Return to latest" = "Return to latest";
 
+/* The chat window's two ends (task 3016 R4): the marks that say the
+   conversation really stops here. Neither is a control. */
+"This is the beginning of the conversation." = "This is the beginning of the conversation.";
+"This is the newest message." = "This is the newest message.";
+
 "Back to search" = "Back to search";
 
 /* The chat's search locate and its preview shell (task 2982): the left

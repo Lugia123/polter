@@ -174,13 +174,25 @@ enum ControlRoomChatPresentation {
     /// exhausts this enum, so a gap cannot be forgotten by a different
     /// reader; and the plan is what a test hands real inputs to.
     enum ListRow: Equatable {
+        /// **The conversation really begins above this** (task 3016 R4). A
+        /// mark, not a control: it asks for nothing and cannot be pressed.
+        /// It lives in the plan and never in `feed.rows`, so it is not a
+        /// row the window counts, trims or prefetches against (review C,
+        /// M7).
+        case start
         case message(id: String)
         case gap(Gap)
+        /// **The conversation really ends below this.** Drawn only where
+        /// the document is not following the live end: a pinned list that
+        /// ends on the mark would look like there is something under it.
+        case end
 
         var id: String {
             switch self {
+            case .start: return "start"
             case let .message(id): return "m:" + id
             case let .gap(gap): return "g:" + gap.id
+            case .end: return "end"
             }
         }
     }
@@ -209,12 +221,18 @@ enum ControlRoomChatPresentation {
     static func listRows(
         order: [String],
         trimmedBefore: String?,
-        trimmedAfter: String?
+        trimmedAfter: String?,
+        atStart: Bool = false,
+        atEnd: Bool = false
     ) -> [ListRow] {
         var rows: [ListRow] = []
         let afterIsPlaced = trimmedAfter.map(order.contains) ?? true
-        if let first = order.first,
-           trimmedBefore != nil || !afterIsPlaced {
+        // **One statement, not two.** `atStart` says "nothing older exists",
+        // and a gap says "older records were released" -- the two cannot
+        // both be true at this end, so the caller passes one of them.
+        if atStart, !order.isEmpty {
+            rows.append(.start)
+        } else if let first = order.first, trimmedBefore != nil {
             rows.append(.gap(.before(first)))
         }
         for id in order {
@@ -222,6 +240,16 @@ enum ControlRoomChatPresentation {
             if let trimmedAfter, id == trimmedAfter {
                 rows.append(.gap(.after(id)))
             }
+        }
+        // **A released run whose anchor row is gone is still real, and it is
+        // newer than everything kept** -- the window slid past it. It is
+        // said after the last row, not above the first: the top gap would
+        // claim the missing records are older than what is drawn.
+        if let trimmedAfter, !afterIsPlaced, let last = order.last {
+            rows.append(.gap(.after(last)))
+        }
+        if atEnd, !order.isEmpty {
+            rows.append(.end)
         }
         return rows
     }

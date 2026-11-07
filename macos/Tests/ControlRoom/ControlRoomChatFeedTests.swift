@@ -652,16 +652,19 @@ struct ControlRoomChatFeedTests {
         #expect(rig.door.last("chat_history_begin")?["mode"] == nil)
 
         rig.scheduler.run(0.2)
-        #expect(rig.feed.rows.map(\.id) == ["p:8", "p:9", "p:10"])
+        // **The page is in the apron** (R4): the document is unchanged, and
+        // the view feeds it a step at a time.
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(rig.feed.aboveCount == 2)
         #expect(rig.feed.older == .atEnd)
         #expect(!rig.feed.canLoadOlder)
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 2)
+        #expect(rig.feed.rows.map(\.id) == ["p:8", "p:9", "p:10"])
     }
 
-    /// **The chunk sizes are the request's, not the drawing's.** The first
-    /// screen and each upward page both ask for 100 (task 3016 §5: the
-    /// prefetch's three-viewport margin is spent against pages this size), and
-    /// the upward page still carries the resume token and no mode.
-    @Test func testTheFirstScreenAndEveryOlderPageAskForAHundred() {
+    /// **The first screen's request is twelve screens of the pane's rows**, and
+    /// every later page carries the resume token and no mode (R4).
+    @Test func testTheFirstScreenAndOlderPagesCarryTheirOwnSizes() {
         let rig = Rig()
         var polls = 0
         rig.door.reply = { request in
@@ -683,25 +686,25 @@ struct ControlRoomChatFeedTests {
         }
         rig.feed.start(group: "polter")
         #expect(rig.door.methods("chat_history_begin").count == 1)
-        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == Feed.firstChunk)
-        #expect(Feed.firstChunk == 100)
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int
+            == Feed.firstChunkFallback)
 
         rig.scheduler.run(0.2)
         #expect(rig.feed.canLoadOlder)
 
-        rig.feed.loadOlder()
+        rig.feed.loadOlder(limit: 24)
         #expect(rig.door.methods("chat_history_begin").count == 2)
-        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == Feed.olderChunk)
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == 24)
         #expect(rig.door.last("chat_history_begin")?["resume_token"] as? String == olderToken)
-        #expect(Feed.olderChunk == 100)
+        #expect(rig.door.last("chat_history_begin")?["mode"] == nil)
     }
 
-    /// **Loading older is only rows.** A window of more than a thousand
-    /// messages is built by paging back one chunk at a time: `rows.count`
-    /// grows by exactly one chunk per page, `state` never leaves `.ready`,
-    /// and nothing is trimmed.
-    @Test func testPagingBackGrowsTheRowsWithoutTouchingTheStateOrTheGap() {
+    /// **Paging back fills the apron; the document grows a step at a time.**
+    /// `state` never leaves `.ready` (loading older is not a UI event), and
+    /// no step moves more than the intake.
+    @Test func testPagingBackFillsTheApronAndTheDocumentGrowsAStepAtATime() {
         let rig = Rig()
+        let page = 40
         var polls = 0
         rig.door.reply = { request in
             switch Door.method(request) {
@@ -710,19 +713,15 @@ struct ControlRoomChatFeedTests {
             case "chat_history_poll":
                 polls += 1
                 if polls == 1 {
-                    let first = (0..<Feed.firstChunk).map {
-                        self.message(anchor: "p:\(1000 + $0)")
-                    }
                     return .answer(self.ready(
-                        messages: first, stop: "full", token: self.olderToken
+                        messages: [self.message(anchor: "p:1000")],
+                        stop: "full", token: self.olderToken
                     ))
                 }
-                let base = 1000 - (polls - 1) * Feed.olderChunk
-                let page = (0..<Feed.olderChunk).map {
-                    self.message(anchor: "p:\(base + $0)")
-                }
+                let base = 1000 - (polls - 1) * page
                 return .answer(self.ready(
-                    messages: page, stop: "full", token: self.olderToken
+                    messages: (0..<page).map { self.message(anchor: "p:\(base + $0)") },
+                    stop: "full", token: self.olderToken
                 ))
             default:
                 return .notReady
@@ -730,21 +729,23 @@ struct ControlRoomChatFeedTests {
         }
         rig.feed.start(group: "polter")
         rig.scheduler.run(0.2)
-        #expect(rig.feed.rows.count == Feed.firstChunk)
+        #expect(rig.feed.rows.count == 1)
         #expect(rig.feed.state == .ready)
 
         var lastCount = rig.feed.rows.count
-        for _ in 0..<23 {
-            rig.feed.loadOlder()
-            // The state belongs to the first screen; loading older is not a
-            // UI event and never turns it back to `.loading`.
-            #expect(rig.feed.state == .ready)
+        for _ in 0..<10 {
+            rig.feed.loadOlder(limit: page)
             rig.scheduler.run(0.2)
             #expect(rig.feed.state == .ready)
-            #expect(rig.feed.rows.count == lastCount + Feed.olderChunk)
+            // The page is in the apron, not the document.
+            #expect(rig.feed.rows.count == lastCount)
+            // The view may ask for a whole shortfall now; the feed still
+            // honours the row count it is handed.
+            let fed = rig.feed.feedOlder(rows: 5, maxHeight: 200)
+            #expect(fed <= 5)
+            #expect(rig.feed.rows.count == lastCount + fed)
             lastCount = rig.feed.rows.count
         }
-        #expect(rig.feed.rows.count >= 1000)
         #expect(rig.feed.trimmedBefore == nil)
         #expect(rig.feed.trimmedAfter == nil)
     }
@@ -791,7 +792,9 @@ struct ControlRoomChatFeedTests {
 
         rig.scheduler.run(0.2) // the page lands
         #expect(rig.feed.state == .ready)
-        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
+        // It lands in the apron; the document moves only when asked.
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(rig.feed.aboveCount == 1)
     }
 
     /// Five calls while a page is out are **one** request; a page that
@@ -924,11 +927,11 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.historyTail?.nextToken != nil)
     }
 
-    /// **An older page is not inserted under a moving hand.** While the view
-    /// reports the reader active, the page's rows, its tail and its `older`
-    /// word all wait; `canLoadOlder` is false so the top edge cannot send a
-    /// second request; `readerIdle()` lands the whole page in one step.
-    @Test func testAnOlderPageIsHeldWhileTheReaderMoves() {
+    /// **A page lands in the apron, and the document is fed from it a step
+    /// at a time** (task 3016 R4, review C's M8). The page does not touch
+    /// the rows: `feedOlder` moves five of them in, one rows change, and a
+    /// second call with the apron empty changes nothing.
+    @Test func testAnOlderPageLandsInTheApronAndIsFedAStepAtATime() {
         let rig = Rig()
         var polls = 0
         rig.door.reply = { request in
@@ -944,8 +947,8 @@ struct ControlRoomChatFeedTests {
                     ))
                 }
                 return .answer(self.ready(
-                    messages: [self.message(anchor: "p:9")],
-                    stop: "at_end", token: nil
+                    messages: (5..<10).map { self.message(anchor: "p:\($0)") },
+                    stop: "full", token: self.olderToken
                 ))
             default:
                 return .notReady
@@ -955,27 +958,28 @@ struct ControlRoomChatFeedTests {
         rig.scheduler.run(0.2)
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
 
-        rig.feed.readerActive(true)
-        rig.feed.loadOlder()
-        rig.scheduler.run(0.2) // the page arrives while the hand is on
+        rig.feed.loadOlder(limit: 20)
+        rig.scheduler.run(0.2)
+        // **Nothing is inserted by the page**: it waits in the apron.
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        #expect(!rig.feed.canLoadOlder)
-        #expect(rig.feed.older == .loading)
+        #expect(rig.feed.aboveCount == 5)
+        // The tail is the page's own, taken when it landed.
         #expect(rig.feed.historyTail?.nextToken == olderToken)
 
-        rig.feed.readerIdle()
-        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
-        #expect(rig.feed.older == .atEnd)
-        #expect(rig.feed.historyTail?.nextToken == nil)
-        #expect(!rig.feed.canLoadOlder)
+        // One step is at most five rows, and it is one rows change.
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 5)
+        #expect(rig.feed.rows.map(\.id) == [
+            "p:5", "p:6", "p:7", "p:8", "p:9", "p:10",
+        ])
+        #expect(rig.feed.aboveCount == 0)
+        // An empty apron is not a stop: the feed still has history to ask for.
+        #expect(rig.feed.canLoadOlder)
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 0)
     }
 
-    /// **A gesture keeps asking** (M3). One page per gesture is the "scroll
-    /// stops to load" the person reported: while the hand is on the list the
-    /// feed holds each page and asks for the next from the token it just
-    /// received, and `readerIdle()` lands the whole queue as **one rows
-    /// change** (one correction), not one per page.
-    @Test func testAGestureQueuesSeveralOlderPagesAndMergesThemAtOnce() {
+    /// **The step's height cap is in points** (review C, M5): a group of
+    /// 200 pt messages takes two rows into half a screen, not five.
+    @Test func testFeedOlderStopsAtTheHeightCap() {
         let rig = Rig()
         var polls = 0
         rig.door.reply = { request in
@@ -988,37 +992,55 @@ struct ControlRoomChatFeedTests {
                         messages: [self.message(anchor: "p:10")],
                         stop: "full", token: self.olderToken))
                 }
-                // p:9, p:8, ... each with a token of its own.
                 return .answer(self.ready(
-                    messages: [self.message(anchor: "p:\(20 - polls)")],
+                    messages: (5..<10).map { self.message(anchor: "p:\($0)") },
                     stop: "full", token: self.olderToken))
             default: return .notReady
             }
         }
         rig.feed.start(group: "polter")
         rig.scheduler.run(0.2)
-        #expect(rig.feed.rows.map(\.id) == ["p:10"])
-
-        rig.feed.readerActive(true)
-        rig.feed.loadOlder()
-        // Let several pages land while the hand stays on the list.
-        for _ in 0..<8 { rig.scheduler.run(0.2) }
-
-        // Nothing has been inserted: the map is still the first screen.
-        #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        // **The pipeline kept asking**: each held page sent the next begin.
-        #expect(rig.door.methods("chat_history_begin").count >= 3)
-        #expect(!rig.feed.canLoadOlder)
-
-        rig.feed.readerIdle()
-        // One merge: every held page arrived, oldest first, in one change.
-        #expect(rig.feed.rows.count > 2)
-        #expect(rig.feed.rows.last?.id == "p:10")
-        #expect(rig.feed.rows.first?.id != "p:10")
+        rig.feed.loadOlder(limit: 20)
+        rig.scheduler.run(0.2)
+        rig.feed.rowHeightEstimate = 200
+        // Half a screen (400 pt) is two rows, not five.
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 2)
+        #expect(rig.feed.aboveCount == 3)
+        // **A row taller than the cap is still a row**: progress, or the
+        // window could never grow in a group of long messages.
+        rig.feed.rowHeightEstimate = 900
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 1)
     }
 
-    /// `readerIdle()` with nothing held changes nothing at all.
-    @Test func testReaderIdleWithNothingHeldIsANoOp() {
+    /// **The request carries the size the view computed** (review C, M6):
+    /// the missing margin, not a fixed page.
+    @Test func testLoadOlderCarriesTheRequestedSize() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin": return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken))
+                }
+                return .answer(self.status("pending"))
+            default: return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.loadOlder(limit: 37)
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int == 37)
+    }
+
+    /// **The first screen is twelve screens of the pane's rows** (the
+    /// capacity red aligned it with the ten-screen margin), not the old
+    /// fixed hundred.
+    @Test func testTheFirstScreenAsksForTwelveScreens() {
         let rig = Rig()
         rig.door.reply = { request in
             switch Door.method(request) {
@@ -1028,10 +1050,10 @@ struct ControlRoomChatFeedTests {
             }
         }
         rig.feed.start(group: "polter")
-        let requests = rig.door.requests.count
-        rig.feed.readerIdle()
-        #expect(rig.door.requests.count == requests)
-        #expect(rig.feed.rows.isEmpty)
+        // Before the pane has measured itself: the conservative default.
+        #expect(rig.door.last("chat_history_begin")?["limit"] as? Int
+            == Feed.firstChunkFallback)
+        #expect(Feed.firstChunkFallback == 192)
     }
 
     /// **A located window has its own older cursor.** `locate` clears
@@ -1086,7 +1108,6 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.state == .ready)
 
         let begins = rig.door.methods("chat_history_begin").count
-        rig.feed.readerActive(true)
         for _ in 0..<5 { rig.feed.loadOlder() }
         #expect(rig.door.methods("chat_history_begin").count == begins + 1)
         let sent = rig.door.last("chat_history_begin")
@@ -1095,217 +1116,15 @@ struct ControlRoomChatFeedTests {
         #expect(sent?["resume_token"] as? String == olderToken)
         #expect(rig.feed.state == .ready)
 
-        // Held while the hand is on; landed in one step on idle.
+        // **The context page lands in the apron too** (R4): the document is
+        // unchanged until the view asks for a step.
         rig.scheduler.run(0.2)
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        #expect(!rig.feed.canLoadOlder)
-        rig.feed.readerIdle()
+        #expect(rig.feed.aboveCount == 1)
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 1)
         #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
         #expect(rig.feed.context?.olderToken == nextOlderToken)
         #expect(rig.feed.state == .ready)
-    }
-
-    /// **A stop ends the gesture with the showing.** A stop during a drag
-    /// must not leave "the hand is on the list" standing into the next
-    /// showing: a page would then be held for a hand that is no longer
-    /// there. After a stop and a return the top edge asks again, and the
-    /// page lands without `readerIdle()`.
-    @Test func testStopDoesNotLeaveTheReaderHoldingTheNextPage() {
-        let rig = Rig()
-        var polls = 0
-        rig.door.reply = { request in
-            switch Door.method(request) {
-            case "chat_history_begin":
-                return .answer(self.begin(snapshot: []))
-            case "chat_history_poll":
-                polls += 1
-                if polls == 1 {
-                    return .answer(self.ready(
-                        messages: [self.message(anchor: "p:10")],
-                        stop: "full", token: self.olderToken
-                    ))
-                }
-                return .answer(self.ready(
-                    messages: [self.message(anchor: "p:9")],
-                    stop: "at_end", token: nil
-                ))
-            default:
-                return .notReady
-            }
-        }
-        rig.feed.start(group: "polter")
-        rig.scheduler.run(0.2)
-
-        rig.feed.readerActive(true)
-        rig.feed.loadOlder()
-        rig.scheduler.run(0.2) // held
-        #expect(rig.feed.rows.map(\.id) == ["p:10"])
-        #expect(!rig.feed.canLoadOlder)
-
-        rig.feed.stop()
-        rig.feed.start(group: "polter")
-        #expect(rig.feed.canLoadOlder)
-        rig.feed.loadOlder()
-        rig.scheduler.run(0.2)
-        // Landed without `readerIdle()`: a stale flag would have held it.
-        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
-    }
-
-    /// **A held older page must not roll the newer cursor back.** While it
-    /// waits, a newer page can land; that page's answer is the later word
-    /// for the newer direction, so the older page's stale `newer_token` is
-    /// not written over it.
-    @Test func testAHeldContextPageDoesNotRollBackTheNewerCursor() {
-        let rig = Rig()
-        let job = String(repeating: "a", count: 32)
-        let aroundOlder = String(repeating: "b", count: 32)
-        let aroundNewer = String(repeating: "c", count: 32)
-        let olderNext = String(repeating: "d", count: 32)
-        let staleNewer = String(repeating: "e", count: 32)
-        let newerOlder = String(repeating: "f", count: 32)
-        let newerNext = String(repeating: "1", count: 32)
-        var stage = 0
-        rig.door.reply = { request in
-            switch Door.method(request) {
-            case "chat_history_begin":
-                return .answer(self.begin(job: job))
-            case "chat_history_poll":
-                switch stage {
-                case 0:
-                    return .answer("""
-                    {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
-                    "group":"polter","session":"s1",\
-                    "messages":[\(self.message(seq: 1, log: 1, anchor: "p:10"))],\
-                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
-                    "older_at_end":false,"newer_at_end":false,\
-                    "gap":false,"restarted":false,"target_index":0}
-                    """)
-                case 1:
-                    return .answer("""
-                    {"ok":true,"state":"ready","mode":"context","job_id":"\(job)",\
-                    "group":"polter","session":"s1",\
-                    "messages":[\(self.message(seq: 0, log: 0, anchor: "p:9"))],\
-                    "stop":"full","older_token":"\(olderNext)","newer_token":"\(staleNewer)",\
-                    "older_at_end":false,"newer_at_end":false,\
-                    "gap":false,"restarted":false,"direction":"older"}
-                    """)
-                default:
-                    return .answer("""
-                    {"ok":true,"state":"ready","mode":"context","job_id":"\(job)",\
-                    "group":"polter","session":"s1",\
-                    "messages":[\(self.message(seq: 2, log: 2, anchor: "p:11"))],\
-                    "stop":"full","older_token":"\(newerOlder)","newer_token":"\(newerNext)",\
-                    "older_at_end":false,"newer_at_end":true,\
-                    "gap":false,"restarted":false,"direction":"newer"}
-                    """)
-                }
-            default:
-                return .notReady
-            }
-        }
-        rig.feed.start(group: "polter")
-        rig.feed.locate(anchor: "p:10", location: nil)
-        rig.scheduler.run(0.2) // the around window
-        #expect(rig.feed.context?.olderToken == aroundOlder)
-        #expect(rig.feed.context?.newerToken == aroundNewer)
-
-        rig.feed.readerActive(true)
-        rig.feed.loadOlder()
-        stage = 1
-        rig.scheduler.run(0.2) // the older page is held
-        #expect(rig.feed.rows.map(\.id) == ["p:10"])
-
-        rig.feed.loadContextNewer()
-        stage = 2
-        rig.scheduler.run(0.2) // a newer page lands while the older is held
-        #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])
-
-        rig.feed.readerIdle()
-        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10", "p:11"])
-        // The older side advanced; the newer side kept the later word.
-        #expect(rig.feed.context?.olderToken == olderNext)
-        #expect(rig.feed.context?.newerToken == newerNext)
-        #expect(rig.feed.context?.newerAtEnd == true)
-    }
-
-    /// **A held page must not kill a newer request still out.** While an
-    /// older page waits, a newer page can already be in flight; the older
-    /// page's late landing must not clear that job's id (its polls would
-    /// stop and its answer go unread) nor its pending direction.
-    @Test func testAHeldContextPageLeavesAnOutstandingNewerJobAlive() {
-        let rig = Rig()
-        let job = String(repeating: "a", count: 32)
-        // **Distinct job ids**: the core never reuses one, and the feed's
-        // "is this my job?" test is by id. A fixture that reused one id
-        // would make the held page look like it owned the newer request.
-        let olderJob = String(repeating: "d", count: 32)
-        let newerJob = String(repeating: "e", count: 32)
-        let aroundOlder = String(repeating: "b", count: 32)
-        let aroundNewer = String(repeating: "c", count: 32)
-        var beginsSent = 0
-        var stage = 0
-        rig.door.reply = { request in
-            switch Door.method(request) {
-            case "chat_history_begin":
-                beginsSent += 1
-                switch beginsSent {
-                case 1, 2: return .answer(self.begin(job: job))
-                case 3: return .answer(self.begin(job: olderJob))
-                default: return .answer(self.begin(job: newerJob))
-                }
-            case "chat_history_poll":
-                switch stage {
-                case 0:
-                    return .answer("""
-                    {"ok":true,"state":"ready","mode":"around","job_id":"\(job)",\
-                    "group":"polter","session":"s1",\
-                    "messages":[\(self.message(seq: 1, log: 1, anchor: "p:10"))],\
-                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
-                    "older_at_end":false,"newer_at_end":false,\
-                    "gap":false,"restarted":false,"target_index":0}
-                    """)
-                case 1:
-                    return .answer("""
-                    {"ok":true,"state":"ready","mode":"context","job_id":"\(olderJob)",\
-                    "group":"polter","session":"s1",\
-                    "messages":[\(self.message(seq: 0, log: 0, anchor: "p:9"))],\
-                    "stop":"full","older_token":"\(aroundOlder)","newer_token":"\(aroundNewer)",\
-                    "older_at_end":false,"newer_at_end":false,\
-                    "gap":false,"restarted":false,"direction":"older"}
-                    """)
-                default:
-                    return .answer("""
-                    {"ok":true,"state":"pending","job_id":"\(newerJob)",\
-                    "group":"polter","session":"s1"}
-                    """)
-                }
-            default:
-                return .notReady
-            }
-        }
-        rig.feed.start(group: "polter")
-        rig.feed.locate(anchor: "p:10", location: nil)
-        rig.scheduler.run(0.2)
-        #expect(rig.feed.context != nil)
-
-        rig.feed.readerActive(true)
-        rig.feed.loadOlder()
-        stage = 1
-        rig.scheduler.run(0.2) // held
-        #expect(rig.feed.rows.map(\.id) == ["p:10"])
-
-        let begins = rig.door.methods("chat_history_begin").count
-        rig.feed.loadContextNewer() // begin answered; its poll is out
-        #expect(rig.door.methods("chat_history_begin").count == begins + 1)
-
-        rig.feed.readerIdle() // the older page lands with the newer job out
-        #expect(rig.feed.rows.map(\.id) == ["p:9", "p:10"])
-
-        // **The newer job is still held.** Its pending answer schedules the
-        // next poll; a cleared id would stop the loop here.
-        stage = 2
-        #expect(rig.scheduler.run(0.2))
-        #expect(rig.scheduler.count(at: 0.2) == 1)
     }
 
     /// **The located window is a screen and a half each way.** A 10+10 page
@@ -1552,12 +1371,11 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.rows.map(\.id) == ["p:10"])
     }
 
-    /// **The page just asked for must not be evicted the moment it is
-    /// merged.** Past the ceiling, one whole block leaves from the end
-    /// farthest from the reader. With the reader at the top -- where
-    /// `loadOlder` has just put the new page -- the oldest block is what
-    /// they are looking at, so the newest block goes instead, and the kept
-    /// rows stay one contiguous run.
+    /// **The page just asked for stays in the apron.** Past the ceiling, one
+    /// whole block leaves from the end farthest from the reader. With the
+    /// reader at the top, the older apron is the nearest side, so the newest
+    /// block of the document goes instead, and what is kept stays one
+    /// contiguous run.
     @Test func testPastTheCeilingTheFarBlockGoesAndTheLoadedPageStays() {
         let rig = Rig()
         var polls = 0
@@ -1591,25 +1409,27 @@ struct ControlRoomChatFeedTests {
         // The view is looking at the oldest row it holds: the top edge.
         rig.feed.reading(anchor: "p:1")
 
-        rig.feed.loadOlder()
+        rig.feed.loadOlder(limit: 50)
         rig.scheduler.run(0.2)
 
-        // 5050 rows in, one block of 100 out from the newest end: 4950 kept.
-        #expect(rig.feed.rows.count == Feed.retainedLimit + 50 - Feed.firstChunk)
-        #expect(rig.feed.rows.first?.id == "h:1")
-        #expect(rig.feed.rows.contains { $0.id == "h:50" })
-        #expect(rig.feed.rows.contains { $0.id == "p:1" })
-        #expect(rig.feed.rows.last?.id == "p:\(Feed.retainedLimit - Feed.firstChunk)")
+        // **The page is in the apron, not the document** (R4): the fifty
+        // new records are all still held, and the ceiling took its block
+        // from the document's far end instead.
+        #expect(rig.feed.aboveCount == 50)
+        #expect(rig.feed.rows.count == Feed.retainedLimit - 50)
+        #expect(rig.feed.rows.first?.id == "p:1")
+        #expect(rig.feed.rows.last?.id == "p:\(Feed.retainedLimit - 50)")
 
         // **What went is one contiguous run at the far end**, never a hole
         // dug out of the middle, and it is said out loud.
         let kept = Set(rig.feed.rows.map(\.id))
-        #expect(rig.feed.trimmedAfter == "p:\(Feed.retainedLimit - Feed.firstChunk)")
+        #expect(rig.feed.trimmedAfter == "p:\(Feed.retainedLimit - 50)")
         #expect(rig.feed.trimmedBefore == nil)
-        #expect(((Feed.retainedLimit - Feed.firstChunk + 1)...Feed.retainedLimit)
+        #expect(((Feed.retainedLimit - 49)...Feed.retainedLimit)
             .allSatisfy { !kept.contains("p:\($0)") })
-        // The released rows' aliases went with them.
-        #expect(rig.feed.aliasCount == rig.feed.rows.count)
+        // The released rows' aliases went with them; the apron's are still
+        // held with their rows.
+        #expect(rig.feed.aliasCount == rig.feed.rows.count + rig.feed.aboveCount)
 
         // **Back to the newest is a fresh bootstrap, not a scroll.** The
         // block that went was the newest one, so the newest rows may simply
@@ -1845,6 +1665,10 @@ struct ControlRoomChatFeedTests {
         rig.feed.loadOlder()
         #expect(rig.door.methods("chat_history_begin").count == begins + 1)
         rig.scheduler.run(0.2)
+        // The page is the apron's, and the document takes it in steps.
+        #expect(rig.feed.rows.map(\.id) == ["p:10"])
+        #expect(rig.feed.aboveCount == 2)
+        #expect(rig.feed.feedOlder(rows: 5, maxHeight: 400) == 2)
         #expect(rig.feed.rows.map(\.id) == ["p:8", "p:9", "p:10"])
     }
 
@@ -1961,11 +1785,12 @@ struct ControlRoomChatFeedTests {
         rig.feed.start(group: "polter")
         rig.scheduler.run(2)
 
-        let kept = Feed.retainedLimit + 1 - Feed.firstChunk
+        let block = Feed.trimBlockRows
+        let kept = Feed.retainedLimit + 1 - block
         #expect(rig.feed.rows.count == kept)
-        #expect(count - rig.feed.rows.count == Feed.firstChunk)
-        #expect(rig.feed.rows.first?.id == "p:\(Feed.firstChunk + 1)")
-        #expect(rig.feed.trimmedBefore == "p:\(Feed.firstChunk + 1)")
+        #expect(count - rig.feed.rows.count == block)
+        #expect(rig.feed.rows.first?.id == "p:\(block + 1)")
+        #expect(rig.feed.trimmedBefore == "p:\(block + 1)")
         #expect(rig.feed.trimmedAfter == nil)
         #expect(rig.feed.aliasCount == kept)
     }
@@ -2014,14 +1839,11 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
     }
 
-    /// **The byte ceiling wins, but it never cuts the block the reader is
-    /// standing in** (R2-5 plus the invariant the old test pinned). Three
-    /// rows are over a 60-byte ceiling and the camera is on the oldest one;
-    /// the window is one block wide, so `trim` yields entirely and drops
-    /// nothing -- emptying or cutting the only block would leave the reader
-    /// on an evicted row, which draws as a header over a blank list. The
-    /// byte ceiling is allowed to lose here; the reader's block is not.
-    @Test func testTheByteCeilingNeverCutsTheBlockTheReaderIsIn() {
+    /// **The byte ceiling wins, but never the reader's own row** (R2-5).
+    /// Three rows are over a 60-byte ceiling and the camera is on the oldest
+    /// one: the far end gives -- the camera's row stays, the list keeps
+    /// something to draw, and the released run is said.
+    @Test func testTheByteCeilingNeverDropsTheReadersRow() {
         let rig = Rig()
         rig.feed.byteLimit = 60
         rig.door.reply = { request in
@@ -2047,19 +1869,18 @@ struct ControlRoomChatFeedTests {
         rig.feed.reading(anchor: "p:0")
 
         rig.scheduler.run(2)
-        // The reader's block is the only block: nothing may be dropped, so
-        // the byte ceiling yields and every row stays.
-        #expect(rig.feed.rows.map(\.id) == ["p:0", "p:1", "p:2"])
-        #expect(rig.feed.trimmedBefore == nil)
-        #expect(rig.feed.trimmedAfter == nil)
+        // The camera's row survives; the end farther from it goes, so the
+        // ceiling is honoured and the list is not blank.
+        #expect(rig.feed.rows.contains { $0.id == "p:0" })
+        #expect(rig.feed.rows.count >= 1)
+        #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
     }
 
-    /// **The row reserve on each side of the camera** (R1-5): past the row
-    /// ceiling with the camera in the middle, the *farther* end goes and at
-    /// least `retainedEachSide` rows stay on the near side.
+    /// **The farther end goes** (R1-5): past the row ceiling with the camera
+    /// in the middle, the side with more rows between it and the camera is
+    /// what gives, and the camera's own row survives.
     @Test func testTheFartherEndGoesAndTheCameraKeepsItsNeighbourhood() {
         let rig = Rig()
-        let side = Feed.retainedEachSide
         let count = Feed.retainedLimit
         var sent = false
         rig.door.reply = { request in
@@ -2094,15 +1915,13 @@ struct ControlRoomChatFeedTests {
                     anchor: "p:\(count + 1)")]))
         }
         rig.scheduler.run(2)
-        #expect(rig.feed.rows.count == count + 1 - Feed.firstChunk)
-        #expect(rig.feed.rows.first?.id == "p:\(Feed.firstChunk + 1)")
+        #expect(rig.feed.rows.count == count + 1 - Feed.trimBlockRows)
+        #expect(rig.feed.rows.first?.id == "p:\(Feed.trimBlockRows + 1)")
         #expect(rig.feed.rows.last?.id == "p:\(count + 1)")
         #expect(rig.feed.trimmedBefore != nil)
         #expect(rig.feed.trimmedAfter == nil)
-        // The camera's neighbourhood survives on the side behind it.
-        let index = rig.feed.rows.firstIndex { $0.id == "p:3001" } ?? -1
-        #expect(index >= 0)
-        #expect(rig.feed.rows.count - 1 - index >= side)
+        // The camera's own row is never what goes.
+        #expect(rig.feed.rows.contains { $0.id == "p:3001" })
     }
 
     /// **A jump to a row that is not loaded asks once, and a row that is
@@ -2169,7 +1988,7 @@ struct ControlRoomChatFeedTests {
         rig.scheduler.run(2)
         #expect(rig.feed.retainedBytes <= rig.feed.byteLimit)
         // Whole blocks left, never rows picked out of the middle.
-        #expect(rig.feed.rows.count % Feed.firstChunk == 0)
+        #expect(rig.feed.rows.count % Feed.trimBlockRows == 0)
         #expect(rig.feed.rows.count < 400)
 
         // One message over the whole budget: refused, not truncated.

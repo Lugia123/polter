@@ -12,14 +12,25 @@ import Foundation
 /// changes the camera -- the view re-projects instead.
 enum ControlRoomChatAnchor {
     /// What a row list did between two of its states, as far as the reader's
-    /// place is concerned. **A window that dropped rows from its front and
-    /// added others is `replaced`**, not `appended`: neither end is the same
-    /// list any more, and calling it an append would pull a reader in history
-    /// down without asking.
+    /// place is concerned.
+    ///
+    /// **`moved` is the sliding window** (task 3016 R4): rows left the
+    /// document at one end (into the feed's apron) and others came in at
+    /// either end. It is *not* `replaced` -- the rows the reader is standing
+    /// among are the same rows, and a replacement would throw the frames
+    /// away and re-measure the screen (review C, M4). `replaced` is kept for
+    /// a window that really is another map: a locate's around page, a
+    /// session change, a restart.
     enum Change: Equatable {
         case none
+        /// Rows went in front, nothing else changed.
         case prepended
+        /// Rows went on the end, nothing else changed.
         case appended
+        /// The window slid or was trimmed: a contiguous run is still there,
+        /// the ends are not what they were.
+        case moved
+        /// Another map: no contiguous run of the old rows is in the new.
         case replaced
     }
 
@@ -54,22 +65,59 @@ enum ControlRoomChatAnchor {
         userScrolling: Bool,
         readerRecently: Bool = false
     ) -> Cause {
-        if programmatic { return .programmatic }
-        // **A real live-scroll, or a wheel, wins over every layout
-        // inference.**
+        // **A real live-scroll, or a wheel, wins over a programmatic match
+        // as well as over every layout inference** (real-machine red,
+        // 2026-11-06). A y that happens to equal one this view once aimed at
+        // does not make the callback ours: the reader's own signal explains
+        // it, and treating it as ours skipped `camera.bounds` -- one frozen
+        // camera, then a window that kept feeding older rows under a reader
+        // scrolling the other way. A compensation whose callback arrives
+        // under a hand is harmless to re-read: its y is where the camera
+        // already is, so the place it writes back is the same place.
         if userScrolling || readerRecently { return .user }
+        if programmatic { return .programmatic }
         if phaseIsLayout || framesChanged { return .layout }
         if contentChanged { return .layout }
         return .user
     }
 
+    /// **Which of the five things happened to the list.** A contiguous run
+    /// of the old rows surviving in the new one, with the rest added or
+    /// removed at the ends, is a window move -- **not a replacement**
+    /// (review C, M4): the sliding window trims and feeds on every few
+    /// screens, and treating each of those as a new map would clear the
+    /// frames and re-measure the screen at the same rate.
+    ///
+    /// Row ids are unique within a list, which is what makes the run easy
+    /// to find: the first and the last old id still in the new list bound
+    /// it, and everything outside it must be an end.
     static func change(from old: [String], to new: [String]) -> Change {
         if old == new { return .none }
         if old.isEmpty { return new.isEmpty ? .none : .appended }
-        guard new.count >= old.count else { return .replaced }
-        if new.prefix(old.count).elementsEqual(old) { return .appended }
-        if new.suffix(old.count).elementsEqual(old) { return .prepended }
-        return .replaced
+        guard !new.isEmpty else { return .replaced }
+        let present = Set(new)
+        guard let oldStart = old.firstIndex(where: present.contains),
+              let oldEnd = old.lastIndex(where: present.contains),
+              let newStart = new.firstIndex(of: old[oldStart]),
+              let newEnd = new.firstIndex(of: old[oldEnd])
+        else { return .replaced }
+        let kept = Array(old[oldStart...oldEnd])
+        guard newEnd - newStart + 1 == kept.count,
+              Array(new[newStart...newEnd]) == kept
+        else { return .replaced }
+        // A row that left the middle of the kept run is not a window move:
+        // the surviving ids would bound a run that no longer matches.
+        let addedFront = newStart
+        let addedBack = new.count - 1 - newEnd
+        let droppedFront = oldStart
+        let droppedBack = old.count - 1 - oldEnd
+        if addedFront == 0, droppedFront == 0, droppedBack == 0, addedBack > 0 {
+            return .appended
+        }
+        if addedBack == 0, droppedBack == 0, droppedFront == 0, addedFront > 0 {
+            return .prepended
+        }
+        return .moved
     }
 
     /// Whether the viewport is at the bottom. A content shorter than the
@@ -287,6 +335,7 @@ enum ControlRoomChatCamera {
         content: Double,
         viewport: Double,
         centre: Double,
+        near: Int? = nil,
         pending: String? = nil
     ) -> Projection {
         if state.pinned {
@@ -311,19 +360,26 @@ enum ControlRoomChatCamera {
             // then scroll again.
             return pending == place.id ? .scrollTo(place.id) : .wait(place.id)
         }
-        return .fallback(fallbackPlace(centre: centre, order: order, frames: frames))
+        return .fallback(
+            fallbackPlace(centre: centre, order: order, frames: frames, near: near)
+        )
     }
 
     /// The fallback's place: the measured row nearest the viewport's **top
     /// edge**, with the reader's offset inside that row kept. Using the
     /// viewport's middle and scrolling to the row's top was a half-screen
     /// jump on every fallback (M2).
+    /// `near` is the camera's own place in the order, when it still has
+    /// one. **The fallback may only land near it**: the whole table's
+    /// nearest row is how a sparse map -- only early rows measured -- walked
+    /// a reader back to the beginning (2026-11-07).
     static func fallbackPlace(
         centre: Double,
         order: [String],
-        frames: [String: CGRect]
+        frames: [String: CGRect],
+        near: Int? = nil
     ) -> Place? {
-        guard let id = nearestMeasured(centre: centre, order: order, frames: frames),
+        guard let id = fallbackRow(centre: centre, order: order, frames: frames, near: near),
               let frame = frames[id]
         else { return nil }
         let offset = min(
@@ -331,6 +387,31 @@ enum ControlRoomChatCamera {
             Double(frame.height)
         )
         return Place(id: id, offset: offset)
+    }
+
+    /// Which measured row the fallback lands on. **Near the camera when it
+    /// has an index**, by the viewport's y otherwise.
+    static func fallbackRow(
+        centre: Double,
+        order: [String],
+        frames: [String: CGRect],
+        near: Int? = nil
+    ) -> String? {
+        let present = Set(order)
+        let measured = frames.filter { present.contains($0.key) }
+        guard !measured.isEmpty else { return nil }
+        if let near {
+            let target = min(max(0, near), max(0, order.count - 1))
+            return measured.keys.min { a, b in
+                let ia = order.firstIndex(of: a).map { abs($0 - target) } ?? Int.max
+                let ib = order.firstIndex(of: b).map { abs($0 - target) } ?? Int.max
+                return ia < ib
+            }
+        }
+        return measured.min {
+            abs(Double($0.value.midY) - centre)
+                < abs(Double($1.value.midY) - centre)
+        }?.key
     }
 
     /// The inverse's gate (R1-2 / the old `mayRestore`). **Nothing is
@@ -361,20 +442,31 @@ enum ControlRoomChatCamera {
         content > 0 && content > viewport
     }
 
-    /// **Whether a bounds callback belongs to the view's own scroll** (MF2).
-    /// Every target the view has sent is kept until the callback that matches
-    /// it arrives; a callback that matches none is the reader's (or layout's)
-    /// and **leaves the set alone**. The old single slot was cleared by the
-    /// first callback whether it matched or not, so the second of two
-    /// programmatic scrolls in one turn was read as the reader and turned
-    /// `pinned` off.
+    /// A target the view sent, and **the frames that were on screen when it
+    /// sent it**. A y means nothing without the map it was computed from
+    /// (review C, M3): five rows go in or out every few screens now, and a
+    /// stale target from the previous map is exactly where the reader's
+    /// next scroll arrives, so a bare y would be matched by the reader's
+    /// own movement.
+    struct ScrollExpectation: Equatable {
+        var y: Double
+        var epoch: UInt64
+    }
+
+    /// **Whether a bounds callback belongs to the view's own scroll** (MF2,
+    /// tightened by review C's M3). A callback is the view's when it lands
+    /// on a target sent **from the same frames map**; a target from an older
+    /// map is dropped rather than matched, because the map it was computed
+    /// in no longer exists.
     static func programmaticCallback(
         inScrollCall: Bool,
         seekInFlight: Bool,
         y: Double,
-        expectations: inout [Double]
+        epoch: UInt64,
+        expectations: inout [ScrollExpectation]
     ) -> Bool {
-        if let index = expectations.firstIndex(where: { abs($0 - y) <= 1 }) {
+        expectations.removeAll { $0.epoch != epoch }
+        if let index = expectations.firstIndex(where: { abs($0.y - y) <= 1 }) {
             expectations.remove(at: index)
             return true
         }
@@ -405,8 +497,26 @@ enum ControlRoomChatCamera {
     /// **`pinned` after a callback.** Only the reader changes it: reaching
     /// the bottom is following again, leaving it is reading history. A layout
     /// or the view's own scroll changes nothing (R1-7).
-    static func pinned(after cause: ControlRoomChatAnchor.Cause, atBottom: Bool, was: Bool) -> Bool {
-        guard cause == .user else { return was }
+    /// **Only a hand on the list pins or unpins it.**
+    ///
+    /// `cause` is the wrong question on its own: it **falls back to `.user`**
+    /// for a callback none of its tests explains, and the first layout after
+    /// a page opens is exactly such a callback -- the clip is at `offset = 1`
+    /// of 22 277 and no scroll of the view's has landed. Reading that as the
+    /// reader put the viewport at the top (`atBottom = false`) unpinned the
+    /// page before its own bottom projection ran, so it opened somewhere in
+    /// the middle of the history and every later decision was taken from
+    /// there (2026-11-07).
+    ///
+    /// The reader's own signals are `userScrolling` and the wheel window;
+    /// `hand` is those, not `cause == .user`.
+    static func pinned(
+        after cause: ControlRoomChatAnchor.Cause,
+        atBottom: Bool,
+        was: Bool,
+        hand: Bool
+    ) -> Bool {
+        guard cause == .user, hand else { return was }
         return atBottom
     }
 
@@ -433,42 +543,4 @@ enum ControlRoomChatCamera {
             }?.key
     }
 
-    // MARK: - Prefetch (§5, R1-15)
-
-    /// **How far ahead of the edge a page is asked for**, in viewports. Three
-    /// screens is what makes scrolling not stop at a page boundary: the page
-    /// is already on its way long before the reader reaches the loaded edge.
-    static let prefetchScreens: Double = 3
-
-    /// Whether the place's top edge is close enough to the loaded top that an
-    /// older page should be asked for. `distance <= screens * viewport`, so a
-    /// threshold of zero means "only once the edge is reached" -- the floor
-    /// the design names.
-    static func wantsOlder(
-        top: Double,
-        loadedTop: Double,
-        viewport: Double,
-        screens: Double = prefetchScreens
-    ) -> Bool {
-        withinScreens(distance: top - loadedTop, viewport: viewport, screens: screens)
-    }
-
-    /// The mirror of `wantsOlder` for a located window's lower edge.
-    static func wantsNewer(
-        bottom: Double,
-        loadedBottom: Double,
-        viewport: Double,
-        screens: Double = prefetchScreens
-    ) -> Bool {
-        withinScreens(distance: loadedBottom - bottom, viewport: viewport, screens: screens)
-    }
-
-    private static func withinScreens(
-        distance: Double,
-        viewport: Double,
-        screens: Double
-    ) -> Bool {
-        guard viewport > 0 else { return false }
-        return distance <= screens * viewport
-    }
 }

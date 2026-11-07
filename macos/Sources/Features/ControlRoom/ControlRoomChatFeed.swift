@@ -59,10 +59,20 @@ final class ControlRoomChatTimerScheduler: ControlRoomChatScheduling {
 /// **first** anchor this feed saw for that message, which is what a list
 /// needs to be stable across the identity becoming canonical.
 ///
+/// **What is kept is a window, not the history** (task 3016 R4): `rows` is
+/// the document the lazy list is handed, and `above`/`below` are the rows
+/// read from the core that the reader has not reached (or has passed).
+/// The view moves five rows at a time between them, so a scroll never
+/// inserts a page; the request may still be coarse, because a round trip is
+/// the expensive part. **The aprons are not a queue held for a gesture**:
+/// rows land there at once and the window feeds from them immediately.
+///
 /// **What is kept is bounded**: `retainedLimit` rows and 32 MiB of their
-/// text and identity strings. Past a ceiling whole blocks leave from one
-/// end -- never a row out of the middle -- and a dropped message takes its
-/// aliases with it, so the maps behind them cannot grow with the night.
+/// text and identity strings, across the document and both aprons. Past a
+/// ceiling records leave from the far apron first -- never a row out of the
+/// middle -- and a dropped message takes its aliases with it, so the maps
+/// behind them cannot grow with the night. A dropped run is a real gap and
+/// is said so; a row moving between the document and an apron is not.
 ///
 /// **Not drawing, not scrolling, not Markdown.** Those are later slices'.
 final class ControlRoomChatFeed: ObservableObject {
@@ -160,19 +170,23 @@ final class ControlRoomChatFeed: ObservableObject {
     /// How long a live read that said `more` waits before its catch-up.
     static let catchUpDelay: TimeInterval = 0.2
 
-    /// **The two chunk sizes, in one place.** The first screen asks for
-    /// `firstChunk`; each upward page asks for `olderChunk`. **Both are 100**
-    /// (task 3016 §5): a reader scrolling faster than the core must never
-    /// reach the loaded edge, and the page size is the margin the prefetch's
-    /// three viewports is spent against. The eviction block is the same 100
-    /// on purpose -- a page leaves in the units it was read in.
-    static let firstChunk = 100
-    static let olderChunk = 100
-    /// The context page's own size. **Not `olderChunk`**: a located
-    /// window's page is a different question from the plain resume page and
-    /// the two may be tuned apart (they happen to start equal). The search
-    /// page's limit lives in `ControlRoomChatSearchFeed`, where its request
-    /// is built, and is likewise its own number.
+    /// **The first screen is fetched whole**: twelve screens of the rows the
+    /// pane shows, in one request, because the reader has not scrolled yet
+    /// and there is nothing to pace (task 3016 R4; the capacity red aligned
+    /// it with the ten-screen margin). Before the pane has measured itself
+    /// this is the conservative default -- twelve screens of the default
+    /// sixteen rows -- since waiting for the measurement would wait for the
+    /// first screen to produce it.
+    static let firstChunkFallback = 192
+    /// **The later pages are their own size each time.** A page asks for
+    /// what the five-screen margin is missing, with a floor so one round
+    /// trip brings back more than a handful; `ControlRoomChatWindow` computes
+    /// it and `loadOlder(limit:)` carries it.
+    static let olderChunkFloor = ControlRoomChatWindow.requestFloor
+    /// The context page's own size. **Not the plain resume page's** (they
+    /// are different questions and may be tuned apart). Its own window is
+    /// around the located row, so the page is a screen and a half either
+    /// way, and the search page's limit lives in `ControlRoomChatSearchFeed`.
     static let contextChunk = 50
 
     /// **How much of the conversation one showing keeps.** A chat page is a
@@ -291,6 +305,52 @@ final class ControlRoomChatFeed: ObservableObject {
 
     var hasTrimmedGap: Bool { trimmedBefore != nil || trimmedAfter != nil }
 
+    /// **A released run is only drawn where the window really ends.** The
+    /// document is a sliding window: its top row is not the oldest record
+    /// while the apron in front of it still holds rows, so a gap mark there
+    /// would claim a hole that is not one. The marker is for a record the
+    /// ceiling dropped and cannot read back.
+    var trimmedBeforeAtEdge: String? { above.isEmpty ? trimmedBefore : nil }
+    var trimmedAfterAtEdge: String? { below.isEmpty ? trimmedAfter : nil }
+
+    /// Whether an older page may still be read. **The document's edge is not
+    /// the history's end** (R4): the in-memory window moves, and what is
+    /// knowable is the scan's own word.
+    var hasEarlier: Bool {
+        if let context {
+            return context.olderToken != nil && !context.olderAtEnd
+        }
+        if older == .atEnd || older == .gap { return false }
+        return historyTail?.nextToken != nil
+    }
+
+    /// The mirror, for a located window's lower edge. A plain window's
+    /// newest end is the live tail, which is always the end.
+    var hasNewer: Bool {
+        guard let context else { return false }
+        return context.newerToken != nil && !context.newerAtEnd
+    }
+
+    /// **The real beginning**: the scan said there is nothing older, and
+    /// nothing is held above the document that has not been drawn yet. A
+    /// located window answers with its own older cursor -- `older` belongs
+    /// to the plain scan, which a locate cleared.
+    var reachedBeginning: Bool {
+        if let context { return context.olderAtEnd && above.isEmpty }
+        return older == .atEnd && above.isEmpty
+    }
+
+    /// **The real end**: nothing is held below the document, **nothing was
+    /// ever dropped from that end**, and a located window's newer cursor is
+    /// spent. The dropped check is `trimmedAfter`, not its at-edge variant:
+    /// a record the ceiling took is missing whether or not the apron beside
+    /// it is empty, and claiming the end while a run is gone would be a
+    /// false "this is the newest message".
+    var reachedEnd: Bool {
+        below.isEmpty && trimmedAfter == nil
+            && (context.map { $0.newerAtEnd } ?? true)
+    }
+
     /// The stable identity of the message the reader's viewport starts on,
     /// as the view last said. **Trim only**: it never moves the reader and
     /// nothing is drawn from it. Nil before the view has reported one, and
@@ -318,10 +378,6 @@ final class ControlRoomChatFeed: ObservableObject {
     /// plain path needs is gone; the context cursor is what may still ask.
     var canLoadOlder: Bool {
         guard !olderCoolingDown else { return false }
-        // A page already here but held for the reader's hand is still a page
-        // in flight as far as the top edge is concerned: asking again would
-        // scan the same range twice.
-        guard heldOlder.isEmpty, heldContextOlder == nil else { return false }
         if let context {
             return context.olderToken != nil && !context.olderAtEnd
                 && !contextOlderStale
@@ -367,6 +423,11 @@ final class ControlRoomChatFeed: ObservableObject {
     /// view sets it from its own frames when it knows the real value; until
     /// then `defaultViewportRows` stands for one ordinary chat screen.
     var viewportRows = ControlRoomChatFeed.defaultViewportRows
+    /// Whether the view has actually measured the viewport. **Not inferred
+    /// from the number**: a measured pane may show fewer rows than the
+    /// default, and the first screen's size must follow the measurement
+    /// rather than a comparison with a guess.
+    var viewportMeasured = false
     /// ~800 pt of pane at ~50 pt per ordinary row.
     static let defaultViewportRows = 16
 
@@ -458,41 +519,30 @@ final class ControlRoomChatFeed: ObservableObject {
     /// Empty `budget` pages carried on since the last real ask, against
     /// `maxAutomaticAdvances`. A person's request resets it.
     private var automaticAdvances = 0
-    /// The view's hand is on the list, as `readerActive(_:)` last said.
-    private var readerIsActive = false
-    /// **Pages that arrived while the hand was on the list** (R1-1), in the
-    /// order they arrived (newest first). Nothing about them is applied --
-    /// not one row, not the tail, not the `older` word -- until
-    /// `readerIdle()`, and the generation they arrived under is kept so a
-    /// lifecycle change meanwhile drops them.
-    ///
-    /// **A queue, not one page** (M3): a continuous flick outruns a single
-    /// 100-row page in a few screens, and holding one page per gesture is
-    /// exactly the "scroll stops to load" the user reported. Each held page
-    /// keeps the time its request was sent, so the block log can report the
-    /// wait even though every page lands in one merge.
-    private struct HeldPage {
-        var page: H.Ready
-        var askedMs: Int64
-    }
-    private var heldOlder: [HeldPage] = []
-    private var heldOlderGeneration: UInt64 = 0
     /// When the page out now was asked for, for the block log.
     private var pageAskedMs: Int64 = 0
-    /// **How many rows the queue may hold.** Four pages of the 100-row
-    /// chunk: enough for a long continuous flick, small enough that the merge
-    /// at the end is one visible correction rather than a stall.
-    static let heldRowLimit = 400
-    private var heldContextOlder: ControlRoomChatContext.Context?
-    private var heldContextJobID: String?
-    private var heldContextGeneration: UInt64 = 0
-    /// The direction the request this held page answers was sent in. Read
-    /// when it lands, `pendingContextDirection` may belong to a newer
-    /// request; this is the expectation that was true when it was produced.
-    private var heldContextPending: ControlRoomChatContext.Direction?
-    /// A newer page landed while this older one was held: its `newer_*`
-    /// side predates that page and must not overwrite its cursor.
-    private var heldContextSupersededByNewer = false
+    /// **What was read but is not in the document** (task 3016 R4): older
+    /// rows the reader has not reached yet, oldest first, with the last one
+    /// nearest the document; and newer rows the window has passed, oldest
+    /// first, with the first one nearest the document.
+    ///
+    /// **These are aprons, not a queue.** A page lands here at once -- this
+    /// is not the old "hold the page for the gesture" -- and the view feeds
+    /// the document from here five rows at a time. Keeping the rows on the
+    /// far side is what lets a reader who has scrolled up come back down:
+    /// dropping them would need a forward history cursor the core does not
+    /// have.
+    private(set) var above: [Row] = []
+    private(set) var below: [Row] = []
+    /// How many rows are loaded outside the document, for the view's window
+    /// arithmetic and for a test to read.
+    var aboveCount: Int { above.count }
+    var belowCount: Int { below.count }
+    /// A row's height in points, as the view has measured it. The feed
+    /// cannot measure rows; it uses this to turn "half a screen" and a
+    /// request's deficit into counts. **A measurement, not a constant**: the
+    /// same margin is 250 rows of 16 pt and 13 rows of 300 pt (review C, M5).
+    var rowHeightEstimate = ControlRoomChatWindow.defaultRowHeight
     /// The locate job: around first, then one context page at a time.
     private var locateJobID: String?
     private var locateRequestID: String?
@@ -553,9 +603,16 @@ final class ControlRoomChatFeed: ObservableObject {
         // one step.
         if firstScreenReady, bootstrapped, !rows.isEmpty, session != nil {
             requestMetadata(clear: false)
-            // A located window is a history reading position: new messages
-            // do not append themselves to it. Returning to latest restarts.
-            if locatedAnchor == nil { armLive() }
+            // **The page comes back at the newest message** (task 3002), and
+            // with a window that may have been left in the middle of history
+            // (R4) that is a rebuild, not a scroll: the document is put back
+            // around the newest loaded rows, and the pinned projection then
+            // lands on the real last message rather than on the end of a
+            // window the reader walked away from.
+            if locatedAnchor == nil {
+                goToLatest()
+                armLive()
+            }
             armOlderAfterResume()
             return
         }
@@ -604,11 +661,6 @@ final class ControlRoomChatFeed: ObservableObject {
         // window), which does not stop the feed.
         readingAnchor = nil
         readingOffset = 0
-        // **The gesture ends with the showing.** A stop during a drag would
-        // otherwise leave "the hand is on the list" standing into the next
-        // showing, where a page would be held for a hand that is no longer
-        // there -- until the next scroll event says otherwise.
-        readerIsActive = false
         syncMarkdown()
     }
 
@@ -712,6 +764,8 @@ final class ControlRoomChatFeed: ObservableObject {
         replacing = false
         reloadedOnce = false
         rows = []
+        above = []
+        below = []
         byAnchor = [:]
         byAlias = [:]
         aliasesOf = [:]
@@ -737,8 +791,23 @@ final class ControlRoomChatFeed: ObservableObject {
         syncMarkdown()
     }
 
-    /// A fresh bootstrap: new `request_id`, `firstChunk` and no resume token.
-    /// A retry of the same begin reuses the id and parameters.
+    /// **How many rows the first screen asks for** (R4): twelve screens of
+    /// the rows the pane has measured, or the conservative default before the
+    /// probe has attached. A retry of the same begin reuses the id and the
+    /// same number, so the core's answer is the same question.
+    private var firstScreenLimit: Int {
+        let rows = viewportMeasured
+            ? ControlRoomChatWindow.firstScreenRows(viewportRows: viewportRows)
+            : Self.firstChunkFallback
+        return min(ControlRoomChatWindow.maxRequestRows, max(1, rows))
+    }
+    /// The limit the bootstrap out now was sent with. **A retry of the same
+    /// begin reuses it**, so the core is answering the same question even if
+    /// the pane has been measured since.
+    private var bootstrapLimit = ControlRoomChatFeed.firstChunkFallback
+
+    /// A fresh bootstrap: new `request_id`, the first screen's limit and no
+    /// resume token. A retry of the same begin reuses the id and parameters.
     private func startBootstrap() {
         bootstrapID = ControlRoomChatRequest.newRequestID()
         bootstrapped = false
@@ -746,6 +815,7 @@ final class ControlRoomChatFeed: ObservableObject {
         canReload = false
         state = .loading
         pageAskedMs = nowMs()
+        bootstrapLimit = firstScreenLimit
         sendBegin()
     }
 
@@ -753,7 +823,7 @@ final class ControlRoomChatFeed: ObservableObject {
         guard started, let group, let id = bootstrapID else { return }
         let generation = self.generation
         guard let request = try? ControlRoomChatRequest.begin(
-            group: group, requestID: id, limit: Self.firstChunk
+            group: group, requestID: id, limit: bootstrapLimit
         ) else {
             stopWithError("BadParams")
             return
@@ -1123,49 +1193,130 @@ final class ControlRoomChatFeed: ObservableObject {
         readingOffset = offset
     }
 
-    // MARK: - The reader's hand (task 3003, both hosts' model)
+    // MARK: - The window (task 3016 R4, amended by review C)
 
-    /// **The view's hand is on the list.** `true` while it is; `false` alone
-    /// does not mean the hand is off -- the view runs its own ~0.3 s quiet
-    /// timer (no bounds change), freezes its anchor, and then calls
-    /// `readerIdle()`. **Not `didEndLiveScroll`**: a finger resting still on
-    /// the trackpad never lifts, and an older page inserted above the
-    /// viewport moves the document coordinate at that instant -- a restore
-    /// can fix the end position, not the jump during the gesture.
-    func readerActive(_ active: Bool) {
-        readerIsActive = active
+    /// **Move buffered rows into the document's front.** At most `n` rows
+    /// and at most `maxHeight` of estimated height, **one rows change per
+    /// call** (review C, M8): the view asks for one step and the list is
+    /// handed one step, not five separate updates.
+    ///
+    /// **An empty apron is not a stop** (review C, M6): the view asks the
+    /// core for more when the margin is short whether or not this returns
+    /// rows, and the document stays where it is until they arrive -- a blank
+    /// list would be a worse answer than the loaded edge.
+    @discardableResult
+    func feedOlder(rows n: Int, maxHeight: Double) -> Int {
+        guard started, n > 0, !above.isEmpty else { return 0 }
+        let take = stepCount(n, maxHeight: maxHeight, available: above.count)
+        guard take > 0 else { return 0 }
+        let moved = Array(above.suffix(take))
+        above.removeLast(take)
+        rows.insert(contentsOf: moved, at: 0)
+        syncMarkdown()
+        return take
     }
 
-    /// The hand is off and the view has frozen its anchor: land the page
-    /// that arrived while it was on, in **one** rows change. A no-op when
-    /// nothing is held.
-    func readerIdle() {
-        readerIsActive = false
-        if let page = heldContextOlder {
-            heldContextOlder = nil
-            let jobID = heldContextJobID
-            let expected = heldContextPending
-            let superseded = heldContextSupersededByNewer
-            heldContextJobID = nil
-            heldContextPending = nil
-            heldContextSupersededByNewer = false
-            if started, heldContextGeneration == generation, let jobID {
-                applyContext(
-                    page, jobID: jobID,
-                    expectedDirection: expected,
-                    clearPending: false,
-                    supersededNewer: superseded
-                )
-            }
-        }
-        if !heldOlder.isEmpty {
-            let pages = heldOlder
-            heldOlder = []
-            if started, heldOlderGeneration == generation {
-                finishHeldContinuation(pages, generation: generation)
-            }
-        }
+    /// The mirror: buffered newer rows onto the document's end. The same
+    /// one-update rule.
+    @discardableResult
+    func feedNewer(rows n: Int, maxHeight: Double) -> Int {
+        guard started, n > 0, !below.isEmpty else { return 0 }
+        let take = stepCount(n, maxHeight: maxHeight, available: below.count)
+        guard take > 0 else { return 0 }
+        let moved = Array(below.prefix(take))
+        below.removeFirst(take)
+        rows.append(contentsOf: moved)
+        syncMarkdown()
+        return take
     }
+
+    /// **Release rows from the document's front into the apron.** The camera
+    /// row never leaves. One rows change.
+    @discardableResult
+    func releaseOlder(count n: Int) -> Int {
+        guard started, n > 0, let anchor = readingAnchor,
+              let index = rows.firstIndex(where: { $0.id == anchor })
+        else { return 0 }
+        let take = min(n, index)
+        guard take > 0 else { return 0 }
+        let moved = Array(rows.prefix(take))
+        rows.removeFirst(take)
+        above.append(contentsOf: moved)
+        syncMarkdown()
+        return take
+    }
+
+    /// The mirror: release from the document's end into the newer apron.
+    @discardableResult
+    func releaseNewer(count n: Int) -> Int {
+        guard started, n > 0, let anchor = readingAnchor,
+              let index = rows.firstIndex(where: { $0.id == anchor })
+        else { return 0 }
+        let take = min(n, rows.count - index - 1)
+        guard take > 0 else { return 0 }
+        let moved = Array(rows.suffix(take))
+        rows.removeLast(take)
+        below.insert(contentsOf: moved, at: 0)
+        syncMarkdown()
+        return take
+    }
+
+    /// **The teleport to the newest end** (R1-8/R4): the document is rebuilt
+    /// from the newest loaded rows, one rows change, so the next pinned
+    /// projection lands on the real last message rather than on the end of a
+    /// window the reader walked away from.
+    func goToLatest() {
+        guard started, !below.isEmpty else { return }
+        let loaded = above + rows + below
+        let keep = max(1, Int(ControlRoomChatWindow.firstScreenScreens * Double(viewportRows)))
+        let take = min(keep, loaded.count)
+        above = Array(loaded.prefix(loaded.count - take))
+        rows = Array(loaded.suffix(take))
+        below = []
+        readingAnchor = rows.last?.id
+        readingOffset = 0
+        trim()
+        syncMarkdown()
+    }
+
+    /// **A teleport to a row this feed already holds but the document does
+    /// not**: rebuild the document around it, ±twelve screens, one rows
+    /// change.
+    /// False when the id is not loaded at all -- that is the core's question
+    /// (`jump(to:)`'s around).
+    @discardableResult
+    func recentre(on id: String) -> Bool {
+        guard started else { return false }
+        let target = byAnchor[id] ?? byAlias[id] ?? id
+        if rows.contains(where: { $0.id == target }) { return true }
+        let loaded = above + rows + below
+        guard let index = loaded.firstIndex(where: { $0.id == target }) else {
+            return false
+        }
+        let keep = max(1, Int(ControlRoomChatWindow.retainScreens * Double(viewportRows)))
+        let start = max(0, min(index - keep / 2, loaded.count - keep))
+        let end = min(loaded.count, start + keep)
+        above = Array(loaded[..<start])
+        rows = Array(loaded[start..<end])
+        below = Array(loaded[end...])
+        readingAnchor = target
+        readingOffset = 0
+        trim()
+        syncMarkdown()
+        return true
+    }
+
+    /// How many rows one call may move: the caller's row cap, the height
+    /// the caller allows, and what the apron actually holds.
+    private func stepCount(_ n: Int, maxHeight: Double, available: Int) -> Int {
+        let height = max(1, rowHeightEstimate)
+        var take = min(n, available)
+        if maxHeight > 0 {
+            take = min(take, max(1, Int((maxHeight / height).rounded(.down))))
+        }
+        return max(0, take)
+    }
+
 
     /// The person (or the view near its top edge) asked for what came
     /// before the window. A page already out is not asked for again, so
@@ -1181,7 +1332,12 @@ final class ControlRoomChatFeed: ObservableObject {
     /// it never touches `state`: a page that already has rows stays
     /// `.ready` while an older page is out, `.loading` belongs to a first
     /// screen that has nothing to draw yet.
-    func loadOlder() {
+    ///
+    /// `limit` is **how many rows the five-screen margin is missing**, as
+    /// `ControlRoomChatWindow` computed it (review C, M6), not a fixed page:
+    /// a fixed hundred in a group of long messages is thirty screens sitting
+    /// in an apron.
+    func loadOlder(limit: Int = ControlRoomChatFeed.olderChunkFloor) {
         guard started, group != nil, !olderCoolingDown else { return }
         if context != nil {
             loadContextOlder()
@@ -1192,7 +1348,7 @@ final class ControlRoomChatFeed: ObservableObject {
         case .loading, .scanning: return
         default: break
         }
-        beginContinuation(token: token, automatic: false)
+        beginContinuation(token: token, automatic: false, limit: limit)
     }
 
     /// **The view's one teleport primitive** (task 3016 §6). A row already in
@@ -1205,8 +1361,11 @@ final class ControlRoomChatFeed: ObservableObject {
     /// for the same anchor would restart a job whose window is about to land.
     func jump(to id: String) {
         guard started, let group else { return }
-        // A live alias names a row that is already here too (A2 S5).
-        if byAnchor[id] != nil || byAlias[id] != nil { return }
+        // **A row already loaded is a change of window, not a request**
+        // (R4): the document is rebuilt around it, one rows change, and the
+        // view projects onto it. Asking the core for a map it already has
+        // would be the slow teleport this model is for.
+        if recentre(on: id) { return }
         if locating, locateAnchor == id { return }
         locate(anchor: id, location: nil)
     }
@@ -1231,16 +1390,22 @@ final class ControlRoomChatFeed: ObservableObject {
     /// Start one continuation page from `token`. `automatic` is an empty
     /// `budget` page carrying the scan on; the drawing says "scanning"
     /// instead of "loading", but the request is the same one.
-    private func beginContinuation(token: String, automatic: Bool) {
+    private func beginContinuation(token: String, automatic: Bool, limit: Int) {
         guard started, group != nil, historyTail?.nextToken == token else { return }
         olderAutomatic = automatic
         if !automatic { automaticAdvances = 0 }
         olderRequestID = ControlRoomChatRequest.newRequestID()
         olderToken = token
         olderJobID = nil
+        olderLimit = limit
         older = automatic ? .scanning : .loading
         sendContinuationBegin()
     }
+
+    /// What the page out now asked for. A retry of the same begin is the
+    /// same question -- the core answers the original reply for a repeated
+    /// id -- so the limit must travel with the id.
+    private var olderLimit = ControlRoomChatFeed.olderChunkFloor
 
     private func sendContinuationBegin() {
         guard started, let group, let requestID = olderRequestID,
@@ -1248,7 +1413,7 @@ final class ControlRoomChatFeed: ObservableObject {
         else { return }
         let generation = self.generation
         guard let request = try? ControlRoomChatRequest.begin(
-            group: group, requestID: requestID, limit: Self.olderChunk, resumeToken: token
+            group: group, requestID: requestID, limit: olderLimit, resumeToken: token
         ) else {
             failOlder("BadParams")
             return
@@ -1392,16 +1557,10 @@ final class ControlRoomChatFeed: ObservableObject {
             }
             if session == nil { session = page.session }
             self.olderJobID = nil
-            // **The page lands only when the hand is off the list** (R1-1),
-            // and the queue keeps asking while it is on (M3). An inserted
-            // row above the viewport moves the document coordinate at that
-            // instant; a restore can fix the end position, not the jump
-            // during the gesture. **An empty page is applied at once**: it
-            // moves nothing, and its token is what carries the scan on.
-            if readerIsActive, !page.messages.isEmpty {
-                holdContinuation(page, generation: generation)
-                return
-            }
+            // **A page lands at once** (R4): into the older apron, and the
+            // view feeds the document from there five rows at a time. There
+            // is no gesture to wait for -- the five-row step is what makes
+            // the insertion invisible, not a delay.
             finishContinuation(page, generation: generation)
         case let .failed(failure):
             guard generation == self.generation else {
@@ -1421,14 +1580,23 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
-    /// Land a continuation page: merge it, take its tail, settle the loader.
-    /// **One call is one rows change** -- `mergeHistory` ends with a single
-    /// `syncMarkdown` -- which is what lets `readerIdle()` put the whole
-    /// held page in at once.
+    /// Land a continuation page: put it where it belongs, take its tail,
+    /// settle the loader.
+    ///
+    /// **The first screen is the document; every later page is an apron.**
+    /// The first screen is fetched whole because the reader has not
+    /// scrolled; after that the document grows five rows at a time from
+    /// here, and this page is a buffer of the reader's next few screens.
     private func finishContinuation(_ page: H.Ready, generation: UInt64) {
-        let before = rows.count
-        mergeHistory(page.messages)
-        logBlock(asked: pageAskedMs, before: before, after: rows.count, pages: 1)
+        if firstScreenReady {
+            let before = above.count
+            bufferOlder(page.messages)
+            logBlock(asked: pageAskedMs, before: before, after: above.count, pages: 1)
+        } else {
+            let before = rows.count
+            mergeHistory(page.messages)
+            logBlock(asked: pageAskedMs, before: before, after: rows.count, pages: 1)
+        }
         historyTail = HistoryTail(
             stop: page.stop,
             nextToken: page.nextToken,
@@ -1468,85 +1636,69 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
-    /// **Hold a page for the gesture and keep the pipeline full** (M3).
-    /// While the queue holds fewer than `heldRowLimit` rows and the page
-    /// named a resume token, the next page is asked for from that token --
-    /// without applying this page's tail, which is what the single-page hold
-    /// could not do. When the queue is full the scan pauses here; the last
-    /// held page's token becomes `historyTail` at `readerIdle()`, so the top
-    /// edge resumes from the right place.
-    private func holdContinuation(_ page: H.Ready, generation: UInt64) {
-        heldOlder.append(HeldPage(page: page, askedMs: pageAskedMs))
-        heldOlderGeneration = generation
-        let heldRows = heldOlder.reduce(0) { $0 + $1.page.messages.count }
-        // **The queue is bounded by bytes as well as by rows** (R2-5): 96 KiB
-        // records could otherwise put 400 rows outside the 32 MiB window
-        // while they wait for the hand.
-        let heldBytes = heldOlder.reduce(0) { total, held in
-            total + held.page.messages.reduce(0) { $0 + Self.cost($1) }
-        }
-        guard heldRows < Self.heldRowLimit,
-              bytes + heldBytes < byteLimit,
-              let newestHeld = heldOlder.last?.page,
-              newestHeld.stop != .atEnd,
-              let token = newestHeld.nextToken
-        else { return }
-        olderRequestID = ControlRoomChatRequest.newRequestID()
-        olderToken = token
-        olderJobID = nil
-        olderAutomatic = false
-        older = .loading
-        sendContinuationBegin()
-    }
-
-    /// **Land the whole held queue in one rows change** (M3). The pages
-    /// arrived newest first; the messages are merged oldest first, and the
-    /// oldest page's tail is the one the scan continues from. Every held
-    /// page is logged with its own ask time because they were all merged
-    /// into the same document change.
-    private func finishHeldContinuation(_ held: [HeldPage], generation: UInt64) {
-        guard let oldest = held.last?.page else { return }
-        let before = rows.count
-        let messages = held.reversed().flatMap(\.page.messages)
-        mergeHistory(messages)
-        let mergedAt = nowMs()
-        for block in held {
-            logBlock(
-                asked: block.askedMs, mergedAt: mergedAt,
-                before: before, after: rows.count, pages: held.count
-            )
-        }
-        historyTail = HistoryTail(
-            stop: oldest.stop,
-            nextToken: oldest.nextToken,
-            restarted: oldest.restarted,
-            gap: oldest.gap
-        )
-        trouble = nil
-        if let advance = olderAdvance(oldest) {
-            switch advance {
-            case let .carryOn(next):
-                guard next != olderToken else {
-                    failOlder("the history scan stopped advancing")
-                    return
-                }
-                scheduleOlderAdvance(token: next, generation: generation)
-            case let .stop(why):
-                if let why {
-                    failOlder(why)
-                } else {
-                    settleOlder(oldest)
-                    olderToken = nil
-                }
-            }
+    /// **A page older than the document goes into the older apron**: it is
+    /// what the reader's next few screens are fed from. Records already held
+    /// update the row that holds them -- a reread of the same range must not
+    /// become a second row -- and the rest go in front of the apron, which
+    /// is ordered oldest first.
+    ///
+    /// **The document does not change here.** That is what keeps one page
+    /// from being a visible insertion (R4); `feedOlder` moves five rows at a
+    /// time when the view asks.
+    private func bufferOlder(_ messages: [D.Message]) {
+        guard !messages.contains(where: { Self.cost($0) > byteLimit }) else {
+            stopWithError("TooLarge")
             return
         }
-        settleOlder(oldest)
-        olderToken = nil
-        if case .loading = state {
-            settleFirstScreen(oldest)
-            firstScreenReady = true
+        var fresh: [Row] = []
+        for m in messages {
+            if let hit = byAnchor[m.anchor] ?? m.liveAnchor.flatMap({ byAlias[$0] }) {
+                apply(m, to: hit)
+            } else {
+                let row = Row(id: m.anchor, message: m)
+                byAnchor[m.anchor] = row.id
+                if let live = m.liveAnchor {
+                    aliasesOf[row.id, default: []].insert(live)
+                    byAlias[live] = row.id
+                }
+                bytes += Self.cost(m)
+                fresh.append(row)
+            }
         }
+        if !fresh.isEmpty {
+            above.insert(contentsOf: fresh, at: 0)
+        }
+        trim()
+        syncMarkdown()
+    }
+
+    /// The newer mirror: a context page after the document goes into the
+    /// newer apron, oldest first.
+    private func bufferNewer(_ messages: [D.Message]) {
+        guard !messages.contains(where: { Self.cost($0) > byteLimit }) else {
+            stopWithError("TooLarge")
+            return
+        }
+        var fresh: [Row] = []
+        for m in messages {
+            if let hit = byAnchor[m.anchor] ?? m.liveAnchor.flatMap({ byAlias[$0] }) {
+                apply(m, to: hit)
+            } else {
+                let row = Row(id: m.anchor, message: m)
+                byAnchor[m.anchor] = row.id
+                if let live = m.liveAnchor {
+                    aliasesOf[row.id, default: []].insert(live)
+                    byAlias[live] = row.id
+                }
+                bytes += Self.cost(m)
+                fresh.append(row)
+            }
+        }
+        if !fresh.isEmpty {
+            below.append(contentsOf: fresh)
+        }
+        trim()
+        syncMarkdown()
     }
 
     /// **The criterion-2 instrument** (task 3016): one line per block, so
@@ -1642,7 +1794,12 @@ final class ControlRoomChatFeed: ObservableObject {
         olderAdvanceToken = scheduler.after(Self.olderAdvanceDelay) { [weak self] in
             self?.olderAdvanceToken = nil
             guard let self, self.generation == generation else { return }
-            self.beginContinuation(token: token, automatic: true)
+            // **An empty page carries no rows, so the size does not matter**:
+            // the same floor keeps the scan moving.
+            self.beginContinuation(
+                token: token, automatic: true,
+                limit: ControlRoomChatFeed.olderChunkFloor
+            )
         }
     }
 
@@ -1798,7 +1955,6 @@ final class ControlRoomChatFeed: ObservableObject {
         guard let context, let token = context.olderToken,
               !context.olderAtEnd, !contextOlderStale,
               locateJobID == nil, locateRequestID == nil,
-              heldContextOlder == nil, heldOlder.isEmpty,
               !olderCoolingDown, started, let group
         else { return }
         contextOlderStale = false
@@ -2052,49 +2208,19 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     private func handleContext(_ page: ControlRoomChatContext.Context, jobID: String) {
-        // **Only the upward page is held.** A newer page appends below the
-        // viewport, which moves nothing above it; an older page inserts
-        // rows above the reader, and that is the coordinate jump the hold is
-        // for. Everything about the held page waits -- rows, the context
-        // cursors, the staleness words -- until `readerIdle()`.
-        if page.direction == .older, readerIsActive {
-            heldContextOlder = page
-            heldContextJobID = jobID
-            heldContextGeneration = generation
-            // **The request this page answers was the one pending then.**
-            // By the time it lands, `pendingContextDirection` may belong to
-            // another request (a newer page asked for while this one was
-            // held), so the expectation is captured here, not read later.
-            heldContextPending = pendingContextDirection
-            heldContextSupersededByNewer = false
-            // The job that answered is done. A newer request may go out
-            // while this page waits, and it must keep its own id: this
-            // page's apply will not clear it later.
-            if locateJobID == jobID { locateJobID = nil }
-            return
-        }
-        applyContext(
-            page, jobID: jobID,
-            expectedDirection: pendingContextDirection,
-            clearPending: true,
-            supersededNewer: false
-        )
+        // **A context page lands at once too** (R4): the same aprons the
+        // plain scan fills, fed to the document five rows at a time. There
+        // is no hold to wait out, so a reader inside a located window gets
+        // the same smoothness as one reading the live conversation.
+        applyContext(page, jobID: jobID, expectedDirection: pendingContextDirection)
     }
 
-    /// Land a context page: merge (older) or append (newer), take both
-    /// cursors, and say which edge was released.
-    ///
-    /// A held page lands late, so it must not disturb what happened while it
-    /// waited: `expectedDirection` and `clearPending: false` keep the
-    /// pending request that is outstanding now untouched, `locateJobID` is
-    /// cleared only when it is this page's own job, and a `newer` page that
-    /// landed meanwhile keeps that side of the cursor.
+    /// Land a context page: put it in its apron, take both cursors, and say
+    /// which edge was released.
     private func applyContext(
         _ page: ControlRoomChatContext.Context,
         jobID: String,
-        expectedDirection: ControlRoomChatContext.Direction?,
-        clearPending: Bool,
-        supersededNewer: Bool
+        expectedDirection: ControlRoomChatContext.Direction?
     ) {
         guard page.page.jobID == jobID, page.page.group == group,
               session == nil || page.page.session == session
@@ -2107,59 +2233,48 @@ final class ControlRoomChatFeed: ObservableObject {
             failLocate("CursorMismatch")
             return
         }
-        if clearPending {
-            pendingContextDirection = nil
-            pendingContextToken = nil
-        }
-        // A newer page landing makes a held older page's `newer_*` side a
-        // snapshot from before it.
-        if page.direction == .newer, heldContextOlder != nil {
-            heldContextSupersededByNewer = true
-        }
-        let beforeFirst = rows.first?.id
-        let beforeLast = rows.last?.id
+        pendingContextDirection = nil
+        pendingContextToken = nil
+        let beforeFirst = loadedFirstID
+        let beforeLast = loadedLastID
         if page.direction == .older {
-            mergeHistory(page.page.messages)
+            bufferOlder(page.page.messages)
         } else {
-            appendHistory(page.page.messages)
+            bufferNewer(page.page.messages)
         }
-        let previous = context
-        var next = ContextTail(
+        context = ContextTail(
             olderToken: page.page.olderToken,
             newerToken: page.page.newerToken,
             olderAtEnd: page.page.olderAtEnd,
             newerAtEnd: page.page.newerAtEnd
         )
-        if page.direction == .older, supersededNewer {
-            // **Do not go back to an already-read newer cursor.** This
-            // page's newer side was produced before a newer page that has
-            // since landed; that page's answer is the later word.
-            next.newerToken = previous?.newerToken
-            next.newerAtEnd = previous?.newerAtEnd ?? next.newerAtEnd
-        }
-        context = next
-        // **Only this page's own job.** While it was held, a newer request
-        // may have started, and clearing its id here would stop its polls
-        // and leave its answer unread.
         if locateJobID == jobID { locateJobID = nil }
         locateTrouble = nil
         locating = false
         // **A released edge makes a cursor stale.** The page's own edge must
-        // still be at the window's end; if trim released it, the next request
-        // would cross a run nobody kept. Re-anchoring around the retained
-        // edge is the recovery; the host never advances that token.
+        // still be at the loaded set's end; if the ceiling dropped it, the
+        // next request would cross a run nobody kept. Re-anchoring around
+        // the retained edge is the recovery; the host never advances that
+        // token. **The loaded edge, not the document's**: the document is a
+        // window that moves, and its first row is meant to change.
         let expectedFirst = page.direction == .older
             ? page.page.messages.first?.anchor : beforeFirst
         let expectedLast = page.direction == .newer
             ? page.page.messages.last?.anchor : beforeLast
-        if let expectedFirst, rows.first?.id != expectedFirst {
+        if let expectedFirst, loadedFirstID != expectedFirst {
             contextOlderStale = true
         }
-        if let expectedLast, rows.last?.id != expectedLast {
+        if let expectedLast, loadedLastID != expectedLast {
             contextNewerStale = true
         }
         if case .loading = state { state = rows.isEmpty ? .empty : .ready }
     }
+
+    /// The oldest row this feed still holds, whether it is in the document
+    /// or in the older apron.
+    private var loadedFirstID: String? { above.first?.id ?? rows.first?.id }
+    /// The newest row this feed still holds.
+    private var loadedLastID: String? { below.last?.id ?? rows.last?.id }
 
     private func failLocate(_ why: String) {
         // **A failure must not look like a success.** `locate()` writes the
@@ -2241,27 +2356,6 @@ final class ControlRoomChatFeed: ObservableObject {
         syncMarkdown()
     }
 
-    /// A newer context page: appended after the window, overlapping rows
-    /// updated where they are.
-    private func appendHistory(_ messages: [D.Message]) {
-        for message in messages {
-            if let hit = byAnchor[message.anchor] ?? message.liveAnchor.flatMap({ byAlias[$0] }) {
-                apply(message, to: hit)
-            } else {
-                let row = Row(id: message.anchor, message: message)
-                byAnchor[message.anchor] = row.id
-                if let live = message.liveAnchor {
-                    aliasesOf[row.id, default: []].insert(live)
-                    byAlias[live] = row.id
-                }
-                bytes += Self.cost(message)
-                rows.append(row)
-            }
-        }
-        trim()
-        syncMarkdown()
-    }
-
     // MARK: - Scheduling lifetime
 
     /// Hand the Markdown store this feed's current truth. **Values only**:
@@ -2291,18 +2385,6 @@ final class ControlRoomChatFeed: ObservableObject {
         )
     }
 
-    /// A held page belongs to the lifecycle it arrived in; a stop, a reload,
-    /// a session change or a new locate drops it rather than landing old
-    /// rows into a world that has moved on.
-    private func clearHeldPages() {
-        heldOlder = []
-        heldOlderGeneration = 0
-        heldContextOlder = nil
-        heldContextJobID = nil
-        heldContextPending = nil
-        heldContextSupersededByNewer = false
-    }
-
     private func cancelScheduling() {
         if let liveToken { scheduler.cancel(liveToken) }
         if let pollToken { scheduler.cancel(pollToken) }
@@ -2329,11 +2411,11 @@ final class ControlRoomChatFeed: ObservableObject {
     /// scanning the disk. A cancel that fails is not reported -- it must not
     /// raise a notification or merge an old page.
     private func cancelJob() {
-        // **Every job, and every page held for a gesture that belongs to a
-        // lifecycle already gone.** `stop`/`deinit` cancel the bootstrap,
-        // the older scan and the locate job together: one left running is a
-        // job scanning a disk for an answer nobody will draw.
-        clearHeldPages()
+        // **Every job of a lifecycle already gone.** `stop`/`deinit` cancel
+        // the bootstrap, the older scan and the locate job together: one
+        // left running is a job scanning a disk for an answer nobody will
+        // draw. A buffered row needs no canceling: it is already ours, and a
+        // lifecycle change empties the aprons with the document.
         cancelOlderJob()
         cancelLocateJob()
         guard let jobID else { return }
@@ -2379,8 +2461,11 @@ final class ControlRoomChatFeed: ObservableObject {
         let byL = m.liveAnchor.flatMap { byAlias[$0] }
         if let a = byA, let l = byL, a != l {
             // Two rows turn out to be one message. **The one that was here
-            // first keeps its display id**, whichever map found it.
-            let keepA = (rows.firstIndex { $0.id == a } ?? 0) <= (rows.firstIndex { $0.id == l } ?? .max)
+            // first keeps its display id**, whichever map found it -- and
+            // "here first" is its place in the loaded sequence, not its
+            // place in the document: the two rows may be on different sides
+            // of the window now (R4's aprons).
+            let keepA = loadedIndex(of: a) <= loadedIndex(of: l)
             let keep = keepA ? a : l
             let drop = keepA ? l : a
             mergeRow(drop, into: keep)
@@ -2396,8 +2481,8 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     private func apply(_ m: D.Message, to id: String) {
-        guard let i = rows.firstIndex(where: { $0.id == id }) else { return }
-        let old = rows[i].message
+        guard let i = storeIndex(of: id) else { return }
+        let old = storeMessage(at: i)
         bytes += Self.cost(m) - Self.cost(old)
         if old.anchor != m.anchor {
             if byAnchor[old.anchor] == id { byAnchor.removeValue(forKey: old.anchor) }
@@ -2412,8 +2497,52 @@ final class ControlRoomChatFeed: ObservableObject {
             aliasesOf[id, default: []].insert(live)
             byAlias[live] = id
         }
-        rows[i].message = m
+        setStoreMessage(m, at: i)
         trim()
+    }
+
+    /// Where a loaded row lives: the document, or one of the aprons. **A
+    /// message the reader has scrolled past is still held** (R4), and a live
+    /// read may update it.
+    private enum Store {
+        case document(Int)
+        case above(Int)
+        case below(Int)
+    }
+
+    private func storeIndex(of id: String) -> Store? {
+        if let i = rows.firstIndex(where: { $0.id == id }) { return .document(i) }
+        if let i = above.firstIndex(where: { $0.id == id }) { return .above(i) }
+        if let i = below.firstIndex(where: { $0.id == id }) { return .below(i) }
+        return nil
+    }
+
+    /// A row's place in the loaded sequence (older apron, document, newer
+    /// apron), or `.max` when it is not loaded. Used to keep the earlier of
+    /// two rows that turn out to be one message.
+    private func loadedIndex(of id: String) -> Int {
+        if let i = above.firstIndex(where: { $0.id == id }) { return i }
+        if let i = rows.firstIndex(where: { $0.id == id }) { return above.count + i }
+        if let i = below.firstIndex(where: { $0.id == id }) {
+            return above.count + rows.count + i
+        }
+        return .max
+    }
+
+    private func storeMessage(at store: Store) -> D.Message {
+        switch store {
+        case let .document(i): return rows[i].message
+        case let .above(i): return above[i].message
+        case let .below(i): return below[i].message
+        }
+    }
+
+    private func setStoreMessage(_ m: D.Message, at store: Store) {
+        switch store {
+        case let .document(i): rows[i].message = m
+        case let .above(i): above[i].message = m
+        case let .below(i): below[i].message = m
+        }
     }
 
     private func insert(_ m: D.Message) {
@@ -2424,6 +2553,15 @@ final class ControlRoomChatFeed: ObservableObject {
             byAlias[live] = row.id
         }
         bytes += Self.cost(m)
+        // **A live message belongs to the newest end of what is loaded**, and
+        // when the reader has walked away from it the document no longer
+        // holds that end (R4). Appending to the document there would put a
+        // new message under rows the reader has not reached yet.
+        if !below.isEmpty {
+            below.append(row)
+            trim()
+            return
+        }
         if m.seq > 0 {
             // A live message: ordered by the core's own `seq` among live
             // rows. Never against a `log_seq`, and never against a history
@@ -2476,10 +2614,15 @@ final class ControlRoomChatFeed: ObservableObject {
     }
 
     private func mergeRow(_ dropID: String, into keepID: String) {
-        guard let i = rows.firstIndex(where: { $0.id == dropID }) else { return }
-        let dropped = rows.remove(at: i)
-        bytes -= Self.cost(dropped.message)
-        if let canonical = byAnchor[dropped.message.anchor], canonical == dropID {
+        guard let store = storeIndex(of: dropID) else { return }
+        let dropped = storeMessage(at: store)
+        switch store {
+        case let .document(i): rows.remove(at: i)
+        case let .above(i): above.remove(at: i)
+        case let .below(i): below.remove(at: i)
+        }
+        bytes -= Self.cost(dropped)
+        if let canonical = byAnchor[dropped.anchor], canonical == dropID {
             byAnchor.removeValue(forKey: canonical)
             aliasesOf[keepID, default: []].insert(canonical)
             byAlias[canonical] = keepID
@@ -2490,121 +2633,116 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
-    /// The window's edge. **A row leaves only with its whole block, and only
-    /// from an end** -- never one picked out of the middle.
+    /// **The memory ceiling** -- not the window's shape. The window moves
+    /// rows between the document and its aprons by height
+    /// (`ControlRoomChatWindow`); this only runs when the retainer itself is
+    /// over its bound, and it drops records for real.
     ///
-    /// **The block that goes is the one farthest from the camera**
-    /// (`readingAnchor`), and each side keeps `retainedEachSide` rows: a
-    /// reader parked in history has the page `loadOlder` just put in front of
-    /// them protected, and so does the newest end behind them. What is kept
-    /// is one contiguous run, and `trimmedBefore` / `trimmedAfter` say which
-    /// end was released, so the list draws an honest boundary rather than a
-    /// false neighbour.
+    /// **The far apron goes first, a step at a time**, because a dropped
+    /// record is gone: there is no forward history cursor to read it back
+    /// with, so the list must say a run was released rather than draw a
+    /// false neighbour. Only when both aprons are empty does the document
+    /// itself give -- from the end farthest from the camera, never the
+    /// camera's own row, and never the last row (the list below a `.ready`
+    /// header must have something to draw).
     ///
-    /// **The bytes outrank the reserve** (R2-5): when the byte ceiling is
-    /// what is over, the reserve gives way and the block goes anyway. If that
-    /// block is the camera's own, the view's `fallback` says so and lands on
-    /// a measured row -- the feed never deletes the reader's place in
-    /// silence.
-    ///
-    /// **The window is never emptied.** The byte ceiling can be exceeded by
-    /// a handful of huge messages while fewer than two blocks are held;
-    /// dropping the only block would leave `rows == []` under a `.ready`
-    /// state, which the view can only draw as a header over a blank list.
-    /// When the far end has nothing to give that is not the reader's own
-    /// row, the ceiling yields and the rows stay.
-    ///
-    /// **The consequence is intended**: a reader parked in history can have
-    /// the newest block evicted under them, so "back to latest" cannot lean
-    /// on the newest rows still being there -- `returnToLatest()` starts the
-    /// body again from the newest records instead.
-    ///
-    /// A dropped message takes its aliases with it.
+    /// **The bytes outrank the row ceiling** (R2-5): both are backstops now,
+    /// and a global `rowLimit` of five thousand is no longer the shape of
+    /// the window.
     private func trim() {
-        while rows.count > rowLimit || bytes > byteLimit {
-            guard let gone = trimRange() else { break }
-            for row in rows[gone] {
-                bytes -= Self.cost(row.message)
-                forget(row)
-            }
-            if gone.lowerBound == 0 {
-                rows.removeFirst(gone.count)
-                // Never cleared to nil by a drop: the rows are gone
-                // whichever end they left from, and an empty window is not
-                // a boundary the list can draw.
-                if let first = rows.first?.id { trimmedBefore = first }
-            } else {
-                rows.removeLast(gone.count)
-                if let last = rows.last?.id { trimmedAfter = last }
-            }
+        var guardCount = 0
+        while bytes > byteLimit || retainedRows > rowLimit {
+            guardCount += 1
+            if guardCount > 10_000 { break }
+            if !trimOneBlock() { break }
         }
         if bytes < 0 { bytes = 0 }
     }
 
-    /// **How many rows one showing keeps on each side of the camera** (task
-    /// 3016 §5): the page a reader parked in history just asked for must not
-    /// be evicted from under them, and the newest end must not be either.
-    static let retainedEachSide = 2000
+    private var retainedRows: Int { rows.count + above.count + below.count }
 
-    /// The rows one turn of `trim` may drop, or nil when the ceiling has to
-    /// give way. Whole blocks, from the end farthest from the camera, and one
-    /// row always stays.
-    ///
-    /// **The byte ceiling outranks the row reserve** (R2-5): 96 KiB records
-    /// cannot keep two thousand rows either side inside 32 MiB, so when the
-    /// bytes are what is over, the row reserve gives way. **The block the
-    /// reader is standing in never does**: a window that is one block wide
-    /// yields entirely (returns nil) rather than being cut under the reader,
-    /// and if a block does take the camera's row the view's `fallback` says
-    /// so instead of the deletion happening in silence.
-    private func trimRange() -> Range<Int>? {
-        guard rows.count > 1 else { return nil }
-        let byBytes = bytes > byteLimit
-        guard let readingAnchor,
-              let reader = rows.firstIndex(where: { $0.id == readingAnchor })
-        else {
-            // No camera yet: the oldest block is the far one.
-            return 0..<min(Self.firstChunk, rows.count - 1)
+    /// One block out of the far apron, else one block out of the document's
+    /// far end. False when there is nothing that may go.
+    private func trimOneBlock() -> Bool {
+        let block = Self.trimBlockRows
+        let cameraIndex = readingAnchor.flatMap { anchor in
+            rows.firstIndex(where: { $0.id == anchor })
         }
-        let front = reader
-        let back = rows.count - reader - 1
-        // **A block exists at an end only while the window is wider than one
-        // block.** With fewer rows than that, the first and last block are
-        // the same rows, and cutting them is cutting the reader's block.
-        let hasBlocks = rows.count > Self.firstChunk
-        let canDropFront = hasBlocks && reader >= Self.firstChunk
-        let canDropBack = hasBlocks && reader < rows.count - Self.firstChunk
-        // Capped at the side they take from, so the byte branch below can
-        // never build a range past the reader's own row.
-        let frontRange = 0..<min(Self.firstChunk, front)
-        let backBlock = min(Self.firstChunk, back)
-        let backRange = (rows.count - backBlock)..<rows.count
-        let reserveFront = canDropFront
-            && front - Self.firstChunk >= Self.retainedEachSide
-        let reserveBack = canDropBack
-            && back - Self.firstChunk >= Self.retainedEachSide
-        let frontIsFar = front >= back
+        // The apron farthest from the camera gives first: with no camera,
+        // the older one is the far one.
+        let olderIsFar: Bool
+        if let cameraIndex {
+            // The far side is the one with more rows between it and the
+            // camera. A reader at the document's top is nearest the older
+            // apron, so the newer end is what gives.
+            olderIsFar = cameraIndex >= rows.count - cameraIndex - 1
+        } else {
+            olderIsFar = true
+        }
+        if olderIsFar, !above.isEmpty {
+            drop(above.prefix(min(block, above.count)), from: .above)
+            trimmedBefore = loadedFirstID
+            return true
+        }
+        if !below.isEmpty {
+            drop(below.suffix(min(block, below.count)), from: .below)
+            trimmedAfter = loadedLastID
+            return true
+        }
+        // **The aprons are empty**: the document itself gives, from the far
+        // end, and a real gap is said. Never the camera's row and never the
+        // last row.
+        guard rows.count > 1 else { return false }
+        guard let cameraIndex else {
+            let take = min(block, rows.count - 1)
+            drop(rows.prefix(take), from: .documentFront)
+            trimmedBefore = rows.first?.id
+            return true
+        }
+        let front = cameraIndex
+        let back = rows.count - cameraIndex - 1
+        if front >= back, front > 0 {
+            let take = min(block, front)
+            drop(rows.prefix(take), from: .documentFront)
+            trimmedBefore = rows.first?.id
+            return true
+        }
+        if back > 0 {
+            let take = min(block, back)
+            drop(rows.suffix(take), from: .documentBack)
+            trimmedAfter = rows.last?.id
+            return true
+        }
+        return false
+    }
 
-        // The row ceiling keeps the reserve: the farther end gives, and the
-        // other end only when the farther one cannot.
-        if frontIsFar {
-            if reserveFront { return frontRange }
-            if reserveBack { return backRange }
-        } else {
-            if reserveBack { return backRange }
-            if reserveFront { return frontRange }
+    /// **How many records one ceiling drop may take.** An eviction block, in
+    /// the units the page was once read in -- small enough that the list's
+    /// own total does not lurch.
+    static let trimBlockRows = 5
+
+    private enum DropSide {
+        case above
+        case below
+        case documentFront
+        case documentBack
+    }
+
+    private func drop(_ rows: ArraySlice<Row>, from side: DropSide) {
+        for row in rows {
+            bytes -= Self.cost(row.message)
+            forget(row)
         }
-        // **The bytes are over and the reserve cannot hold.** Give the
-        // reserve way -- but never the block the reader is in.
-        guard byBytes else { return nil }
-        if frontIsFar {
-            if canDropFront { return frontRange }
-            if canDropBack { return backRange }
-        } else {
-            if canDropBack { return backRange }
-            if canDropFront { return frontRange }
+        switch side {
+        case .above:
+            above.removeFirst(rows.count)
+        case .below:
+            below.removeLast(rows.count)
+        case .documentFront:
+            self.rows.removeFirst(rows.count)
+        case .documentBack:
+            self.rows.removeLast(rows.count)
         }
-        return nil
     }
 
     private func forget(_ row: Row) {
@@ -2618,6 +2756,8 @@ final class ControlRoomChatFeed: ObservableObject {
 
     private func clearWindow() {
         rows = []
+        above = []
+        below = []
         byAnchor = [:]
         byAlias = [:]
         aliasesOf = [:]

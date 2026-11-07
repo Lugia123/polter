@@ -284,6 +284,31 @@ final class ControlRoomChatMarkdownStore: ObservableObject {
         return .plain(text: text)
     }
 
+    /// **What `content` would answer, and why** -- read only, for a row's
+    /// `form:` line. It mirrors the branches of `content` above; if one changes,
+    /// the other must. The point is to tell the *reasons* apart that all look
+    /// like "this row got shorter": a missing demand, another group, a
+    /// generation the store has moved past, a row outside its window, a key
+    /// that is queued/admitted, a parse over budget, or a cache miss.
+    func form(id: String, group: String, generation: UInt64) -> String {
+        guard let demand = demands[id] else { return "plain:no-demand" }
+        if demand.group != group { return "plain:other-group" }
+        if demand.generation != generation { return "plain:demand-gen" }
+        if generation != self.generation { return "plain:store-gen" }
+        guard let snapshot = window[id] else { return "plain:no-window" }
+        let key = snapshot.key
+        if cache.document(key) != nil { return "markdown:cache" }
+        if let oversized, oversized.key == key { return "markdown:oversized" }
+        if key == inFlight { return "pending:inFlight" }
+        if queued.contains(key) { return "pending:queued" }
+        if admitted.contains(key) { return "pending:admitted" }
+        if deferred.contains(key) { return "deferred:budget" }
+        return "plain:uncached"
+    }
+
+    /// The store's own generation, for the same line.
+    var formGeneration: UInt64 { generation }
+
     /// The kept document for one identity, or nil. For tests and inspection.
     func document(group: String, anchor: String, version: UInt64) -> Document? {
         cache.document(Key(group: group, anchor: anchor, version: version))

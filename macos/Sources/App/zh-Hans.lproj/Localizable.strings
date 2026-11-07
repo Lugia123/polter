@@ -1594,6 +1594,10 @@
 "Later context" = "更晚的上下文";
 "Return to latest" = "返回最新";
 
+/* 群聊窗口的两端（task 3016 R4）：两条终点分割线，不可点 */
+"This is the beginning of the conversation." = "这是最早的一条记录";
+"This is the newest message." = "这是最新一条记录";
+
 "Back to search" = "返回搜索";
 
 /* 总控台：群聊页，搜索定位的两态与预览外壳（task 2982） */
