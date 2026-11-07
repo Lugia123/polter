@@ -2452,6 +2452,39 @@ final class ControlRoomChatFeed: ObservableObject {
     /// row it already is; otherwise a new row. Returns false when the message
     /// does not fit the window at all.
     @discardableResult
+    /// **A message no core sent** -- the debug injector behind
+    /// `CHAT_INJECT_*`, for measuring what the view does when something new
+    /// arrives (there is no other way to make a message arrive: the fixture
+    /// is a static script, and the core's chat lives in its own memory).
+    ///
+    /// **It fakes the core, not the view.** The message is handed to
+    /// `absorb`, the same line the live read feeds, so it goes through the
+    /// real `insert`, `rows` grows the way a real arrival grows it, and
+    /// `rowsChanged` classifies it as `appended` / `cause=newer`. What is not
+    /// real: no core, no `liveNext` advance, no author identity -- the row
+    /// copies the newest message's shape and changes only its seq, anchor,
+    /// text, time and author.
+    ///
+    /// **Nothing here runs without the environment variables**: the caller
+    /// does not arm a timer, and this method is not reachable otherwise.
+    func injectDebugMessage(text: String, author: String = "probe") {
+        guard let last = rows.last ?? above.last ?? below.last else { return }
+        var m = last.message
+        m.seq = (rows.map(\.message.seq).max() ?? 0) + 1
+        m.anchor = "l:debug:\(debugInjected)"
+        m.liveAnchor = nil
+        m.text = text
+        m.atMs = nowMs()
+        m.author = author
+        m.summary = false
+        debugInjected += 1
+        _ = absorb(m)
+        syncMarkdown()
+    }
+
+    /// How many messages the debug injector has made (`CHAT_INJECT_*`).
+    private var debugInjected = 0
+
     private func absorb(_ m: D.Message) -> Bool {
         if Self.cost(m) > byteLimit {
             stopWithError("TooLarge")

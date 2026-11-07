@@ -114,8 +114,15 @@ struct ControlRoomNativeChatView: View {
     /// be pulled up by the tall rows. So: the first sample big enough to mean
     /// anything is the answer, and after that the number stops.
     @State private var rowHeightEstimateSettled = false
+    /// **How many passes the publisher has run**, so a sample that never
+    /// settles (a page still streaming in) still freezes eventually.
+    @State private var rowHeightEstimatePasses = 0
+    /// The debug injector is armed once per surface (`CHAT_INJECT_*`).
+    @State private var debugInjectionArmed = false
     /// How many drawn rows make an estimate worth freezing.
     private static let estimateFreezeSample = 10
+    /// The cap: after this many passes the estimate freezes whatever it is.
+    private static let estimateFreezePasses = 60
     /// **The document's frame was set by this view, this tick.** Not "the
     /// content's height differs from last time" -- that is true on every tick
     /// a page grows in, and gating on it swallowed six reader steps in a row
@@ -817,6 +824,7 @@ struct ControlRoomNativeChatView: View {
                     // anchor says it belongs.
                     syncClip("attach")
                     startAutoScrollIfAsked()
+                    startDebugInjectionIfAsked()
                 }
             },
             onVisible: { shown in
@@ -976,6 +984,40 @@ struct ControlRoomNativeChatView: View {
     /// Positive scrolls towards **older** rows (the document's y decreases),
     /// negative towards the newest. **Nothing runs when the variable is
     /// absent**: no timer, no state, not one line more than a run without it.
+    /// **`CHAT_INJECT_AFTER_MS` makes a message arrive, for measuring the
+    /// follow behaviour** -- a debug path beside `CHAT_AUTO_SCROLL`, and like
+    /// it: with the variable absent nothing is read, nothing is armed, and
+    /// the injector is never reached.
+    ///
+    ///     CHAT_INJECT_AFTER_MS=1500   ms after the surface attaches
+    ///     CHAT_INJECT_TEXT="probe 1"  the body (default "probe")
+    ///     CHAT_INJECT_REPEAT=1        how many, 0 or absent = one
+    ///
+    /// The message is handed to the feed at the line the live read feeds
+    /// (`ControlRoomChatFeed.injectDebugMessage`), so `rows` grows through
+    /// the real `insert` and the change is classified `appended` /
+    /// `cause=newer` exactly as an arrival from the core would be.
+    private func startDebugInjectionIfAsked() {
+        guard !debugInjectionArmed else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["CHAT_INJECT_AFTER_MS"],
+              let ms = Double(raw), ms >= 0
+        else { return }
+        debugInjectionArmed = true
+        let text = env["CHAT_INJECT_TEXT"] ?? "probe"
+        let times = max(1, Int(env["CHAT_INJECT_REPEAT"] ?? "") ?? 1)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ms / 1000) {
+            for n in 0..<times {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(n) * 0.5) {
+                    Self.windowLog.notice(
+                        "inject: n=\(n + 1, privacy: .public) of=\(times, privacy: .public) bytes=\(text.utf8.count, privacy: .public)"
+                    )
+                    feed.injectDebugMessage(text: text)
+                }
+            }
+        }
+    }
+
     private func startAutoScrollIfAsked() {
         guard auto == nil else { return }
         let env = ProcessInfo.processInfo.environment
@@ -2037,8 +2079,20 @@ struct ControlRoomNativeChatView: View {
             if let frame = frames[id], frame.height > 1 { drawn += 1 }
         }
         guard drawn > 0 else { return }
-        feed.rowHeightEstimate = measuredRowHeight(order: order)
-        if drawn >= Self.estimateFreezeSample {
+        let measured = measuredRowHeight(order: order)
+        // **Settle = the median stopped moving**, not "the first sample".
+        // The 2026-11-07 entry run froze on the first sample: 27 rows drawn,
+        // median 46 -- and the very next pass converted 22 of them to 64.
+        // The estimate the whole far end is multiplied by was therefore one
+        // conversion stale, by the same 18 points. A sample is worth freezing
+        // once it agrees with itself between two passes.
+        let stable = abs(measured - feed.rowHeightEstimate) < 0.5
+        feed.rowHeightEstimate = measured
+        rowHeightEstimatePasses += 1
+        if drawn >= Self.estimateFreezeSample, stable {
+            rowHeightEstimateSettled = true
+        }
+        if rowHeightEstimatePasses >= Self.estimateFreezePasses {
             rowHeightEstimateSettled = true
         }
     }
@@ -2118,6 +2172,7 @@ struct ControlRoomNativeChatView: View {
             // on rows from another group. (Within one map it stays frozen --
             // that is §25.2's rule.)
             rowHeightEstimateSettled = false
+            rowHeightEstimatePasses = 0
             mapEpoch &+= 1
             if feed.locatedAnchor != nil {
                 newBelow = false
