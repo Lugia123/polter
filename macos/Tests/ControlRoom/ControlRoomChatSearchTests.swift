@@ -249,4 +249,18 @@ struct ControlRoomChatSearchTests {
         #expect(poll.contains("chat_search_poll"))
         #expect(cancel.contains("chat_search_cancel"))
     }
+
+    /// **The instrument's question, asked with the core's own rule**
+    /// (`rpc.zig:6358`): byte by byte, ASCII case folded, everything else
+    /// exact. A Unicode-aware `range(of:)` would say yes where the core says
+    /// no, and the reading would then be about this file instead of about the
+    /// core.
+    @Test func testTheQueryMatchIsTheCoreSRule() {
+        let hit = "短的一条。 #501"
+        #expect(ControlRoomChatSearchFeed.asciiContains(hit, "#501"))
+        #expect(!ControlRoomChatSearchFeed.asciiContains(hit, "#500"))
+        #expect(ControlRoomChatSearchFeed.asciiContains("Build FAILED on macOS", "failed"))
+        #expect(!ControlRoomChatSearchFeed.asciiContains("", "x"))
+        #expect(!ControlRoomChatSearchFeed.asciiContains("x", ""))
+    }
 }

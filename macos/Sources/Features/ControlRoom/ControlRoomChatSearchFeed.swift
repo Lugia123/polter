@@ -1,4 +1,5 @@
 import Combine
+import OSLog
 import Foundation
 
 /// One group's search, driven through the real chat door (contract §Search).
@@ -9,11 +10,42 @@ import Foundation
 /// sent, and a reply from a generation that has moved on is dropped before it
 /// can touch the results.
 ///
+/// The one line this file writes is `search: q=… hit=… hasQuery=…`, and it
+/// exists for a reading the core cannot produce by itself (see the comment
+/// where it is emitted).
+///
 /// **A new query cancels the old scan.** Typing stops the debounce and the
 /// job; submitting starts one begin. A `budget` page that found nothing is
 /// carried on through a **scheduled** turn from its resume token, never a
 /// recursive call and never the same token twice.
 final class ControlRoomChatSearchFeed: ObservableObject {
+    /// Where `search: q=… hit=… hasQuery=…` goes: the same `chat-window`
+    /// category every other reading of this page is taken from.
+    private static let searchLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-window"
+    )
+
+    /// **The core's own rule for "is the query in this text"**
+    /// (`rpc.zig:6358 nextMatch`): byte by byte, ASCII case folded, everything
+    /// else exact. Written once here rather than borrowing a Unicode-aware
+    /// `range(of:)`, because the question is whether *the core's* rule holds
+    /// in what the renderer was handed.
+    static func asciiContains(_ hay: String, _ needle: String) -> Bool {
+        let h = Array(hay.utf8)
+        let n = Array(needle.utf8)
+        guard !n.isEmpty, h.count >= n.count else { return false }
+        func fold(_ byte: UInt8) -> UInt8 {
+            (byte >= 0x41 && byte <= 0x5A) ? byte + 0x20 : byte
+        }
+        for start in 0...(h.count - n.count) {
+            var k = 0
+            while k < n.count, fold(h[start + k]) == fold(n[k]) { k += 1 }
+            if k == n.count { return true }
+        }
+        return false
+    }
+
     typealias S = ControlRoomChatSearch
     typealias Reply = ControlRoomChatFeed.Reply
     typealias Ask = ControlRoomChatFeed.Ask
@@ -372,6 +404,19 @@ final class ControlRoomChatSearchFeed: ObservableObject {
             }
             if session == nil { session = page.session }
             self.jobID = nil
+            // **The one instrument for "the result's summary does not contain
+            // the query"** (2026-11-08). The core cannot emit such a hit:
+            // `snippetOf` returns nil when the query is not in the record's
+            // text and that row is dropped (`rpc.zig:6288`). So a `0` here
+            // means the *rendering* took something other than `hit.snippet`
+            // (or the query that reached the core was not the one typed).
+            // `hasQuery` uses the core's own rule -- ASCII case ignored,
+            // everything else exact -- not a second one.
+            for hit in page.results {
+                Self.searchLog.notice(
+                    "search: q=\"\(page.query, privacy: .public)\" hit=\(hit.message.anchor, privacy: .public) hasQuery=\(Self.asciiContains(hit.snippet, page.query) ? 1 : 0, privacy: .public)"
+                )
+            }
             state.absorb(page)
             // **An empty budget page is progress.** Carry the scan on from
             // its token, once, in a scheduled turn; a repeated token is a
