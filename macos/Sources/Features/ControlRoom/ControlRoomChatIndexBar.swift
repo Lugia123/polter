@@ -105,6 +105,18 @@ enum ControlRoomChatIndexBar {
         min(max(0, viewport), topPoints(documentBottom: documentBottom, offset: offset))
     }
 
+    /// **The depth while following the newest.** The viewport top is one
+    /// screen off the document's end, so it is the viewport -- or the whole
+    /// document when that is shorter than the viewport.
+    ///
+    /// **The first frame has no clip origin** (`offset` is 0 because there is
+    /// no clip yet, not because the reader is at the oldest end); reading that
+    /// as a depth drew the thumb at the oldest end for two frames and then
+    /// jumped it to the newest (2026-11-08, task 3071).
+    static func depthFollowingNewest(viewport: Double, documentBottom: Double) -> Double {
+        viewportPoints(viewport: viewport, documentBottom: documentBottom, offset: 0)
+    }
+
     /// **The high-water mark, in points.** `top` is where the reader is now;
     /// `previous` is the deepest they have ever been. **Only ever grows** --
     /// reaching 100 keeps 100, and coming back to the newest does not shrink

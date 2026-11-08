@@ -1599,6 +1599,17 @@ struct ControlRoomChatPresentationTests {
         #expect(!ControlRoomChatSeek.isBeyond(depth: 0, documentDepth: 1200))
     }
 
+    /// **Following the newest puts the viewport one screen off the end**
+    /// (task 3071). The first frame has no clip origin (`offset` is 0 because
+    /// there is no clip yet), and reading that as a depth drew the thumb at
+    /// the oldest end until the first callback moved it.
+    @Test func testFollowingTheNewestIsOneViewportOffTheBottom() {
+        #expect(I.depthFollowingNewest(viewport: 968, documentBottom: 12_081) == 968)
+        // A document shorter than the viewport covers all of it.
+        #expect(I.depthFollowingNewest(viewport: 968, documentBottom: 500) == 500)
+        #expect(I.depthFollowingNewest(viewport: 968, documentBottom: 0) == 0)
+    }
+
     /// `count` rows of the same height, with the list's 10pt gap between
     /// them, in the content coordinates the frames preference reports.
     private func frameMap(_ heights: [CGFloat]) -> (order: [String], frames: [String: CGRect]) {

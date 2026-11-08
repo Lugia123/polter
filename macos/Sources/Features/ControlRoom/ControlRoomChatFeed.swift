@@ -546,9 +546,10 @@ final class ControlRoomChatFeed: ObservableObject {
     var aboveCount: Int { above.count }
     var belowCount: Int { below.count }
 
-    /// **Whether this identity is loaded at all** -- in the document or in
-    /// either apron (task 3068). A seek that names a row the feed still holds
-    /// is a change of window; one it does not is the core's `around`.
+    /// **Whether this identity is loaded at all** (tasks 3068/3071). The
+    /// question is the **identity table's**, not a list of the places rows are
+    /// kept: `byAnchor`/`byAlias` are what every container writes to, so a
+    /// third place would not silently fall out of this answer.
     func isLoaded(_ id: String) -> Bool { byAnchor[id] != nil || byAlias[id] != nil }
     /// A row's height in points, as the view has measured it. The feed
     /// cannot measure rows; it uses this to turn "half a screen" and a

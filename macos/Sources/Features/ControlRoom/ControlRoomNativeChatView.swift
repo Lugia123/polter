@@ -2612,8 +2612,11 @@ struct ControlRoomNativeChatView: View {
     /// (`seek: stale … → oldest-loaded`). A silent fallback reads as "it
     /// worked".
     private func seek(toDepth depth: Double) {
-        let plan = listPlan
-        let documentNow = Double(documentBottom(plan: plan, layout: scrollLayout(plan)))
+        // **The same ruler the bar's depth is in** (task 3071): a drag's depth
+        // comes from the bar, which speaks the scroll view's document height.
+        // Reading the content ruler here made a depth that is inside the
+        // document look "beyond" it while the floor held the clip lower.
+        let documentNow = Double(liveDocumentHeight)
         if ControlRoomChatSeek.isBeyond(depth: depth, documentDepth: documentNow) {
             // **Never silent** (supervisor, 2026-11-08): this line names the
             // row asked for, so the next one (`seek: landed` or `seek:
@@ -2923,8 +2926,22 @@ struct ControlRoomNativeChatView: View {
     private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
         if !feed.rows.isEmpty, height > 0 {
             let order = feed.rows.map(\.id)
-            // **The bar speaks in points** (design §23.3).
-            let documentNow = Double(documentBottom(plan: listPlan, layout: scrollLayout(listPlan)))
+            // **The bar speaks in points** (design §23.3), and **on one
+            // ruler**: the scroll view's own document height
+            // (`liveDocumentHeight`, the same `live` the scroll clamp has),
+            // not the content ruler `documentBottom(plan:layout:)`. The
+            // content ruler dips under the clip for a frame each time a row
+            // above the viewport measures shorter, while the floor holds the
+            // clip where it is -- `viewP` fell 968 -> 546 with `offset`
+            // standing still and the thumb crawled (2026-11-08, task 3071).
+            //
+            // **The other ruler stays on purpose** (supervisor, 2026-11-08):
+            // the *window decision* still chooses rows on the frame ruler
+            // (`documentBottom(plan:layout:)`), and the two meet only at base
+            // points -- `liveDocumentHeight` is that ruler floored to the
+            // clip. Unifying them would feed the floored height back into the
+            // choice that produced it, which is the loop §24 closed.
+            let documentNow = Double(liveDocumentHeight)
             // **The total is the high-water mark**, not the document: a
             // document that sheds rows must not shrink the bar. `max` with
             // today's depth covers the frame between a scroll and the
@@ -2934,12 +2951,19 @@ struct ControlRoomNativeChatView: View {
             ))
             // **R1-14: the bar's top reads the camera**, not the projected
             // pixel. The appearance is the same position; the source stops it
-            // lagging a frame behind while a projection is owed. `pinned` has
-            // no place to read, so the pixel-derived depth stands there.
+            // lagging a frame behind while a projection is owed.
+            //
+            // **No place is not the oldest end** (task 3071): before the
+            // first callback there is no clip origin, and `document - 0` drew
+            // the thumb at the oldest end for two frames. Following the
+            // newest means the viewport is one screen off the document's end.
+            let following = camera.pinned || clipSeen == nil
             let depth = cameraDepth(order: order, frames: frames, documentBottom: documentNow)
-                ?? ControlRoomChatIndexBar.topPoints(
-                    documentBottom: documentNow, offset: Double(offsetY)
-                )
+                ?? (following
+                    ? ControlRoomChatIndexBar.depthFollowingNewest(
+                        viewport: Double(viewportH), documentBottom: documentNow)
+                    : ControlRoomChatIndexBar.topPoints(
+                        documentBottom: documentNow, offset: Double(offsetY)))
             let covered = ControlRoomChatIndexBar.viewportPoints(
                 viewport: Double(viewportH),
                 documentBottom: documentNow,
