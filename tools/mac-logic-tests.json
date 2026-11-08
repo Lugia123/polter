@@ -31,6 +31,8 @@
   ],
   "sources": {
     "in": [
+    "macos/Sources/Features/ControlRoom/ControlRoomChatLineTable.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomChatLineBar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomAlert.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomElsewhere.swift",
@@ -312,6 +314,7 @@
   },
   "tests": {
     "in": [
+    "macos/Tests/ControlRoom/ControlRoomChatLineTests.swift",
       "macos/Tests/ControlRoom/ControlRoomAlertTests.swift",
       "macos/Tests/ControlRoom/ControlRoomAtLaunchTests.swift",
       "macos/Tests/ControlRoom/ControlRoomElsewhereTests.swift",
