@@ -473,6 +473,13 @@ struct ControlRoomNativeChatView: View {
             // `anchor: lost` and do an extra read on its way to the right
             // row.
             jumpToLocate(feed.locatedAnchor)
+            // **A seq jump whose row the feed rebuilt the window for lands
+            // here** (task 3069): `recentre` does not set a located anchor,
+            // so `jumpToLocate` above never runs for it. Centre it, which is
+            // what logs `jumpdebug: landed`.
+            if let target = debugSeqAnchor, rowIndexByID[target] != nil {
+                jump(to: target, centered: true)
+            }
             // **A seek that was recentred lands centred** (design §27, task
             // 3068): the `around` path centres itself in `center(on:)`; the
             // recentre path (the row was still in an apron) lands here, and
@@ -2742,11 +2749,18 @@ struct ControlRoomNativeChatView: View {
         // its index in the document window, and the offset the anchor holds
         // -- the same pair a resume must come back to (`resume: anchor=…
         // offset=…`).
-        if let pending = debugSeqAnchor, place.id == pending {
+        // **The jump's landing is the target being settled, not the place
+        // having its id** (task 3069): a centred row near the document's end
+        // is clamped to the bottom, and the anchor that lands is then a
+        // *different* row -- the 17:12 run landed `p:484@34` for
+        // `CHAT_JUMP_TO_SEQ=499` and this line stayed silent because the two
+        // ids differed. The target is what was asked for; the place is where
+        // it landed.
+        if let target = debugSeqAnchor {
             debugSeqAnchor = nil
-            let at = feed.rows.firstIndex(where: { $0.id == place.id }) ?? -1
+            let at = feed.rows.firstIndex(where: { $0.id == target }) ?? -1
             Self.windowLog.notice(
-                "jumpdebug: landed anchor=\(place.id, privacy: .public) at=\(at, privacy: .public) offset=\(Int(place.offset), privacy: .public) rows=\(feed.rows.endIndex, privacy: .public)"
+                "jumpdebug: landed anchor=\(target, privacy: .public) at=\(at, privacy: .public) place=\(place.id, privacy: .public)@\(Int(place.offset), privacy: .public) rows=\(feed.rows.endIndex, privacy: .public)"
             )
         }
         // **A seek that reached its place lands here too** (design §27): the

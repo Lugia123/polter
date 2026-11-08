@@ -702,6 +702,16 @@ final class ControlRoomChatFeed: ObservableObject {
                     goToLatest()
                     armLive()
                 }
+            } else {
+                // **A located page keeps its window** (design §15): the
+                // resume anchor is not this page's place, so nothing is
+                // recentred. **Said out loud** (task 3070's instrument): the
+                // 17:12 switch run had a debug jump's located anchor
+                // standing, and "no `resume:` line" was then read as "the
+                // anchor was lost" -- the same silence-versus-absence trap.
+                Self.resumeLog.notice(
+                    "resume: skipped reason=located anchor=\(self.locatedAnchor ?? "-", privacy: .public)"
+                )
             }
             armOlderAfterResume()
             return
