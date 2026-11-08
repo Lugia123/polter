@@ -1590,6 +1590,15 @@ struct ControlRoomChatPresentationTests {
         #expect(!I.keepsReached(mapGroup: "polter", newGroup: nil))
     }
 
+    /// **A depth past the document is a place to fetch back, not a row to
+    /// scroll to** (design §27, task 3068). Equal is still the document's own
+    /// first row: a drag exactly onto it lands there like any other row.
+    @Test func testABeyondDepthIsPastTheDocumentNotOntoIt() {
+        #expect(ControlRoomChatSeek.isBeyond(depth: 1201, documentDepth: 1200))
+        #expect(!ControlRoomChatSeek.isBeyond(depth: 1200, documentDepth: 1200))
+        #expect(!ControlRoomChatSeek.isBeyond(depth: 0, documentDepth: 1200))
+    }
+
     /// `count` rows of the same height, with the list's 10pt gap between
     /// them, in the content coordinates the frames preference reports.
     private func frameMap(_ heights: [CGFloat]) -> (order: [String], frames: [String: CGRect]) {

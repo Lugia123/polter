@@ -135,6 +135,15 @@ struct ControlRoomNativeChatView: View {
     /// `.replaced` does not always mean a new document -- see
     /// `ControlRoomChatIndexBar.keepsReached`.
     @State private var barGroup: String?
+    /// **The row at the deepest place the reader has been** (design §27, task
+    /// 3068): written in the same pass as `barReached` and cleared by the same
+    /// predicate, because a depth without an identity cannot be sought.
+    /// **An id (`p:499`), never an index** -- an index is renumbered by every
+    /// eviction and prepend, which is the defect `12654fdd3` removed.
+    @State private var deepestRow: String?
+    /// **A seek waiting for an `around` to land on this id**, so a refusal can
+    /// be said out loud and fall back to the oldest row still loaded.
+    @State private var pendingSeekAnchor: String?
     /// **The first valid reading is taken as it is**, not `max`ed against a
     /// zero: `max(0, depth)` publishes whatever the very first frame
     /// computed, and the first frame's document is not the one that settles
@@ -403,15 +412,27 @@ struct ControlRoomNativeChatView: View {
         .onChange(of: feed.locateEpoch) { _ in
             jumpToLocate(feed.locatedAnchor)
         }
-        // **A seq jump the core refused must say so** (task 3069). Without
-        // this line a failed `around` and a slow one look identical on the
-        // log: nothing after `jumpdebug: around`.
+        // **A jump the core refused must say so.** Without this line a failed
+        // `around` and a slow one look identical on the log: nothing after
+        // `jumpdebug: around` (`CHAT_JUMP_TO_SEQ`, task 3069).
         .onChange(of: feed.locateTrouble) { trouble in
-            guard let pending = debugSeqAnchor, let trouble else { return }
-            debugSeqAnchor = nil
-            Self.windowLog.notice(
-                "jumpdebug: missed anchor=\(pending, privacy: .public) trouble=\(trouble, privacy: .public)"
-            )
+            guard let trouble else { return }
+            if let pending = debugSeqAnchor {
+                debugSeqAnchor = nil
+                Self.windowLog.notice(
+                    "jumpdebug: missed anchor=\(pending, privacy: .public) trouble=\(trouble, privacy: .public)"
+                )
+            }
+            // **A seek whose row the log has shed lands on the oldest row
+            // that is still loaded, and says so** (design §27.4 rule 3, task
+            // 3068): a silent fallback is the defect this branch replaces.
+            if let pending = pendingSeekAnchor {
+                pendingSeekAnchor = nil
+                Self.windowLog.notice(
+                    "seek: stale anchor=\(pending, privacy: .public) trouble=\(trouble, privacy: .public) → oldest-loaded"
+                )
+                if let id = feed.rows.first?.id { jump(to: id) }
+            }
         }
         .onChange(of: feed.rows) { rows in
             // **Rows changing is not the reader moving.** The anchor keeps
@@ -427,6 +448,14 @@ struct ControlRoomNativeChatView: View {
             // `anchor: lost` and do an extra read on its way to the right
             // row.
             jumpToLocate(feed.locatedAnchor)
+            // **A seek that was recentred lands centred** (design §27, task
+            // 3068): the `around` path centres itself in `center(on:)`; the
+            // recentre path (the row was still in an apron) lands here, and
+            // the reader asked for a position, not a top edge.
+            if let pending = pendingSeekAnchor, rowIndexByID[pending] != nil {
+                pendingSeekAnchor = nil
+                center(on: pending)
+            }
             rebaseAnchor("\(change)")
             syncClip("rows")
         }
@@ -2443,6 +2472,11 @@ struct ControlRoomNativeChatView: View {
         if newDocument, change == .appended || change == .replaced {
             barReached = 0
             barReachedSeeded = false
+            // **The deepest row goes with the mark** (task 3068): one
+            // predicate for both, or a mark left from one group could seek
+            // into another group's row -- the drift `keepsReached` exists to
+            // stop.
+            deepestRow = nil
         }
         switch change {
         case .appended:
@@ -2563,19 +2597,37 @@ struct ControlRoomNativeChatView: View {
     /// asks for a **depth** (points below the newest); a depth is not a
     /// message, so it lands on the nearest one.
     ///
-    /// ⚠️ **This does not reach an evicted position.** The bar's total is the
-    /// document's own depth in this step; when the high-water mark replaces
-    /// it, dragging to the far left lands on the **oldest row still loaded**,
-    /// not on the earliest the reader ever reached. An evicted row is not
-    /// reachable here -- the `around` slow path for a message with no
-    /// `location` hint is unverified -- and on a normal night nothing is
-    /// evicted, so the two ends are the same row. **The difference is felt
-    /// only after the 5000-row / 32 MiB ceiling, and only then is it a
-    /// difference at all.**
+    /// **Beyond the document is a place, not a message** (design §27.7, task
+    /// 3068): the bar's total is the reader's high-water mark, so the far left
+    /// can point at a row the document does not hold. That row is named by the
+    /// **id remembered with the mark** (`deepestRow`), and the jump either
+    /// recentres on it (still in the window or an apron) or asks the core for
+    /// an `around` -- **no `location` hint**: the core finds `p:<seq>` in its
+    /// own capture index, which is why no position has to be remembered at
+    /// eviction time. The placeholder screen opens on the way (`jump(to:)`).
+    ///
+    /// ⚠️ **An id is not a permanent address.** The log rotates, and a row it
+    /// has shed comes back as `AnchorStale`/`AnchorNotFound`; then the seek
+    /// lands on the oldest row still loaded and **says so**
+    /// (`seek: stale … → oldest-loaded`). A silent fallback reads as "it
+    /// worked".
     private func seek(toDepth depth: Double) {
-        let order = feed.rows.map(\.id)
         let plan = listPlan
         let documentNow = Double(documentBottom(plan: plan, layout: scrollLayout(plan)))
+        if ControlRoomChatSeek.isBeyond(depth: depth, documentDepth: documentNow) {
+            // **Never silent** (supervisor, 2026-11-08): this line names the
+            // row asked for, so the next one (`seek: landed` or `seek:
+            // stale`) completes the answer.
+            let anchor = deepestRow ?? feed.rows.first?.id
+            Self.windowLog.notice(
+                "seek: beyond depth=\(Int(depth), privacy: .public) document=\(Int(documentNow), privacy: .public) anchor=\(anchor ?? "-", privacy: .public)"
+            )
+            guard let anchor else { return }
+            if !feed.isLoaded(anchor) { pendingSeekAnchor = anchor }
+            jump(to: anchor, centered: true)
+            return
+        }
+        let order = feed.rows.map(\.id)
         guard let index = nearestMessageIndex(
             order: order, documentY: documentNow - depth
         ) else { return }
@@ -2634,6 +2686,16 @@ struct ControlRoomNativeChatView: View {
             let at = feed.rows.firstIndex(where: { $0.id == place.id }) ?? -1
             Self.windowLog.notice(
                 "jumpdebug: landed anchor=\(place.id, privacy: .public) at=\(at, privacy: .public) offset=\(Int(place.offset), privacy: .public) rows=\(feed.rows.endIndex, privacy: .public)"
+            )
+        }
+        // **A seek that reached its place lands here too** (design §27): the
+        // around window rebuilt around the target, and the reader asked for a
+        // position, so it is centred -- the same landing a search gets.
+        if let pending = pendingSeekAnchor, place.id == pending {
+            pendingSeekAnchor = nil
+            let at = feed.rows.firstIndex(where: { $0.id == place.id }) ?? -1
+            Self.windowLog.notice(
+                "seek: landed anchor=\(place.id, privacy: .public) at=\(at, privacy: .public) offset=\(Int(place.offset), privacy: .public)"
             )
         }
     }
@@ -2798,12 +2860,14 @@ struct ControlRoomNativeChatView: View {
         // read it but must not write it. This runs from every callback that
         // moves the viewport, which is every moment the mark could advance.
         let plan = listPlan
+        let order = feed.rows.map(\.id)
         let documentNow = Double(documentBottom(plan: plan, layout: scrollLayout(plan)))
         let depthNow = ControlRoomChatIndexBar.topPoints(
             documentBottom: documentNow, offset: Double(offsetY)
         )
+        let previous = barReached
         if barReachedSeeded {
-            barReached = ControlRoomChatIndexBar.reached(previous: barReached, top: depthNow)
+            barReached = ControlRoomChatIndexBar.reached(previous: previous, top: depthNow)
         } else if !plan.isEmpty {
             // **Seeded on the first plan that exists**, not on the frame
             // before it: an empty plan's `documentBottom` is the padding, and
@@ -2811,8 +2875,16 @@ struct ControlRoomNativeChatView: View {
             barReached = depthNow
             barReachedSeeded = true
         }
+        // **The mark and its row are written together** (design §27, task
+        // 3068): going deeper than ever means the row at the viewport's top
+        // edge is now what "the deepest place" refers to, and it travels with
+        // the mark so the two cannot drift.
+        if barReached > previous {
+            let top = windowTopID(order: order, at: Double(offsetY))
+            if top != "-" { deepestRow = top }
+        }
         guard let covered = ControlRoomChatIndexBar.viewportTicks(
-            order: feed.rows.map(\.id),
+            order: order,
             frames: frames,
             offset: Double(offsetY),
             viewport: Double(viewportH)
@@ -4120,5 +4192,22 @@ struct ControlRoomChatDebugJump {
         } else {
             mode = .afterCap
         }
+    }
+}
+
+/// **Where a drag on the index bar lands** (design §27, task 3068).
+///
+/// The bar's total is the reader's high-water mark (§23.3), not the document
+/// that is loaded, so the far left can point at a depth this document does
+/// not contain. That boundary is the one decision this type holds: past it
+/// the seek is a **place to fetch back** (an `around` by identity), not a row
+/// to scroll to.
+enum ControlRoomChatSeek {
+    /// **Whether a depth is beyond the document that is loaded.** `depth` is
+    /// points below the newest; `documentDepth` is what the document itself
+    /// spans. Equal is **not** beyond: that depth is the document's own first
+    /// row, and a drag onto it lands there like any other row.
+    static func isBeyond(depth: Double, documentDepth: Double) -> Bool {
+        depth > documentDepth
     }
 }

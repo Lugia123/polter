@@ -545,6 +545,11 @@ final class ControlRoomChatFeed: ObservableObject {
     /// arithmetic and for a test to read.
     var aboveCount: Int { above.count }
     var belowCount: Int { below.count }
+
+    /// **Whether this identity is loaded at all** -- in the document or in
+    /// either apron (task 3068). A seek that names a row the feed still holds
+    /// is a change of window; one it does not is the core's `around`.
+    func isLoaded(_ id: String) -> Bool { byAnchor[id] != nil || byAlias[id] != nil }
     /// A row's height in points, as the view has measured it. The feed
     /// cannot measure rows; it uses this to turn "half a screen" and a
     /// request's deficit into counts. **A measurement, not a constant**: the
