@@ -2995,21 +2995,46 @@ struct ControlRoomNativeChatView: View {
         let depthNow = ControlRoomChatIndexBar.topPoints(
             documentBottom: documentNow, offset: Double(offsetY)
         )
+        // **A depth is only a depth once the viewport has an origin.** The
+        // first callback of a page arrives before the surface has placed
+        // itself, with `offset` 0 -- not because the reader is at the oldest
+        // end but because there is no clip yet. Reading that 0 as a position
+        // wrote the *whole* document into the high-water mark, and the mark
+        // never comes down: measured in the real group (2026-11-09), the bar
+        // opened at `totalP=19644` over a settled `content=11727`, so the
+        // thumb could travel only 42% of the track and a drag to the top
+        // asked for a place no row was at -- `seek: beyond depth=18720
+        // document=18124 anchor=p:19984` jumped to a row thirteen rows below
+        // the window's top and the thumb fell back where it started. While
+        // the reader is following the newest, the depth is one screen
+        // (`depthFollowingNewest`), which is the same rule the bar's own
+        // display uses.
+        let following = camera.pinned || camera.place == nil || clipSeen == nil
+            || !clipOriginKnown
         let previous = barReached
+        let wasSeeded = barReachedSeeded
         if barReachedSeeded {
-            barReached = ControlRoomChatIndexBar.reached(previous: previous, top: depthNow)
+            if !following {
+                barReached = ControlRoomChatIndexBar.reached(previous: previous, top: depthNow)
+            }
         } else if !plan.isEmpty {
             // **Seeded on the first plan that exists**, not on the frame
             // before it: an empty plan's `documentBottom` is the padding, and
             // taking that would freeze the bar at 24 points for the session.
-            barReached = depthNow
+            barReached = following
+                ? ControlRoomChatIndexBar.depthFollowingNewest(
+                    viewport: Double(viewportH), documentBottom: documentNow)
+                : depthNow
             barReachedSeeded = true
         }
         // **The mark and its row are written together** (design §27, task
         // 3068): going deeper than ever means the row at the viewport's top
         // edge is now what "the deepest place" refers to, and it travels with
-        // the mark so the two cannot drift.
-        if barReached > previous {
+        // the mark so the two cannot drift. **Not on the seeding pass**: there
+        // the mark is one screen, not a place the reader has been, and naming
+        // a row for it would point the far end of the track at the window's
+        // top row (the 2026-11-09 drag landed on exactly that).
+        if wasSeeded, barReached > previous {
             let top = windowTopID(order: order, at: Double(offsetY))
             if top != "-" { deepestRow = top }
         }
