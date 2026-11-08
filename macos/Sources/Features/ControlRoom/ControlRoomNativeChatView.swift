@@ -513,7 +513,7 @@ struct ControlRoomNativeChatView: View {
             // an older page arrives above the reader, the total changes, and
             // no scroll callback is owed. One call writes the `chat-line:
             // load` reading and leaves `bottomLine` alone.
-            publishViewportRows()
+            publishViewportRows(deriving: false)
         }
         // **A page landing in an apron is a reason to look again** (review C,
         // M6): a reader parked at the loaded edge cannot produce a scroll
@@ -531,7 +531,7 @@ struct ControlRoomNativeChatView: View {
         .onChange(of: viewportH) { height in
             guard height > 0 else { return }
             syncClip("viewport")
-            publishViewportRows()
+            publishViewportRows(deriving: false)
             // **A size that has just become real is a new unit** (review C,
             // M5): the margin is in screens, and every threshold moved.
             // Async, because this runs inside a view update and the step
@@ -672,7 +672,7 @@ struct ControlRoomNativeChatView: View {
         // The located row may have just been measured: that is one of the
         // two moments its mark may breathe (task 2999 ④).
         breatheLocatedIfInView()
-        publishViewportRows()
+        publishViewportRows(deriving: false)
         placeholderLook()
     }
 
@@ -3067,7 +3067,7 @@ struct ControlRoomNativeChatView: View {
     /// **This is the scroll path's write of `bottomLine`**: the clip's origin,
     /// read as the line at the viewport's bottom edge. `seek(toLine:)` is the
     /// only other writer; there is no third copy.
-    private func publishViewportRows() {
+    private func publishViewportRows(deriving: Bool = true) {
         guard viewportH > 0, !feed.rows.isEmpty else { return }
         let plan = listPlan
         let layout = scrollLayout(plan)
@@ -3092,8 +3092,18 @@ struct ControlRoomNativeChatView: View {
         let contentBottomNow = table.contentBottom
         let originBelongsHere = offsetY >= -1
             && CGFloat(offsetY) <= contentBottomNow - viewportH + 1
-        if camera.pinned || !clipOriginKnown || !originBelongsHere {
-            derived = (camera.pinned || !clipOriginKnown) ? 1 : bottomLine
+        if camera.pinned || !clipOriginKnown {
+            derived = 1
+        } else if !deriving || !originBelongsHere {
+            // **Not every callback is a scroll.** A rows change, a new
+            // viewport size and a measurement all call this to keep the total
+            // and the page size right, but the clip origin they see was
+            // written by the *previous* layout: read as a line it gives a
+            // position the reader never took (measured 2026-11-09: a page
+            // landing took `b` from 45 to 126 and back on the next frame).
+            // The scroll callback that follows says the truth; this pass
+            // keeps what it had.
+            derived = bottomLine
         } else {
             derived = table.line(viewportTop: offsetY, viewport: viewportH) ?? bottomLine
         }
