@@ -82,4 +82,46 @@ struct ControlRoomChatDebugJumpTests {
         #expect(plan.wanted == 0)
         #expect(plan.step(rows: 10, elapsed: 0) == .jump(index: 0, clamped: false))
     }
+
+    // MARK: - CHAT_JUMP_TO_SEQ (task 3069)
+
+    /// **A seq names the message, not a place in the window.** It is the
+    /// only mode that can reach the middle of a large group, because the
+    /// pages after the first screen land in the older apron and never enter
+    /// `feed.rows` at all.
+    @Test func testASeqIsAnIdentityNotAWindowIndex() throws {
+        let plan = try armed(["CHAT_JUMP_AFTER_MS": "8000", "CHAT_JUMP_TO_SEQ": "499"])
+        #expect(plan.mode == .seq(499))
+        #expect(plan.seqAnchor == "p:499")
+        // It does not wait for rows: the around resolves the identity.
+        #expect(plan.step(rows: 0, elapsed: 0) == .wait)
+        #expect(plan.step(rows: 192, elapsed: 9) == .wait)
+    }
+
+    /// **The identity wins when both are set**: an index only means
+    /// something in the window it was measured in.
+    @Test func testASeqWinsOverAWindowIndex() throws {
+        let plan = try armed([
+            "CHAT_JUMP_AFTER_MS": "8000",
+            "CHAT_JUMP_TO_SEQ": "499",
+            "CHAT_JUMP_TO_INDEX": "500",
+        ])
+        #expect(plan.mode == .seq(499))
+        #expect(plan.wanted == nil)
+    }
+
+    /// An unreadable seq falls through to the index, and a bare cap keeps
+    /// being a bare cap: nothing is guessed from a typo.
+    @Test func testAnUnreadableSeqFallsThrough() throws {
+        let withIndex = try armed([
+            "CHAT_JUMP_AFTER_MS": "8000",
+            "CHAT_JUMP_TO_SEQ": "p:499",
+            "CHAT_JUMP_TO_INDEX": "500",
+        ])
+        #expect(withIndex.mode == .row(500))
+        #expect(withIndex.seqAnchor == nil)
+
+        let capOnly = try armed(["CHAT_JUMP_AFTER_MS": "8000", "CHAT_JUMP_TO_SEQ": "-1"])
+        #expect(capOnly.mode == .afterCap)
+    }
 }

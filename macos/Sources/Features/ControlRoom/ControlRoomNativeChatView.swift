@@ -121,6 +121,10 @@ struct ControlRoomNativeChatView: View {
     @State private var debugInjectionArmed = false
     /// The debug jump is armed once per surface (`CHAT_JUMP_*`).
     @State private var debugJumpArmed = false
+    /// **The anchor a `CHAT_JUMP_TO_SEQ` jump is waiting to land on.** It is
+    /// cleared by the landing (`center(on:)`) or by the refusal
+    /// (`locateTrouble`), so the log says which of the two happened.
+    @State private var debugSeqAnchor: String?
     /// **The bar's high-water mark, in points** (design §23.3): the deepest
     /// the reader has ever been, measured from the newest message. **Only ever
     /// grows** -- reaching 100 keeps 100, and coming back to the newest does
@@ -398,6 +402,16 @@ struct ControlRoomNativeChatView: View {
         // context page appended afterwards does not pull the reader back.
         .onChange(of: feed.locateEpoch) { _ in
             jumpToLocate(feed.locatedAnchor)
+        }
+        // **A seq jump the core refused must say so** (task 3069). Without
+        // this line a failed `around` and a slow one look identical on the
+        // log: nothing after `jumpdebug: around`.
+        .onChange(of: feed.locateTrouble) { trouble in
+            guard let pending = debugSeqAnchor, let trouble else { return }
+            debugSeqAnchor = nil
+            Self.windowLog.notice(
+                "jumpdebug: missed anchor=\(pending, privacy: .public) trouble=\(trouble, privacy: .public)"
+            )
         }
         .onChange(of: feed.rows) { rows in
             // **Rows changing is not the reader moving.** The anchor keeps
@@ -1147,26 +1161,35 @@ struct ControlRoomNativeChatView: View {
         }
     }
 
-    /// **`CHAT_JUMP_AFTER_MS` / `CHAT_JUMP_TO_INDEX` jump the list once**, for
-    /// measuring the landing screen (design §26) where a search cannot be
-    /// typed and a locate cannot be clicked. It calls **the product path**,
-    /// `jump(to:)`, so the placeholder screen opens because the product opens
-    /// it -- there is no debug branch inside the row.
+    /// **`CHAT_JUMP_*` jumps the list once**, for measuring the landing
+    /// screen (design §26) where a search cannot be typed and a locate cannot
+    /// be clicked. It calls **the product path**, `jump(to:)`, so the
+    /// placeholder screen opens because the product opens it -- there is no
+    /// debug branch inside the row.
     ///
     ///     CHAT_JUMP_AFTER_MS=8000   the cap, and what arms the hook
-    ///     CHAT_JUMP_TO_INDEX=500    a `feed.rows` index. **The jump waits
-    ///                               until that row is loaded**: a first
-    ///                               screen holds at most two hundred rows,
-    ///                               so the hook asks the product's loader
-    ///                               for older pages until the index exists,
-    ///                               and only then jumps (`clamped=0`).
+    ///     CHAT_JUMP_TO_SEQ=499      the message `p:499`, wherever it is.
+    ///                               The only mode that reaches the middle of
+    ///                               a large group: it recentres when the row
+    ///                               is held and asks the core for an
+    ///                               `around` when it is not. Logs
+    ///                               `jumpdebug: around anchor=…` and then
+    ///                               `jumpdebug: landed anchor=… at=… offset=…
+    ///                               rows=…` (or `jumpdebug: missed …`).
+    ///     CHAT_JUMP_TO_INDEX=500    an index into the **document window**
+    ///                               (`feed.rows`), oldest first. ⚠️ The
+    ///                               pages after the first screen land in the
+    ///                               older apron, so this cannot reach the
+    ///                               middle of a large group -- it is kept for
+    ///                               measurements inside one window, nothing
+    ///                               more (task 3069).
     ///
     /// **The cap is a fallback, not the moment** (2026-11-08): a measured run
     /// asked for index 500 in a window holding 40 rows, the timer fired
     /// anyway, and the log said `index=39 wanted=500 clamped=1` -- the
     /// instrument measured the clamp, not the landing.
     ///
-    /// **`CHAT_JUMP_TO_INDEX` absent keeps the old shape**: the hook is a
+    /// **Neither `SEQ` nor `INDEX` given keeps the old shape**: the hook is a
     /// plain timer at `CHAT_JUMP_AFTER_MS` and jumps to the oldest loaded
     /// row, because a measurement may want the jump itself timed. Absent
     /// `CHAT_JUMP_AFTER_MS`: nothing is read and no timer is armed, like the
@@ -1177,6 +1200,8 @@ struct ControlRoomNativeChatView: View {
         else { return }
         debugJumpArmed = true
         switch plan.mode {
+        case let .seq(seq):
+            startDebugJumpSeq("p:\(seq)")
         case let .row(wanted):
             waitForDebugJumpRow(plan, wanted: wanted, startedAt: .now())
         case .afterCap:
@@ -1184,6 +1209,24 @@ struct ControlRoomNativeChatView: View {
                 applyDebugJump(plan, step: plan.step(rows: feed.rows.endIndex, elapsed: .infinity))
             }
         }
+    }
+
+    /// **A seq jump is an identity, not a place** (task 3069): it does not
+    /// wait for rows -- `jump(to:)` recentres on a row the feed already holds
+    /// and otherwise asks the core for an `around`, which finds `p:<seq>` in
+    /// its capture index wherever the record sits. The one thing it waits for
+    /// is a started feed: the surface may attach before the page's
+    /// `start(group:)` has run.
+    private func startDebugJumpSeq(_ anchor: String) {
+        guard feed.group != nil else {
+            Self.windowLog.notice(
+                "jumpdebug: skipped no-group anchor=\(anchor, privacy: .public)"
+            )
+            return
+        }
+        debugSeqAnchor = anchor
+        Self.windowLog.notice("jumpdebug: around anchor=\(anchor, privacy: .public)")
+        jump(to: anchor, centered: true)
     }
 
     /// Look again, ask for the next older page while the row is missing, and
@@ -1197,14 +1240,20 @@ struct ControlRoomNativeChatView: View {
     ) {
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- startedAt.uptimeNanoseconds)
             / 1_000_000_000
-        // **`endIndex` is how many rows are loaded** -- the same number as
-        // `count`, spelled differently on purpose. The gate
+        // **`endIndex` is how many rows the document holds** -- the same
+        // number as `count`, spelled differently on purpose. The gate
         // (`control-room-hosts-do-not-decide.py`) matches the line's raw
         // text, and the rule it guards is "a host may not work out for
         // itself what the core said"; a debug hook asking "is the index
         // there yet" is not that rule. **This is an exception, not a
         // convention** (supervisor, 2026-11-08): a product path that spelled
         // it this way would be going round the gate, not being one.
+        //
+        // ⚠️ **An index here is only the document window** (task 3069): the
+        // pages that land after the first screen go into the older apron,
+        // so `feed.rows` stays at the first screen's 192 however much is
+        // loaded. A row in the middle of a large group has no index here at
+        // all -- for that, `CHAT_JUMP_TO_SEQ` names the identity.
         let loaded = feed.rows.endIndex
         let step = plan.step(rows: loaded, elapsed: elapsed)
         guard step == .wait else {
@@ -2576,6 +2625,17 @@ struct ControlRoomNativeChatView: View {
         camera.place = place
         clipSeen = nil
         feed.reading(anchor: place.id, offset: place.offset)
+        // **The seq jump's landing, said out loud** (task 3069): the anchor,
+        // its index in the document window, and the offset the anchor holds
+        // -- the same pair a resume must come back to (`resume: anchor=…
+        // offset=…`).
+        if let pending = debugSeqAnchor, place.id == pending {
+            debugSeqAnchor = nil
+            let at = feed.rows.firstIndex(where: { $0.id == place.id }) ?? -1
+            Self.windowLog.notice(
+                "jumpdebug: landed anchor=\(place.id, privacy: .public) at=\(at, privacy: .public) offset=\(Int(place.offset), privacy: .public) rows=\(feed.rows.endIndex, privacy: .public)"
+            )
+        }
     }
 
     /// A click on the bare track: one screenful in the direction asked for,
@@ -3957,19 +4017,31 @@ struct ControlRoomNativeChatPane: View {
 }
 
 /// **The debug jump's wait rule** (`CHAT_JUMP_AFTER_MS` /
-/// `CHAT_JUMP_TO_INDEX`): whether there is a row to jump to yet, and what to
-/// do when the cap is up and there is not.
+/// `CHAT_JUMP_TO_INDEX` / `CHAT_JUMP_TO_SEQ`): whether there is a row to
+/// jump to yet, and what to do when the cap is up and there is not.
 ///
-/// **An index means a row in `feed.rows`, and the rows are paged.** A first
-/// screen asks for at most two hundred, so an index in the middle of a
-/// thousand-message group does not exist until older pages have come in; a
+/// **A seq is an identity; an index is a place in one window.** The pages
+/// after the first screen land in the older apron (`finishContinuation` ->
+/// `bufferOlder`), never in `rows`, so `feed.rows` stays at the first
+/// screen's 192 however much is loaded -- the 2026-11-06 run showed
+/// `older rows=192` five times while `block:` printed 600 -> 800 -> 808.
+/// An index in the middle of a large group therefore does not exist at all,
+/// and the mode that can name it is `.seq`, which never waits for rows. A
 /// jump on a timer measures whatever happens to be loaded, which is how the
 /// 2026-11-08 run came back with `index=39 wanted=500 clamped=1`. The rule
 /// lives here, apart from the view, so the table is driven by tests that do
 /// not need a surface.
 struct ControlRoomChatDebugJump {
     enum Mode: Equatable {
-        /// `CHAT_JUMP_TO_INDEX`: wait until `feed.rows` holds this index.
+        /// `CHAT_JUMP_TO_SEQ`: jump to this message's **identity**, wherever
+        /// it is -- in the window, in an apron, or only on disk (the around
+        /// finds `p:<seq>` from the core's own capture). This is the only
+        /// mode that can reach the middle of a large group.
+        case seq(UInt64)
+        /// `CHAT_JUMP_TO_INDEX`: wait until the **document window**
+        /// (`feed.rows`) holds this index. ⚠️ The pages after the first
+        /// screen land in the older apron, so this cannot reach the middle
+        /// of a large group at all (task 3069).
         case row(Int)
         /// `CHAT_JUMP_AFTER_MS` alone: the timer is the moment, as before.
         case afterCap
@@ -3980,8 +4052,8 @@ struct ControlRoomChatDebugJump {
         case wait
         /// The cap is up and nothing is loaded: there is no index to jump to.
         case nothingLoaded
-        /// Jump to this `feed.rows` index; `clamped` says the row asked for
-        /// is not the row reached.
+        /// Jump to this document-window index; `clamped` says the row asked
+        /// for is not the row reached.
         case jump(index: Int, clamped: Bool)
     }
 
@@ -3995,9 +4067,17 @@ struct ControlRoomChatDebugJump {
     let cap: TimeInterval
 
     /// The index the environment asked for, for the log line; nil when the
-    /// hook was given only a cap.
+    /// hook was given only a cap (or a seq).
     var wanted: Int? {
         if case let .row(wanted) = mode { return wanted }
+        return nil
+    }
+
+    /// **The identity a `.seq` jump names.** `CHAT_JUMP_TO_SEQ=499` is the
+    /// message `p:499` -- the same opaque anchor the core hands out, not a
+    /// window index.
+    var seqAnchor: String? {
+        if case let .seq(seq) = mode { return "p:\(seq)" }
         return nil
     }
 
@@ -4006,6 +4086,9 @@ struct ControlRoomChatDebugJump {
     /// is the last row when `rows == wanted + 1`.
     func step(rows: Int, elapsed: TimeInterval) -> Step {
         switch mode {
+        case .seq:
+            // A seq jump does not wait for rows; it is identity, not place.
+            return .wait
         case let .row(wanted):
             if wanted < rows { return .jump(index: wanted, clamped: false) }
             guard elapsed >= cap else { return .wait }
@@ -4027,7 +4110,12 @@ struct ControlRoomChatDebugJump {
         guard let raw = env["CHAT_JUMP_AFTER_MS"], let ms = Double(raw), ms >= 0
         else { return nil }
         cap = ms / 1000
-        if let wanted = Int(env["CHAT_JUMP_TO_INDEX"] ?? "") {
+        // **The identity wins over the window index** when both are set: a
+        // seq is meaningful in any window, an index only in the one it was
+        // measured in.
+        if let seq = UInt64(env["CHAT_JUMP_TO_SEQ"] ?? "") {
+            mode = .seq(seq)
+        } else if let wanted = Int(env["CHAT_JUMP_TO_INDEX"] ?? "") {
             mode = .row(max(0, wanted))
         } else {
             mode = .afterCap

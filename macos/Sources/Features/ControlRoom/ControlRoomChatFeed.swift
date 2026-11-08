@@ -626,7 +626,16 @@ final class ControlRoomChatFeed: ObservableObject {
                 // back at the latest"; clearing the anchor in `stop()` was
                 // only half of it.**
                 if let saved = readingAnchor {
+                    // **The place comes back, said out loud** (task 3069):
+                    // `recentre` rebuilds the window and zeroes the offset
+                    // itself, so the pair is read before it runs. This line
+                    // is the other half of `jumpdebug: landed anchor=…
+                    // offset=…` for the §23.1 rule-2 measurement.
+                    let savedOffset = readingOffset
                     if recentre(on: saved) {
+                        Self.resumeLog.notice(
+                            "resume: anchor=\(saved, privacy: .public) offset=\(Int(savedOffset), privacy: .public)"
+                        )
                         armLive()
                     } else {
                         // **§23.1 rule 3, said out loud**: the row is not in
