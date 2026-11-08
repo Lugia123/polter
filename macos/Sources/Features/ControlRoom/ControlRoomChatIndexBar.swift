@@ -1,25 +1,19 @@
 import SwiftUI
 
-/// The chat's own index bar (task 3002): **the one place a list with no
-/// length says how much it holds**.
+/// The chat's own index bar (task 3081, design §29.7): **the one place a list
+/// with no length says how much it holds**.
 ///
-/// The message list is a fixed-height camera over a stream. Its document
-/// height is whatever has been loaded so far, so the system scroller says
-/// "the content got taller" -- the thumb shrinks as pages arrive even though
-/// the reader's view of the conversation has not changed at all. The design's
-/// model is the other way round: **ticks are the rows already loaded, and the
-/// thumb is the part of them the viewport covers**. Loading more is the
-/// background's business; it lengthens the bar and shortens the thumb, and
-/// nothing above the list ever moves.
+/// The bar's position and arithmetic are lines now: **line 1 is the newest,
+/// `total` is the loaded line count, and `fill` is how many lines one screen
+/// covers**. The thumb is the share `fill / total`; a drag maps onto
+/// `[1, total - fill + 1]`. That arithmetic lives in
+/// `ControlRoomChatLineBar`; this file keeps the look constants and the two
+/// pure gestures the bar's view needs.
 ///
 /// ⚠️ **This bar covers the loaded map and nothing else.** It never points at
-/// a row that is not in `feed.rows`, so a drag cannot ask the list to scroll
-/// to a message the view does not have. Reaching further back for a specific
-/// message is `jumpToAnchor`'s (the feed's `around` window), not a scroll.
-///
-/// The arithmetic is `static` and free of any view: the thumb's height and
-/// place, which row a drag lands on, how many rows one drawn tick stands for,
-/// and which page a click on the bare track moves.
+/// a line that is not in the plan, so a drag cannot ask the list to scroll
+/// past the loaded content. Reaching further back for a specific message is
+/// `jumpToAnchor`'s (the feed's `around` window), not a scroll.
 enum ControlRoomChatIndexBar {
     /// **The look table, named at this scope.** The three numbers below are
     /// read from it, and the alias every other file writes lives inside its
@@ -43,188 +37,6 @@ enum ControlRoomChatIndexBar {
     /// Windows' chat draws no ticks, so this is not in the shared look table
     /// (which carries only the 36 / 10 / 6 the two hosts agree on).
     static let tickSpacing: CGFloat = 5
-
-
-    // MARK: - The camera in tick space
-
-
-    /// **Not the bar's: the feed's.** How many rows one screen covers -- the
-    /// page size `publishViewportRows` writes to `feed.viewportRows`. The bar
-    /// speaks points now (§23.3); this stayed in rows because its reader asks
-    /// a row question ("how many rows is a screen"), not a bar one.
-    ///
-    /// How many rows the viewport covers, counted only over rows that have
-    /// been measured. A partly visible row counts by the part that is
-    /// visible, so the thumb's length moves continuously rather than a whole
-    /// row at a time. `nil` when nothing overlaps -- unknown, not zero.
-    ///
-    /// **Frames, not `viewport / averageRowHeight`**: an estimate was tried
-    /// and the thumb jittered on every scroll, because the average moved
-    /// with whichever rows happened to be made.
-    static func viewportTicks(
-        order: [String],
-        frames: [String: CGRect],
-        offset: Double,
-        viewport: Double
-    ) -> Double? {
-        guard viewport > 0 else { return nil }
-        var covered: Double = 0
-        for id in order {
-            guard let frame = frames[id], frame.height > 0 else { continue }
-            let top = max(frame.minY, offset)
-            let bottom = min(frame.maxY, offset + viewport)
-            if bottom > top { covered += Double(bottom - top) / Double(frame.height) }
-        }
-        return covered > 0 ? covered : nil
-    }
-
-    // MARK: - The bar's shape
-
-
-
-
-    // MARK: - Point space (design §23.3, step one)
-
-    /// **Points from the newest row's bottom to the viewport's top edge.**
-    /// Zero is the newest message; the number grows as the reader walks into
-    /// history. It is the one quantity the bar's position is built from.
-    ///
-    /// **One ruler**: the caller passes `documentBottom`, which is the same
-    /// function `pinned`'s projection uses (`frames` first, the ruler for a
-    /// row never drawn). There is no second height source here -- the whole
-    /// day has been spent on what two of them cost.
-    static func topPoints(documentBottom: Double, offset: Double) -> Double {
-        max(0, documentBottom - offset)
-    }
-
-    /// How much of the viewport is over the document. A document shorter than
-    /// the viewport covers all of it, which is what `min` says.
-    static func viewportPoints(
-        viewport: Double, documentBottom: Double, offset: Double
-    ) -> Double {
-        min(max(0, viewport), topPoints(documentBottom: documentBottom, offset: offset))
-    }
-
-    /// **The depth while following the newest.** The viewport top is one
-    /// screen off the document's end, so it is the viewport -- or the whole
-    /// document when that is shorter than the viewport.
-    ///
-    /// **The first frame has no clip origin** (`offset` is 0 because there is
-    /// no clip yet, not because the reader is at the oldest end); reading that
-    /// as a depth drew the thumb at the oldest end for two frames and then
-    /// jumped it to the newest (2026-11-08, task 3071).
-    static func depthFollowingNewest(viewport: Double, documentBottom: Double) -> Double {
-        viewportPoints(viewport: viewport, documentBottom: documentBottom, offset: 0)
-    }
-
-    /// **The high-water mark, in points.** `top` is where the reader is now;
-    /// `previous` is the deepest they have ever been. **Only ever grows** --
-    /// reaching 100 keeps 100, and coming back to the newest does not shrink
-    /// it.
-    ///
-    /// **No viewport term**, deliberately: at the very top of the document
-    /// `top` already equals the whole document (`documentBottom - 0`), and
-    /// the thumb's travel is `total - viewport`. Adding the viewport here
-    /// would make the total one screen longer than the document.
-    static func reached(previous: Double, top: Double) -> Double {
-        max(previous, top)
-    }
-
-    /// **Whether a replaced map is still the same document** (review M, Q3).
-    ///
-    /// The high-water mark belongs to the **group**, not to the map: a locate
-    /// -- or a drag to a place that was not loaded -- swaps the whole map
-    /// inside one group, and zeroing on every `.replaced` threw the reader's
-    /// depth away the moment they searched for something. A different group
-    /// is a different document, and only that starts the mark again.
-    static func keepsReached(mapGroup: String?, newGroup: String?) -> Bool {
-        guard let mapGroup, let newGroup else { return false }
-        return mapGroup == newGroup
-    }
-
-    /// **Points per drawn tick.** The track can show `trackH / tickSpacing`
-    /// marks; past that one mark stands for a run of points and a drag moves
-    /// in those steps. Row space said "N rows a step"; this says points, and
-    /// the two are only equal while every row is the same height -- which is
-    /// exactly what the old number assumed and the document does not.
-    static func stepPoints(totalPoints: Double, trackH: CGFloat) -> Double {
-        guard totalPoints > 0, trackH > 0 else { return 1 }
-        let capacity = max(1, Double(Int(floor(trackH / tickSpacing))))
-        guard totalPoints > capacity else { return 1 }
-        return (totalPoints / capacity).rounded(.up)
-    }
-
-    static func thumbHeightPoints(
-        totalPoints: Double,
-        viewportPoints: Double,
-        trackH: CGFloat
-    ) -> CGFloat {
-        guard trackH > 0 else { return 0 }
-        guard totalPoints > 0 else { return trackH }
-        let covered = min(totalPoints, max(0, viewportPoints))
-        let ratio = CGFloat(covered / totalPoints)
-        return min(trackH, max(minThumb, trackH * ratio))
-    }
-
-    /// Where the bar is, in point space.
-    struct PointGeometry: Equatable {
-        var trackH: CGFloat
-        var thumbH: CGFloat
-        var thumbY: CGFloat
-        /// Points one drawn tick and one drag step stand for.
-        var step: Double
-    }
-
-    /// **`depthPoints` is measured from the newest; the bar's travel from the
-    /// oldest.** So the numerator is `totalPoints - depthPoints`, not
-    /// `depthPoints`: at the newest edge the thumb must sit at the end of its
-    /// travel, and at the deepest point reached it must sit at the start.
-    static func geometryPoints(
-        totalPoints: Double,
-        viewportPoints: Double,
-        depthPoints: Double,
-        trackH: CGFloat
-    ) -> PointGeometry {
-        let thumbH = thumbHeightPoints(
-            totalPoints: totalPoints, viewportPoints: viewportPoints, trackH: trackH)
-        let travel = max(0, trackH - thumbH)
-        let span = max(1, totalPoints - max(0, viewportPoints))
-        let fromOldest = max(0, min(span, totalPoints - depthPoints))
-        let fraction = min(1, max(0, fromOldest / span))
-        return PointGeometry(
-            trackH: trackH,
-            thumbH: thumbH,
-            thumbY: travel * CGFloat(fraction),
-            step: stepPoints(totalPoints: totalPoints, trackH: trackH)
-        )
-    }
-
-    /// **The depth a drag position asks for**: the fraction of the travel
-    /// mapped back onto `[viewport, total]`, snapped to a drawn step. The
-    /// result is a `topPoints` value -- the same space the projection reads.
-    static func seekDepth(
-        fraction: Double,
-        totalPoints: Double,
-        viewportPoints: Double,
-        step: Double
-    ) -> Double {
-        let span = max(0, totalPoints - max(0, viewportPoints))
-        let away = min(1, max(0, fraction)) * span
-        let raw = totalPoints - away
-        let size = max(1, step)
-        let snapped = (raw / size).rounded() * size
-        return min(totalPoints, max(viewportPoints, snapped))
-    }
-
-    /// Where the drawn ticks go, as fractions of the track, one per `step`
-    /// points, the ends included.
-    static func tickFractionsPoints(totalPoints: Double, step: Double) -> [Double] {
-        guard totalPoints > 0 else { return [] }
-        let size = max(1, step)
-        let count = Int((totalPoints / size).rounded(.up))
-        guard count > 1 else { return [0] }
-        return (0..<count).map { Double($0) / Double(count - 1) }
-    }
 
     // MARK: - Dragging
 
@@ -263,15 +75,13 @@ enum ControlRoomChatIndexBar {
 struct ControlRoomChatIndexBarView: View {
     typealias Look = ControlRoomLook
 
-    /// **The bar's total, in points** (design §23.3): the document's own
-    /// depth today, the reader's high-water mark in the next step.
-    var totalPoints: Double
-    /// The viewport's top as points below the newest row's bottom
-    /// (`topPoints`), not as a row tick -- the two are only equal while
-    /// every row is the same height.
-    var depthPoints: Double
-    /// How much of the viewport is over the document (`viewportPoints`).
-    var viewportPoints: Double
+    /// **The line at the viewport's bottom edge**, `1` = the newest (design
+    /// §29.7). The bar's one position.
+    var b: Int
+    /// The loaded line count: every plan row, boundary marks included.
+    var totalLines: Int
+    /// How many lines fill one viewport: the thumb's length and the clamp.
+    var fillLines: Int
     var trackH: CGFloat
     var theme: Look.Theme
     /// **The map's identity.** When the window is replaced rather than
@@ -282,13 +92,12 @@ struct ControlRoomChatIndexBarView: View {
     /// A page that could not be read, said quietly at the top of the track
     /// and in the bubble. Nil when there is nothing to say.
     var notice: String?
-    /// The clock of the row nearest to a **depth** (points below the newest),
-    /// or `""`.
-    var time: (Double) -> String
-    /// The row a drag asks for. Called on every step and once more on
+    /// The clock of the message a **line** is in, or `""`.
+    var time: (Int) -> String
+    /// The line a drag asks for. Called on every step and once more on
     /// release -- **a correction, never a load**: picks are only ever made by
     /// the top and bottom edges.
-    var onSeek: (Double) -> Void
+    var onSeek: (Int) -> Void
     /// `-1` or `+1`: one page of the list, from a click on the bare track.
     var onPage: (Int) -> Void
 
@@ -298,17 +107,17 @@ struct ControlRoomChatIndexBarView: View {
     }
 
     @State private var drag: Drag?
-    @State private var lastSeek: Double?
-    @State private var bubbleDepth: Double?
+    @State private var lastSeek: Int?
+    @State private var bubbleLine: Int?
     @State private var hovering = false
 
     /// A drag is in progress (or a window is being paged): the bubble is
     /// shown even after the pointer moves off the track.
     private var holding: Bool { drag != nil }
 
-    /// The depth under the viewport's top edge, for the hover bubble.
-    private var topDepth: Double {
-        max(0, depthPoints)
+    /// The line the hover bubble describes: the bar's own position.
+    private var bubbleAnchorLine: Int {
+        max(1, b)
     }
 
     /// What the bubble says, and `nil` when it should not be there at all.
@@ -317,16 +126,18 @@ struct ControlRoomChatIndexBarView: View {
     private var bubbleWords: String? {
         guard holding || hovering else { return nil }
         if drag == nil, let notice { return notice }
-        guard let depth = bubbleDepth else { return notice }
-        return ControlRoomChatIndexBar.bubbleText(time: time(depth))
+        guard let line = bubbleLine else { return notice }
+        return ControlRoomChatIndexBar.bubbleText(time: time(line))
     }
 
-    private var geometry: ControlRoomChatIndexBar.PointGeometry {
-        ControlRoomChatIndexBar.geometryPoints(
-            totalPoints: totalPoints,
-            viewportPoints: viewportPoints,
-            depthPoints: depthPoints,
-            trackH: trackH
+    private var geometry: ControlRoomChatLineBar.Geometry {
+        ControlRoomChatLineBar.geometry(
+            b: b,
+            totalLines: totalLines,
+            fillLines: fillLines,
+            trackH: trackH,
+            minThumb: ControlRoomChatIndexBar.minThumb,
+            tickSpacing: ControlRoomChatIndexBar.tickSpacing
         )
     }
 
@@ -366,9 +177,9 @@ struct ControlRoomChatIndexBarView: View {
         .onHover { inside in
             hovering = inside
             if inside {
-                bubbleDepth = topDepth
+                bubbleLine = bubbleAnchorLine
             } else if drag == nil {
-                bubbleDepth = nil
+                bubbleLine = nil
             }
         }
         // **A different map**: a drag aimed at the old one is abandoned, and
@@ -376,7 +187,7 @@ struct ControlRoomChatIndexBarView: View {
         .onChange(of: mapEpoch) { _ in
             drag = nil
             lastSeek = nil
-            bubbleDepth = holding ? topDepth : nil
+            bubbleLine = holding ? bubbleAnchorLine : nil
         }
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -397,33 +208,33 @@ struct ControlRoomChatIndexBarView: View {
                     guard drag == .thumb else { return }
                     let fraction = ControlRoomChatIndexBar.dragFraction(
                         y: value.location.y, thumbH: shape.thumbH, trackH: trackH)
-                    let depth = ControlRoomChatIndexBar.seekDepth(
+                    let line = ControlRoomChatLineBar.seekLine(
                         fraction: fraction,
-                        totalPoints: totalPoints,
-                        viewportPoints: viewportPoints,
-                        step: shape.step
+                        totalLines: totalLines,
+                        fillLines: fillLines,
+                        stepLines: shape.stepLines
                     )
-                    bubbleDepth = depth
-                    guard depth != lastSeek else { return }
-                    lastSeek = depth
-                    onSeek(depth)
+                    bubbleLine = line
+                    guard line != lastSeek else { return }
+                    lastSeek = line
+                    onSeek(line)
                 }
                 .onEnded { _ in
                     // **A second look on release**, with the frames the drag's
                     // own scrolling measured: the seek is asked again so the
                     // list can correct where an unmeasured row landed.
-                    if drag == .thumb, let depth = lastSeek { onSeek(depth) }
+                    if drag == .thumb, let line = lastSeek { onSeek(line) }
                     drag = nil
                     lastSeek = nil
-                    if !hovering { bubbleDepth = nil }
+                    if !hovering { bubbleLine = nil }
                 }
         )
     }
 
     @ViewBuilder
-    private func ticks(_ shape: ControlRoomChatIndexBar.PointGeometry) -> some View {
-        let fractions = ControlRoomChatIndexBar.tickFractionsPoints(
-            totalPoints: totalPoints, step: shape.step)
+    private func ticks(_ shape: ControlRoomChatLineBar.Geometry) -> some View {
+        let fractions = ControlRoomChatLineBar.tickFractions(
+            totalLines: totalLines, fillLines: fillLines, stepLines: shape.stepLines)
         ForEach(Array(fractions.enumerated()), id: \.offset) { _, fraction in
             Rectangle()
                 .fill(theme.textSecondary.color.opacity(0.22))

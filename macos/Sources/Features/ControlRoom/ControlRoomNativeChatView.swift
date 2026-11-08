@@ -134,22 +134,15 @@ struct ControlRoomNativeChatView: View {
     /// cleared by the landing (`center(on:)`) or by the refusal
     /// (`locateTrouble`), so the log says which of the two happened.
     @State private var debugSeqAnchor: String?
-    /// **The bar's high-water mark, in points** (design §23.3): the deepest
-    /// the reader has ever been, measured from the newest message. **Only ever
-    /// grows** -- reaching 100 keeps 100, and coming back to the newest does
-    /// not shrink it. Reset only when the **group** changes: a replaced map
-    /// may be a locate inside the same document (review M, Q3).
-    @State private var barReached: Double = 0
-    /// **Which group `barReached` belongs to.** The mark is a document's, and
-    /// `.replaced` does not always mean a new document -- see
-    /// `ControlRoomChatIndexBar.keepsReached`.
-    @State private var barGroup: String?
-    /// **The row at the deepest place the reader has been** (design §27, task
-    /// 3068): written in the same pass as `barReached` and cleared by the same
-    /// predicate, because a depth without an identity cannot be sought.
-    /// **An id (`p:499`), never an index** -- an index is renumbered by every
-    /// eviction and prepend, which is the defect `12654fdd3` removed.
-    @State private var deepestRow: String?
+    /// **The one position the index bar and a drag read** (task 3081): the
+    /// line at the viewport's bottom edge, `1` = the newest. Written by
+    /// exactly two paths -- `seek(toLine:)` for a drag, and
+    /// `publishViewportRows` for a scroll (the clip origin read as a line).
+    /// Neither the bar nor the drag derives a second copy.
+    @State private var bottomLine: Int = 1
+    /// **The line total the last `chat-line: load` line saw**, so that line is
+    /// one per change rather than one per callback.
+    @State private var lastLineTotal: Int = 0
     /// **A seek waiting for an `around` to land on this id**, so a refusal can
     /// be said out loud and fall back to the oldest row still loaded.
     @State private var pendingSeekAnchor: String?
@@ -157,12 +150,6 @@ struct ControlRoomNativeChatView: View {
     /// 3070): the landing restores the id **and the offset**, which a locate's
     /// centring would throw away.
     @State private var pendingRestore: ControlRoomChatCamera.Place?
-    /// **The first valid reading is taken as it is**, not `max`ed against a
-    /// zero: `max(0, depth)` publishes whatever the very first frame
-    /// computed, and the first frame's document is not the one that settles
-    /// (the 2026-11-08 entry: `totalP` 11574 and then 1008, one bar that
-    /// jumped backwards as soon as it appeared).
-    @State private var barReachedSeeded = false
     /// **A landing screen is showing placeholders** (design §26). Set only by
     /// `jump(to:)` -- a scroll never sets it, which is what keeps the
     /// placeholders off the scrolling path. It ends one of two ways (review
@@ -279,6 +266,14 @@ struct ControlRoomNativeChatView: View {
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
         category: "chat-bar"
     )
+    /// **The line model's trace** (task 3081): one line per line the viewport
+    /// crosses and one per change of the loaded total. The two criteria
+    /// readings -- "the top clamp" and "loading keeps `b`" -- are counted from
+    /// these, so they are written from callbacks only, never from `body`.
+    private static let lineLog = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
+        category: "chat-line"
+    )
     /// **The window's own instrument** (task 3016 1a): one line per change of
     /// what the surface draws -- how many rows this frame instantiated, the
     /// first and the last of them, the document's height and the viewport's
@@ -287,6 +282,16 @@ struct ControlRoomNativeChatView: View {
         subsystem: Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty",
         category: "chat-surface"
     )
+    /// **One line of the font the rows are drawn in.** Measured once, never a
+    /// look constant: a system font or size change would otherwise make one
+    /// scroll step a different distance from the text it steps through. The
+    /// rows are `.system(size: Look.Font.body)`, so the font's own line
+    /// advance is the quantum; the bar logs it as `q=`.
+    private static let lineHeight: CGFloat = {
+        let font = NSFont.systemFont(ofSize: CGFloat(Look.Font.body))
+        return max(1, ceil(font.ascender - font.descender + font.leading))
+    }()
+
     private var nowMs: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
     var body: some View {
@@ -375,7 +380,12 @@ struct ControlRoomNativeChatView: View {
                     // debugging aid): the bar is hidden so a scroll reading is
                     // about the list, not the bar.
                     if ProcessInfo.processInfo.environment["CHAT_NO_INDEX_BAR"] == nil {
-                        indexBar(theme, height: geometry.size.height)
+                        indexBar(
+                            theme,
+                            plan: plan,
+                            layout: layout,
+                            height: geometry.size.height
+                        )
                     }
                 }
             }
@@ -399,6 +409,11 @@ struct ControlRoomNativeChatView: View {
             // **It is one word now** (task 3016): `pinned` is the truth, and
             // there is no landing action that could fail and be lost.
             camera = ControlRoomChatCamera.State(place: nil, pinned: true)
+            // **A page opens on the newest line** (design §29.7 rule 3): the
+            // first frame has no position to restore, and `1` is the same
+            // bottom the pinned projector is about to take.
+            bottomLine = 1
+            lastLineTotal = 0
             clipSeen = nil
             clipOriginKnown = false
             newBelow = false
@@ -494,6 +509,11 @@ struct ControlRoomNativeChatView: View {
             }
             rebaseAnchor("\(change)")
             syncClip("rows")
+            // **A load is visible to the bar even when the clip did not move**:
+            // an older page arrives above the reader, the total changes, and
+            // no scroll callback is owed. One call writes the `chat-line:
+            // load` reading and leaves `bottomLine` alone.
+            publishViewportRows()
         }
         // **A page landing in an apron is a reason to look again** (review C,
         // M6): a reader parked at the loaded edge cannot produce a scroll
@@ -2542,25 +2562,11 @@ struct ControlRoomNativeChatView: View {
                 "rows: \(before, privacy: .public)->\(ids.count, privacy: .public) first=\(ids.first ?? "-", privacy: .public) last=\(ids.last ?? "-", privacy: .public) cause=\(kind, privacy: .public) pinned=\(self.camera.pinned ? 1 : 0, privacy: .public) offset=\(Int(self.offsetY), privacy: .public)"
             )
         }
-        // **A replaced map is not always a new document** (review M, Q3): a
-        // locate -- or a drag to a place that was not loaded -- swaps the
-        // whole map inside one group. The bar's high-water mark is the
-        // *group's*, so only a different group starts it again; zeroing on
-        // every `.replaced` threw away the depth the reader had just reached
-        // the moment they searched for a newer message.
-        let newDocument = !ControlRoomChatIndexBar.keepsReached(
-            mapGroup: barGroup, newGroup: feed.group
-        )
-        barGroup = feed.group
-        if newDocument, change == .appended || change == .replaced {
-            barReached = 0
-            barReachedSeeded = false
-            // **The deepest row goes with the mark** (task 3068): one
-            // predicate for both, or a mark left from one group could seek
-            // into another group's row -- the drift `keepsReached` exists to
-            // stop.
-            deepestRow = nil
-        }
+        // **The line model has no high-water mark** (task 3081, design
+        // §29.7): the bar's total is the loaded line count, and `bottomLine`
+        // is the line at the viewport's bottom edge. A replaced map is a new
+        // line table; the projection that follows and `publishViewportRows`
+        // write the position, so there is nothing here to reset.
         switch change {
         case .appended:
             if feed.locatedAnchor != nil {
@@ -2581,8 +2587,6 @@ struct ControlRoomNativeChatView: View {
             // on rows from another group. (Within one map it stays frozen --
             // that is §25.2's rule.)
             rowHeightEstimateSettled = false
-            // **A new high-water mark only for a new group** -- replaced
-            // above, beside the change, so a locate keeps the depth.
             rowHeightEstimatePasses = 0
             mapEpoch &+= 1
             if feed.locatedAnchor != nil {
@@ -2704,18 +2708,18 @@ struct ControlRoomNativeChatView: View {
         jump(to: target, centered: true)
     }
 
-    /// **The index bar's seek, through the one teleport primitive.** A drag
-    /// asks for a **depth** (points below the newest); a depth is not a
-    /// message, so it lands on the nearest one.
+    /// **The frozen §27 debug seek, through the one teleport primitive.**
+    /// The index bar no longer calls this (task 3081: a drag is in lines and
+    /// never leaves the loaded content); `CHAT_SEEK_DEPTH` still does, so the
+    /// beyond-document path can be read until the user rules on whether §27's
+    /// fetch stays.
     ///
     /// **Beyond the document is a place, not a message** (design §27.7, task
-    /// 3068): the bar's total is the reader's high-water mark, so the far left
-    /// can point at a row the document does not hold. That row is named by the
-    /// **id remembered with the mark** (`deepestRow`), and the jump either
-    /// recentres on it (still in the window or an apron) or asks the core for
-    /// an `around` -- **no `location` hint**: the core finds `p:<seq>` in its
-    /// own capture index, which is why no position has to be remembered at
-    /// eviction time. The placeholder screen opens on the way (`jump(to:)`).
+    /// 3068): the jump either recentres on the anchor (still in the window or
+    /// an apron) or asks the core for an `around` -- **no `location` hint**:
+    /// the core finds `p:<seq>` in its own capture index, which is why no
+    /// position has to be remembered at eviction time. The placeholder screen
+    /// opens on the way (`jump(to:)`).
     ///
     /// ⚠️ **An id is not a permanent address.** The log rotates, and a row it
     /// has shed comes back as `AnchorStale`/`AnchorNotFound`; then the seek
@@ -2732,7 +2736,10 @@ struct ControlRoomNativeChatView: View {
             // **Never silent** (supervisor, 2026-11-08): this line names the
             // row asked for, so the next one (`seek: landed` or `seek:
             // stale`) completes the answer.
-            let anchor = deepestRow ?? feed.rows.first?.id
+            // **The high-water mark's row is gone with the line model**
+            // (task 3081); this debug path's beyond-document anchor is the
+            // oldest row still loaded.
+            let anchor = feed.rows.first?.id
             Self.windowLog.notice(
                 "seek: beyond depth=\(Int(depth), privacy: .public) document=\(Int(documentNow), privacy: .public) anchor=\(anchor ?? "-", privacy: .public)"
             )
@@ -2753,6 +2760,61 @@ struct ControlRoomNativeChatView: View {
             order: order, documentY: documentNow - depth
         ) else { return }
         jump(to: feed.rows[index].id)
+    }
+
+    /// **A drag on the index bar, in lines** (task 3081, design §29.7). The
+    /// bar has already clamped and snapped the line; this puts the viewport's
+    /// bottom edge on it and writes the one position field.
+    ///
+    /// **`camera.place` stays the top edge**: the projection machinery is
+    /// built on it, so the line is turned into a top edge and handed to the
+    /// same primitive every other move uses. **`ControlRoomChatSeek` is
+    /// deliberately not reached**: a drag never leaves the loaded lines (the
+    /// supervisor froze §27's beyond-document fetch for this slice).
+    private func seek(toLine line: Int) {
+        let plan = listPlan
+        let layout = scrollLayout(plan)
+        let table = lineTable(layout)
+        guard table.totalLines > 0 else { return }
+        let fill = max(1, table.fillLines(viewport: viewportH))
+        let maxLine = max(1, table.totalLines - fill + 1)
+        let target = min(max(1, line), maxLine)
+        guard let yTop = table.yTop(ofLine: target, viewport: viewportH) else { return }
+        let order = feed.rows.map(\.id)
+        let place: ControlRoomChatCamera.Place
+        if let measured = ControlRoomChatCamera.place(
+            order: order, frames: frames, at: Double(yTop)
+        ) {
+            place = measured
+        } else {
+            // Before the first frames there is no measured row to name. The
+            // plan ruler still has an answer, but a place may only name a
+            // **message** -- a boundary row has no feed id to project.
+            let index = layout.index(at: yTop)
+            guard let id = nearestMessage(plan, at: index) else { return }
+            let planIndex = plan.firstIndex(where: { $0.id == Self.planID(id) }) ?? index
+            place = ControlRoomChatCamera.Place(
+                id: id, offset: Double(yTop) - Double(layout.top(of: planIndex))
+            )
+        }
+        camera.pinned = false
+        newBelow = false
+        pendingReturnToLatest = false
+        camera.place = place
+        clipSeen = nil
+        feed.reading(anchor: place.id, offset: place.offset)
+        // **Read the effective line back**: a line inside a boundary row
+        // lands on the nearest message, so the stored `b` is the bottom edge
+        // the projection actually takes, not the request.
+        let placeY = ControlRoomChatCamera.y(of: place, frames: frames) ?? Double(yTop)
+        let effective = table.line(
+            viewportTop: CGFloat(placeY), viewport: viewportH
+        ) ?? target
+        bottomLine = min(max(1, effective), maxLine)
+        Self.lineLog.notice(
+            "chat-line: seek b=\(self.bottomLine, privacy: .public) wanted=\(target, privacy: .public) max=\(maxLine, privacy: .public) top=\(Int(yTop), privacy: .public) place=\(place.id, privacy: .public)@\(Int(place.offset), privacy: .public)"
+        )
+        syncClip("line")
     }
 
     /// **The one teleport primitive** (R1-3). It is one write of the anchor:
@@ -2980,71 +3042,73 @@ struct ControlRoomNativeChatView: View {
         _ = scroll.scroll(toY: y)
     }
 
+    /// **The line table the view draws against.** The heights are the same
+    /// ones `Layout` uses -- measured where the view has a frame, the feed's
+    /// frozen estimate everywhere else -- so the line the bar names and the
+    /// pixels on screen are one document.
+    private func lineTable(
+        _ layout: ControlRoomChatScrollSurface.Layout
+    ) -> ControlRoomChatLineTable {
+        ControlRoomChatLineTable(
+            ids: layout.ids,
+            heights: layout.heights,
+            spacing: layout.spacing,
+            topPadding: layout.topPadding,
+            bottomPadding: layout.bottomPadding,
+            lineHeight: Self.lineHeight
+        )
+    }
+
     /// **The feed asks for blocks the size of this window and cannot measure
-    /// it.** The count is the index bar's own coverage -- one algorithm, so
+    /// it.** The count is the line table's own coverage -- one division, so
     /// the bar and the page the feed asks for cannot disagree about how tall
     /// a screen is. Written from callbacks only, never from `body`.
+    ///
+    /// **This is the scroll path's write of `bottomLine`**: the clip's origin,
+    /// read as the line at the viewport's bottom edge. `seek(toLine:)` is the
+    /// only other writer; there is no third copy.
     private func publishViewportRows() {
-        guard viewportH > 0, !frames.isEmpty else { return }
-        // **The high-water mark is kept here, not in `body`**: a body pass may
-        // read it but must not write it. This runs from every callback that
-        // moves the viewport, which is every moment the mark could advance.
+        guard viewportH > 0, !feed.rows.isEmpty else { return }
         let plan = listPlan
-        let order = feed.rows.map(\.id)
-        let documentNow = Double(documentBottom(plan: plan, layout: scrollLayout(plan)))
-        let depthNow = ControlRoomChatIndexBar.topPoints(
-            documentBottom: documentNow, offset: Double(offsetY)
-        )
-        // **A depth is only a depth once the viewport has an origin.** The
-        // first callback of a page arrives before the surface has placed
-        // itself, with `offset` 0 -- not because the reader is at the oldest
-        // end but because there is no clip yet. Reading that 0 as a position
-        // wrote the *whole* document into the high-water mark, and the mark
-        // never comes down: measured in the real group (2026-11-09), the bar
-        // opened at `totalP=19644` over a settled `content=11727`, so the
-        // thumb could travel only 42% of the track and a drag to the top
-        // asked for a place no row was at -- `seek: beyond depth=18720
-        // document=18124 anchor=p:19984` jumped to a row thirteen rows below
-        // the window's top and the thumb fell back where it started. While
-        // the reader is following the newest, the depth is one screen
-        // (`depthFollowingNewest`), which is the same rule the bar's own
-        // display uses.
-        let following = camera.pinned || camera.place == nil || clipSeen == nil
-            || !clipOriginKnown
-        let previous = barReached
-        let wasSeeded = barReachedSeeded
-        if barReachedSeeded {
-            if !following {
-                barReached = ControlRoomChatIndexBar.reached(previous: previous, top: depthNow)
-            }
-        } else if !plan.isEmpty {
-            // **Seeded on the first plan that exists**, not on the frame
-            // before it: an empty plan's `documentBottom` is the padding, and
-            // taking that would freeze the bar at 24 points for the session.
-            barReached = following
-                ? ControlRoomChatIndexBar.depthFollowingNewest(
-                    viewport: Double(viewportH), documentBottom: documentNow)
-                : depthNow
-            barReachedSeeded = true
+        let layout = scrollLayout(plan)
+        let table = lineTable(layout)
+        guard table.totalLines > 0 else { return }
+        let fill = max(1, table.fillLines(viewport: viewportH))
+        let maxLine = max(1, table.totalLines - fill + 1)
+        // **`offsetY == 0` before the first callback is "no clip yet", not
+        // "the top of the document"** (the 2026-11-09 first-frame red). While
+        // pinned, or before the surface has placed itself, the position is
+        // the newest line; reading the zero would write a mid-document `b`
+        // into the bar for the first frames.
+        let derived: Int
+        if camera.pinned || !clipOriginKnown {
+            derived = 1
+        } else {
+            derived = table.line(viewportTop: offsetY, viewport: viewportH) ?? bottomLine
         }
-        // **The mark and its row are written together** (design §27, task
-        // 3068): going deeper than ever means the row at the viewport's top
-        // edge is now what "the deepest place" refers to, and it travels with
-        // the mark so the two cannot drift. **Not on the seeding pass**: there
-        // the mark is one screen, not a place the reader has been, and naming
-        // a row for it would point the far end of the track at the window's
-        // top row (the 2026-11-09 drag landed on exactly that).
-        if wasSeeded, barReached > previous {
-            let top = windowTopID(order: order, at: Double(offsetY))
-            if top != "-" { deepestRow = top }
+        let line = min(max(1, derived), maxLine)
+        if line != bottomLine {
+            // **One line per crossing**, not per callback: a smooth scroll
+            // moves the pixels continuously and the bar's line one at a time,
+            // which is the model's intended stutter (supervisor, #3081).
+            let direction = line > bottomLine ? "up" : "down"
+            Self.lineLog.notice(
+                "chat-line: step dir=\(direction, privacy: .public) origin=\(Int(self.offsetY), privacy: .public) viewport=\(Int(self.viewportH), privacy: .public) b=\(self.bottomLine, privacy: .public)→\(line, privacy: .public)"
+            )
+            bottomLine = line
         }
-        guard let covered = ControlRoomChatIndexBar.viewportTicks(
-            order: order,
-            frames: frames,
-            offset: Double(offsetY),
-            viewport: Double(viewportH)
-        ) else { return }
-        let rows = max(1, Int(covered))
+        // **Loading is the total's change, not the position's** (design
+        // §29.7 rule 6): an older page appended above the reader lengthens
+        // the bar and leaves `b` where it was.
+        if lastLineTotal == 0 {
+            lastLineTotal = table.totalLines
+        } else if lastLineTotal != table.totalLines {
+            Self.lineLog.notice(
+                "chat-line: load total=\(self.lastLineTotal, privacy: .public)→\(table.totalLines, privacy: .public) b=\(line, privacy: .public)"
+            )
+            lastLineTotal = table.totalLines
+        }
+        let rows = max(1, table.rowsCovered(fromLine: line, lines: fill))
         feed.viewportMeasured = true
         guard rows != feed.viewportRows else { return }
         feed.viewportRows = rows
@@ -3071,149 +3135,103 @@ struct ControlRoomNativeChatView: View {
         }
     }
 
-    /// The person's index bar (task 3002). It reads the same frames and the
-    /// same bounds every other rule here reads, and asks for nothing but a
-    /// scroll: no page, no group, no window.
+    /// The person's index bar (task 3081, design §29.7). Its whole input is
+    /// the line table: the line at the viewport's bottom edge, the loaded
+    /// line count, and how many lines fill one screen. The bar is drawn from
+    /// `bottomLine`, which is written in exactly two places -- `seek(toLine:)`
+    /// and `publishViewportRows` -- so nothing is derived here.
     @ViewBuilder
-    private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
-        // **A bar with no position is not drawn** (task 3071, the first-frame
-        // flash). Before this page's first clip callback there is no origin,
-        // and the depth the arithmetic would use is `total - 0` -- the oldest
-        // end, on two numbers that are the same size, which the fraction can
-        // only read as 0. **The test is the flag, not the number** (§5): the
-        // 15:5x run had `pinned=0`, a place, `clipSeen` set and `offsetY == 0`
-        // all at once, so every "is there a position" shorthand said yes
-        // while the pixels had not caught up. `clipOriginKnown` is written by
-        // the callback that writes `offsetY`, so a body pass that cannot see
-        // the origin also cannot see the flag.
+    private func indexBar(
+        _ theme: Look.Theme,
+        plan: [ControlRoomChatPresentation.ListRow],
+        layout: ControlRoomChatScrollSurface.Layout,
+        height: CGFloat
+    ) -> some View {
+        // **Wait for the first clip callback** (task 3071): before it the page
+        // has not placed itself, and a bar drawn over a viewport that is about
+        // to move is a flash. `clipOriginKnown` is written by the callback
+        // that writes `offsetY`, so the flag and the origin cannot disagree.
+        // The position itself is `bottomLine`, not this number.
         let hasPosition = clipOriginKnown
-        if !feed.rows.isEmpty, height > 0, hasPosition {
-            let order = feed.rows.map(\.id)
-            // **The bar speaks in points** (design §23.3), and **on one
-            // ruler**: the scroll view's own document height
-            // (`liveDocumentHeight`, the same `live` the scroll clamp has),
-            // not the content ruler `documentBottom(plan:layout:)`. The
-            // content ruler dips under the clip for a frame each time a row
-            // above the viewport measures shorter, while the floor holds the
-            // clip where it is -- `viewP` fell 968 -> 546 with `offset`
-            // standing still and the thumb crawled (2026-11-08, task 3071).
-            //
-            // **The other ruler stays on purpose** (supervisor, 2026-11-08):
-            // the *window decision* still chooses rows on the frame ruler
-            // (`documentBottom(plan:layout:)`), and the two meet only at base
-            // points -- `liveDocumentHeight` is that ruler floored to the
-            // clip. Unifying them would feed the floored height back into the
-            // choice that produced it, which is the loop §24 closed.
-            let documentNow = Double(liveDocumentHeight)
-            // **The total is the high-water mark**, not the document: a
-            // document that sheds rows must not shrink the bar. `max` with
-            // today's depth covers the frame between a scroll and the
-            // callback that records it, and stays monotonic.
-            let total = max(barReached, ControlRoomChatIndexBar.topPoints(
-                documentBottom: documentNow, offset: Double(offsetY)
-            ))
-            // **R1-14: the bar's top reads the camera**, not the projected
-            // pixel. The appearance is the same position; the source stops it
-            // lagging a frame behind while a projection is owed.
-            //
-            // **No place is not the oldest end** (task 3071): before the
-            // first callback there is no clip origin, and `document - 0` drew
-            // the thumb at the oldest end for two frames. Following the
-            // newest -- or having no place at all -- means the viewport is
-            // one screen off the document's end, which is a position the
-            // fraction reads as the end rather than as the top.
-            let following = camera.pinned || camera.place == nil || clipSeen == nil
-            // **`topP` moving while `offset` stands still is a reading, not a
-            // position** (task 3071): `cameraDepth` takes the camera row's y
-            // from `frames`, and those are still being measured at the bottom
-            // -- ±90 points of it, with the thumb clamped at the end
-            // throughout. Do not chase it as a jump; the thumb's own value is
-            // the position.
-            let depth = cameraDepth(order: order, frames: frames, documentBottom: documentNow)
-                ?? (following
-                    ? ControlRoomChatIndexBar.depthFollowingNewest(
-                        viewport: Double(viewportH), documentBottom: documentNow)
-                    : ControlRoomChatIndexBar.topPoints(
-                        documentBottom: documentNow, offset: Double(offsetY)))
-            let covered = ControlRoomChatIndexBar.viewportPoints(
-                viewport: Double(viewportH),
-                documentBottom: documentNow,
-                offset: Double(offsetY)
-            )
+        let table = lineTable(layout)
+        let indexByID = rowIndexByID
+        if !feed.rows.isEmpty, height > 0, hasPosition, table.totalLines > 0 {
+            let fill = max(1, table.fillLines(viewport: viewportH))
+            let maxLine = max(1, table.totalLines - fill + 1)
+            let line = min(max(1, bottomLine), maxLine)
             let trackH = max(0, height - 16)
-            let shape = ControlRoomChatIndexBar.geometryPoints(
-                totalPoints: total,
-                viewportPoints: covered,
-                depthPoints: depth,
-                trackH: trackH
+            let shape = ControlRoomChatLineBar.geometry(
+                b: line,
+                totalLines: table.totalLines,
+                fillLines: fill,
+                trackH: trackH,
+                minThumb: ControlRoomChatIndexBar.minThumb,
+                tickSpacing: ControlRoomChatIndexBar.tickSpacing
             )
             // **One line per change, not per frame** (the person's debugging
             // aid): a bar that moves while `chat-window`'s decision does not
             // is the bar's own jitter; both moving is the feed's rows.
             let signature = barSignature(
-                depth: depth, total: total, covered: covered, shape: shape
+                b: line, totalLines: table.totalLines, fillLines: fill, shape: shape
             )
             ControlRoomChatIndexBarView(
-                totalPoints: total,
-                depthPoints: depth,
-                viewportPoints: covered,
+                b: line,
+                totalLines: table.totalLines,
+                fillLines: fill,
                 trackH: trackH,
                 theme: theme,
                 mapEpoch: mapEpoch,
                 notice: olderNotice,
-                time: { atDepth in
-                    guard let index = nearestMessageIndex(
-                        order: order, documentY: documentNow - atDepth
-                    ) else { return "" }
+                time: { atLine in
+                    guard let (index, _) = table.rowAndSlot(ofLine: atLine),
+                          plan.indices.contains(index),
+                          case let .message(id) = plan[index],
+                          let row = indexByID[id]
+                    else { return "" }
                     return ControlRoomChatPresentation.timeText(
-                        atMs: feed.rows[index].message.atMs)
+                        atMs: feed.rows[row].message.atMs)
                 },
-                onSeek: seek(toDepth:),
+                onSeek: seek(toLine:),
                 onPage: pageBy
             )
             .padding(.trailing, ControlRoomChatIndexBar.trackInset)
             .padding(.vertical, 8)
             .onAppear {
-                sayBar(depth: depth, total: total, covered: covered, shape: shape)
+                sayBar(b: line, totalLines: table.totalLines, fillLines: fill, shape: shape)
             }
             .onChange(of: signature) { _ in
-                sayBar(depth: depth, total: total, covered: covered, shape: shape)
+                sayBar(b: line, totalLines: table.totalLines, fillLines: fill, shape: shape)
             }
         }
     }
 
     /// What the bar draws, quantised so a sub-pixel wobble is not a change.
     private func barSignature(
-        depth: Double,
-        total: Double,
-        covered: Double,
-        shape: ControlRoomChatIndexBar.PointGeometry
+        b: Int,
+        totalLines: Int,
+        fillLines: Int,
+        shape: ControlRoomChatLineBar.Geometry
     ) -> String {
         [
-            String(Int(depth.rounded())), String(Int(total.rounded())),
+            String(b), String(totalLines), String(fillLines),
             String(Int(shape.thumbY.rounded())),
             String(Int(shape.thumbH.rounded())),
-            String(Int(covered.rounded())),
+            String(shape.stepLines),
         ].joined(separator: "|")
     }
 
-    /// **The index bar's one line** (the person's debugging aid): beside
-    /// `chat-window`, it separates "the bar is moving" from "the feed's rows
-    /// are". `content` is read live, the same number the window decision
-    /// uses.
-    /// **Two units on one line, told apart by their names** (design §23.3):
-    /// `topP` / `totalP` / `viewP` are **points**; `thumbY` / `offset` /
-    /// `content` are **pixels**. `ticks=` used to sit here and would now mean
-    /// points while still saying ticks -- the kind of name this file has been
-    /// bitten by before.
+    /// **The index bar's one line** (the person's debugging aid, task 3081).
+    /// **Every number is a line** unless its name says otherwise: `thumbY` /
+    /// `thumbH` are pixels of the track; `q` is the quantum the lines were
+    /// counted in, so a reading can be re-derived from the log alone.
     private func sayBar(
-        depth: Double,
-        total: Double,
-        covered: Double,
-        shape: ControlRoomChatIndexBar.PointGeometry
+        b: Int,
+        totalLines: Int,
+        fillLines: Int,
+        shape: ControlRoomChatLineBar.Geometry
     ) {
         Self.barLog.notice(
-            "chat-bar: topP=\(Int(depth.rounded()), privacy: .public) totalP=\(Int(total.rounded()), privacy: .public) thumbY=\(Int(shape.thumbY.rounded()), privacy: .public)/\(Int(shape.thumbH.rounded()), privacy: .public) viewP=\(Int(covered.rounded()), privacy: .public) offset=\(Int(self.offsetY), privacy: .public) content=\(Int(self.liveDocumentHeight), privacy: .public)"
+            "chat-bar: line b=\(b, privacy: .public) total=\(totalLines, privacy: .public) fill=\(fillLines, privacy: .public) maxLine=\(shape.maxLine, privacy: .public) step=\(shape.stepLines, privacy: .public) thumbY=\(Int(shape.thumbY.rounded()), privacy: .public)/\(Int(shape.thumbH.rounded()), privacy: .public) q=\(Int(Self.lineHeight), privacy: .public)"
         )
     }
 
@@ -3339,22 +3357,6 @@ struct ControlRoomNativeChatView: View {
         else { return false }
         guard viewportH > 0, contentH > 0 else { return false }
         return Double(contentH) - (y + Double(viewportH)) <= 2
-    }
-
-    /// The index bar's top tick from the camera (R1-14): the row's index plus
-    /// how far into it the reader is, in row heights. `nil` while pinned (the
-    /// bottom is not a position in the map) or while the place is unmeasured.
-    /// **The camera's own depth**, in points below the document's bottom.
-    /// The point-space answer to the row tick this used to return: same
-    /// source (the camera, not the projected pixel), same reason -- the bar
-    /// must not lag a frame behind while a projection is owed.
-    private func cameraDepth(
-        order: [String], frames: [String: CGRect], documentBottom: Double
-    ) -> Double? {
-        guard !camera.pinned, let place = camera.place,
-              let y = ControlRoomChatCamera.y(of: place, frames: frames)
-        else { return nil }
-        return max(0, documentBottom - y)
     }
 
     /// **The row nearest a document y** -- the last row whose bottom is below
