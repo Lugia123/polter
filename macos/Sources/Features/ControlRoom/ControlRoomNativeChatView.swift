@@ -128,6 +128,8 @@ struct ControlRoomNativeChatView: View {
     @State private var debugInjectionArmed = false
     /// The debug jump is armed once per surface (`CHAT_JUMP_*`).
     @State private var debugJumpArmed = false
+    /// The debug seek is armed once per surface (`CHAT_SEEK_*`).
+    @State private var debugSeekArmed = false
     /// **The anchor a `CHAT_JUMP_TO_SEQ` jump is waiting to land on.** It is
     /// cleared by the landing (`center(on:)`) or by the refusal
     /// (`locateTrouble`), so the log says which of the two happened.
@@ -484,8 +486,10 @@ struct ControlRoomNativeChatView: View {
             // 3068): the `around` path centres itself in `center(on:)`; the
             // recentre path (the row was still in an apron) lands here, and
             // the reader asked for a position, not a top edge.
+            // **`center(on:)` clears the pending and logs `seek: landed`**:
+            // clearing it here instead left the fetch silent, which is the
+            // one thing the §27 criterion reads.
             if let pending = pendingSeekAnchor, rowIndexByID[pending] != nil {
-                pendingSeekAnchor = nil
                 center(on: pending)
             }
             rebaseAnchor("\(change)")
@@ -932,6 +936,7 @@ struct ControlRoomNativeChatView: View {
                     startAutoScrollIfAsked()
                     startDebugInjectionIfAsked()
                     startDebugJumpIfAsked()
+                    startDebugSeekIfAsked()
                 }
             },
             onVisible: { shown in
@@ -1354,6 +1359,32 @@ struct ControlRoomNativeChatView: View {
                 "jumpdebug: index=\(index, privacy: .public) wanted=\(plan.wanted ?? 0, privacy: .public) clamped=\(clamped ? 1 : 0, privacy: .public)"
             )
             jump(to: feed.rows[index].id)
+        }
+    }
+
+    /// **`CHAT_SEEK_DEPTH` / `CHAT_SEEK_AFTER_MS`** (design §27's instrument):
+    /// a drag on the index bar cannot be driven by synthetic input (clicks do
+    /// not reach SwiftUI's rows), so this calls **the same `seek(toDepth:)`
+    /// the bar calls**, once, and says so.
+    ///
+    /// **Its own log prefix** (supervisor, 2026-11-08): `seekdebug:` marks a
+    /// debug trigger, and the `seek:` lines that follow are the product's --
+    /// grepping for what a person's drag did must never pick these up.
+    /// Absent the variable nothing is read and no timer is armed.
+    private func startDebugSeekIfAsked() {
+        guard !debugSeekArmed else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env["CHAT_SEEK_DEPTH"], let depth = Double(raw), depth >= 0
+        else { return }
+        debugSeekArmed = true
+        let afterMs = Double(env["CHAT_SEEK_AFTER_MS"] ?? "") ?? 2000
+        Self.windowLog.notice(
+            "seekdebug: armed depth=\(Int(depth), privacy: .public) after=\(Int(afterMs), privacy: .public)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterMs / 1000) {
+            Self.windowLog.notice(
+                "seekdebug: seek depth=\(Int(depth), privacy: .public)")
+            seek(toDepth: depth)
         }
     }
 
@@ -2694,7 +2725,14 @@ struct ControlRoomNativeChatView: View {
                 "seek: beyond depth=\(Int(depth), privacy: .public) document=\(Int(documentNow), privacy: .public) anchor=\(anchor ?? "-", privacy: .public)"
             )
             guard let anchor else { return }
-            if !feed.isLoaded(anchor) { pendingSeekAnchor = anchor }
+            // **Always pending, loaded or not** (design §27's criterion): the
+            // one line that says a fetch reached its place is `seek:
+            // landed`, and it is printed only while a seek is pending. The
+            // loaded-row path (`recentre` -> `center(on:)`) is a fetch too,
+            // and leaving it unpending made the criterion unable to tell a
+            // fetch from a scroll. Cleared by the landing, or by the refusal
+            // (`locateTrouble` -> `seek: stale`).
+            pendingSeekAnchor = anchor
             jump(to: anchor, centered: true)
             return
         }
@@ -2766,14 +2804,16 @@ struct ControlRoomNativeChatView: View {
                 "jumpdebug: landed anchor=\(target, privacy: .public) at=\(at, privacy: .public) place=\(place.id, privacy: .public)@\(Int(place.offset), privacy: .public) rows=\(feed.rows.endIndex, privacy: .public)"
             )
         }
-        // **A seek that reached its place lands here too** (design §27): the
-        // around window rebuilt around the target, and the reader asked for a
-        // position, so it is centred -- the same landing a search gets.
-        if let pending = pendingSeekAnchor, place.id == pending {
+        // **A seek that reached its place lands here** (design §27). It is
+        // keyed on the seek being pending, not on the ids matching: the row
+        // asked for is centred, so the place the viewport lands on is a
+        // *neighbour* of it -- requiring equality made the fetch silent
+        // exactly when it had worked. `place=` is where it actually went.
+        if let pending = pendingSeekAnchor {
             pendingSeekAnchor = nil
-            let at = feed.rows.firstIndex(where: { $0.id == place.id }) ?? -1
+            let at = feed.rows.firstIndex(where: { $0.id == pending }) ?? -1
             Self.windowLog.notice(
-                "seek: landed anchor=\(place.id, privacy: .public) at=\(at, privacy: .public) offset=\(Int(place.offset), privacy: .public)"
+                "seek: landed anchor=\(pending, privacy: .public) at=\(at, privacy: .public) place=\(place.id, privacy: .public)@\(Int(place.offset), privacy: .public)"
             )
         }
     }
