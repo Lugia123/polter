@@ -1637,15 +1637,17 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.savedReading == .init(id: "p:10", offset: 3))
     }
 
-    /// **A restored place is also the reading anchor** (task 3070): the
-    /// stop/start path and the view's adopt read the same pair, and the
-    /// restore itself is not a reader's word.
-    @Test func testARestoredPlaceIsTheReadingAnchor() {
+    /// **A restored place is the reading anchor and a reader's place** (task
+    /// 3070): the close store only ever holds places a reader made, so this
+    /// feed may resume to it on a later stop/start. Without that flag the
+    /// store would buy exactly one return, and the second switch would drop
+    /// the place the first one restored.
+    @Test func testARestoredPlaceIsTheReadingAnchorAndAReportedPlace() {
         let rig = Rig()
         rig.feed.restore(.init(id: "p:10", offset: 7))
         #expect(rig.feed.restoredPlace == .init(id: "p:10", offset: 7))
         #expect(rig.feed.savedReading == .init(id: "p:10", offset: 7))
-        #expect(!rig.feed.readingWasReported)
+        #expect(rig.feed.readingWasReported)
     }
 
     /// **An anchor nobody has is rebuilt, not left stuck** (review M, Q2).

@@ -387,6 +387,11 @@ final class ControlRoomChatFeed: ObservableObject {
         restoredPlace = place
         readingAnchor = place.id
         readingOffset = place.offset
+        // **A restored place was a reader's place** (task 3070): it came from
+        // one, so a later stop/start of this feed may resume to it. Without
+        // this it would be dropped on the second switch, and the close-store
+        // would have bought exactly one return.
+        readingWasReported = true
     }
 
     /// Whether a page older than the window can be asked for now. A page
@@ -654,7 +659,12 @@ final class ControlRoomChatFeed: ObservableObject {
                 // window's top. **That was the real cause of "always comes
                 // back at the latest"; clearing the anchor in `stop()` was
                 // only half of it.**
-                if let saved = readingAnchor {
+                // **Only a place a reader reported** (the resumeD counter-case,
+                // task 3070): `readingAnchor` also has `mergeHistory`'s
+                // fallback on it, and resuming to that made a group nobody
+                // had scrolled log `resume: anchor=p:1000 offset=0` -- the
+                // position was right by coincidence, the line was a lie.
+                if readingWasReported, let saved = readingAnchor {
                     // **The place comes back, said out loud** (task 3069):
                     // `recentre` rebuilds the window and zeroes the offset
                     // itself, so the pair is read before it runs. This line

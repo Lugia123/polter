@@ -301,6 +301,15 @@ final class ControlRoomChatContainer: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + afterMs / 1000) { [weak self] in
             guard let self else { return }
             let from = self.front
+            // **Asked to go where it already is is not a switch** (the
+            // resumeD run had nobody able to tell whether `from=` was the
+            // real front): the line says so instead of a `to=`/`from=` pair
+            // that looks like a move.
+            if from == target {
+                Ghostty.logger.notice(
+                    "switchgroup: noop target=\(target, privacy: .public) from=\(from ?? "-", privacy: .public)")
+                return
+            }
             Ghostty.logger.notice(
                 "switchgroup: to=\(target, privacy: .public) from=\(from ?? "-", privacy: .public)")
             self.show(target)

@@ -2587,7 +2587,10 @@ struct ControlRoomNativeChatView: View {
         // The three rules of §23.1 need all three pieces (`stop()` keeps the
         // anchor, `start()` recentres on it, this restores the offset); any
         // one alone is a false fix.
-        if camera.place == nil, let saved = feed.savedReading {
+        // **Only a place a reader reported** (task 3070): `savedReading` also
+        // carries `mergeHistory`'s fallback, and adopting that made a page
+        // nobody had scrolled open `pinned = false` on an arbitrary row.
+        if camera.place == nil, feed.readingWasReported, let saved = feed.savedReading {
             camera.place = saved
             camera.pinned = false
             clipSeen = nil
