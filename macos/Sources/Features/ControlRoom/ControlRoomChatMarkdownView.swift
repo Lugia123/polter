@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One group message's Markdown, drawn block by block (task 2799): paragraphs
@@ -26,6 +27,15 @@ import SwiftUI
 /// **Wide things scroll inside themselves.** A code line and a wide table
 /// scroll horizontally in their own block instead of widening the message
 /// column, and no row is dropped: a long table is long, it is not clipped.
+///
+/// **...and the block must not take the group's wheel with it** (2026-11-09,
+/// reported from a real group: the pointer over a fenced block stopped the
+/// page scrolling entirely). A `ScrollView(.horizontal)` is an
+/// `NSScrollView`, and an `NSScrollView` keeps every wheel event that lands
+/// on it -- vertical ones included -- so the reader who put the pointer on a
+/// code block could not scroll the history at all. The block's scroller is
+/// therefore `ControlRoomChatBlockScroll` below, which hands a
+/// predominantly vertical event to the enclosing (chat) scroll view.
 struct ControlRoomChatMarkdownView: View {
     var document: ControlRoomChatMarkdown.Document
     /// A located search result's matches, as the page worked them out from
@@ -114,7 +124,7 @@ struct ControlRoomChatMarkdownView: View {
                         .font(bodyFont)
                         .foregroundStyle(.secondary)
                 }
-                ScrollView(.horizontal, showsIndicators: true) {
+                ControlRoomChatBlockScroll {
                     Text(Self.marked(AttributedString(text), block: index, text: 0,
                                 marks: marks, ink: ink, hitText: hitInk))
                         .font(.system(size: ControlRoomLook.Font.body, design: .monospaced))
@@ -194,7 +204,7 @@ struct ControlRoomChatMarkdownView: View {
         ink: Color,
         hitInk: Color
     ) -> some View {
-        ScrollView(.horizontal, showsIndicators: true) {
+        ControlRoomChatBlockScroll {
             Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
                 if !table.header.isEmpty {
                     GridRow {
@@ -226,6 +236,9 @@ struct ControlRoomChatMarkdownView: View {
                 Rectangle()
                     .strokeBorder(Color.primary.opacity(0.15),
                                   lineWidth: ControlRoomLook.Line.hairline))
+            // The block is hosted in an `NSHostingView` of its own, so the
+            // page's `.textSelection(.enabled)` does not reach it.
+            .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -286,5 +299,121 @@ struct ControlRoomChatMarkdownView: View {
         case .center: return .center
         case .right: return .trailing
         }
+    }
+}
+
+// MARK: - A block's own scroller
+
+/// **A wide block scrolls sideways inside itself, and nowhere else**
+/// (2026-11-09, task 3078).
+///
+/// `ScrollView(.horizontal)` was the whole implementation, and it is an
+/// `NSScrollView` -- which keeps every wheel event that lands on it, a
+/// vertical one included. So a pointer resting on a fenced code block or a
+/// pipe table took the page's scrolling away: the reader could not move the
+/// group at all without first moving the mouse off the block.
+///
+/// The scroller is ours instead. The block's content is hosted in an
+/// `NSHostingView`, the block's height is asked of that host (`sizeThatFits`)
+/// rather than guessed, and a **predominantly vertical** wheel is handed to
+/// `enclosingScrollView` -- the chat's own scroll view, which records and
+/// scrolls it exactly as if the wheel had landed there, phases and momentum
+/// untouched. A sideways wheel stays here.
+private struct ControlRoomChatBlockScroll<Content: View>: NSViewRepresentable {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func makeNSView(context: Context) -> ControlRoomChatBlockScrollView {
+        let view = ControlRoomChatBlockScrollView()
+        view.content = AnyView(content)
+        return view
+    }
+
+    func updateNSView(_ view: ControlRoomChatBlockScrollView, context: Context) {
+        view.content = AnyView(content)
+    }
+
+    /// **The width is the column's; the height is the content's.** Nothing
+    /// here scrolls vertically, so a taller-than-content block would mean an
+    /// empty band and a shorter one would clip a table row.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView view: ControlRoomChatBlockScrollView,
+        context: Context
+    ) -> CGSize? {
+        let natural = view.naturalSize
+        let height = natural.height > 0 ? natural.height : (proposal.height ?? 0)
+        return CGSize(width: proposal.width ?? natural.width, height: height)
+    }
+}
+
+/// The block's horizontal scroller: **vertical goes out, sideways stays in.**
+final class ControlRoomChatBlockScrollView: NSScrollView {
+    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+
+    /// What the content needs at its own width. Its height is the block's
+    /// height: this scroll view never moves vertically, by design.
+    var naturalSize: CGSize {
+        var fit = host.fittingSize
+        // The first question can arrive before the host has laid its content
+        // out (SwiftUI asks for a size the moment the representable is made),
+        // and an empty answer here would be a zero-height block.
+        if fit.height <= 0 {
+            host.layoutSubtreeIfNeeded()
+            fit = host.fittingSize
+        }
+        return CGSize(width: max(1, fit.width), height: max(0, fit.height))
+    }
+
+    var content: AnyView {
+        get { host.rootView }
+        set {
+            host.rootView = newValue
+            needsLayout = true
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        hasVerticalScroller = false
+        hasHorizontalScroller = true
+        autohidesScrollers = true
+        scrollerStyle = .overlay
+        drawsBackground = false
+        borderType = .noBorder
+        verticalScrollElasticity = .none
+        horizontalScrollElasticity = .allowed
+        documentView = host
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("ControlRoomChatBlockScrollView is made in code")
+    }
+
+    override func layout() {
+        super.layout()
+        let natural = naturalSize
+        let size = NSSize(width: max(natural.width, contentView.bounds.width),
+                          height: natural.height)
+        if host.frame.origin != .zero || host.frame.size != size {
+            host.frame = NSRect(origin: .zero, size: size)
+        }
+    }
+
+    /// **A predominantly vertical wheel is the page's, not the block's.**
+    /// `enclosingScrollView` walks up to the chat's scroll view; when there
+    /// is none (a block shown outside the page) the event stays here, which
+    /// is what it did before this existed.
+    override func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX),
+           let outer = enclosingScrollView {
+            outer.scrollWheel(with: event)
+            return
+        }
+        super.scrollWheel(with: event)
     }
 }
