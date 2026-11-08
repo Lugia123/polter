@@ -1579,6 +1579,17 @@ struct ControlRoomChatPresentationTests {
 
     // MARK: - The index bar (task 3002)
 
+    /// **The high-water mark belongs to the group, not to the map** (review
+    /// M, Q3). `.replaced` is also how a locate -- or a drag to a place that
+    /// was not loaded -- swaps the whole map inside one group; only a
+    /// different group may start the depth again.
+    @Test func testAReplacedMapKeepsTheReachedDepthOnlyInTheSameGroup() {
+        #expect(I.keepsReached(mapGroup: "polter", newGroup: "polter"))
+        #expect(!I.keepsReached(mapGroup: "polter", newGroup: "second-group"))
+        #expect(!I.keepsReached(mapGroup: nil, newGroup: "polter"))
+        #expect(!I.keepsReached(mapGroup: "polter", newGroup: nil))
+    }
+
     /// `count` rows of the same height, with the list's 10pt gap between
     /// them, in the content coordinates the frames preference reports.
     private func frameMap(_ heights: [CGFloat]) -> (order: [String], frames: [String: CGRect]) {
@@ -1776,5 +1787,39 @@ struct ControlRoomChatPresentationTests {
         #expect(middle == expectedMiddle)
     }
 
+    // MARK: - The landing screen's wait (review M, Q4)
 
+    /// **A screen whose forms keep changing is never given up on**, however
+    /// long it takes, and it ends with the one switch: `settled`.
+    @Test func testAScreenThatKeepsChangingIsNeverGivenUpOn() {
+        var wait = ControlRoomChatPlaceholderWait()
+        #expect(wait.look(forms: ["a": "pending:queued"], settled: false, at: 0) == nil)
+        // 900 ms of nothing would be a stall; the change at 0.9 restarts it.
+        #expect(wait.look(forms: ["a": "pending:inFlight"], settled: false, at: 0.9) == nil)
+        #expect(wait.look(forms: ["a": "pending:inFlight"], settled: false, at: 1.5) == nil)
+        #expect(wait.look(forms: ["a": "markdown:cache"], settled: true, at: 1.6) == .settled)
+    }
+
+    /// **A screen that stops changing is given up on after `stall` -- once.**
+    /// A row waiting on a budget or a window is exactly this: nothing this
+    /// screen does will change its form, so waiting longer only means a grey
+    /// screen with no content.
+    @Test func testAScreenThatStopsChangingIsGivenUpOnOnce() {
+        var wait = ControlRoomChatPlaceholderWait()
+        #expect(wait.look(forms: ["a": "deferred:budget"], settled: false, at: 10) == nil)
+        #expect(wait.look(forms: ["a": "deferred:budget"], settled: false, at: 10.9) == nil)
+        #expect(wait.look(forms: ["a": "deferred:budget"], settled: false, at: 11) == .stalled)
+        // The screen has switched: a row settling later changes nothing here.
+        #expect(wait.look(forms: ["a": "markdown:cache"], settled: true, at: 30) == nil)
+    }
+
+    /// **Every row settled is the other end, and it is immediate.**
+    @Test func testASettledScreenSwitchesAtOnce() {
+        var wait = ControlRoomChatPlaceholderWait()
+        #expect(wait.look(
+            forms: ["a": "markdown:cache", "b": "plain:uncached"],
+            settled: true,
+            at: 0
+        ) == .settled)
+    }
 }

@@ -1581,14 +1581,58 @@ struct ControlRoomChatFeedTests {
         // **And a stop does not end the place any more** (design §23.1, which
         // reverses task 2999 ② on purpose): coming back to a page the person
         // was reading must land where they left it, not at the bottom.
-        // `start()` then recentres on this row, or -- if it is no longer
-        // loaded -- says `resume: anchor-not-loaded` and keeps this anchor for
-        // the next resume. Clearing it here is what made that impossible.
+        // `start()` then recentres on this row; if it is no longer loaded it
+        // says `resume: anchor-not-loaded`, rebuilds to the newest and drops
+        // the anchor (review M, Q2 -- it used to keep it and do nothing).
+        // Clearing it here is what made the first half impossible.
         #expect(rig.feed.savedReading == .init(id: "p:10", offset: 12))
 
         rig.scheduler.run(2)
         #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])
         _ = polls
+    }
+
+    /// **An anchor nobody has is rebuilt, not left stuck** (review M, Q2).
+    ///
+    /// `goToLatest()` returns early when the newer apron is empty -- the
+    /// shape a located window leaves -- so the old fallback logged
+    /// `resume: anchor-not-loaded` and did nothing: the anchor stayed on a
+    /// row the feed no longer held, every resume said the same line, and the
+    /// viewport stayed on the old window. The fix is a fresh first screen:
+    /// it reaches the conversation's newest, and it drops the anchor.
+    @Test func testAnAnchorThatIsNotLoadedIsRebuiltToTheNewest() {
+        let rig = Rig()
+        var begins = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                begins += 1
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                return .answer(self.ready(
+                    messages: [
+                        self.message(anchor: "p:10"),
+                        self.message(anchor: "p:11"),
+                    ],
+                    stop: "at_end"
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        #expect(rig.feed.rows.map(\.id) == ["p:10", "p:11"])
+
+        // The anchor names a row this window does not hold, and the newer
+        // apron is empty -- exactly what a located window looks like.
+        rig.feed.reading(anchor: "p:gone", offset: 5)
+        rig.feed.stop()
+        rig.feed.start(group: "polter")
+
+        #expect(begins == 2)                    // the core was asked to rebuild
+        #expect(rig.feed.savedReading == nil)    // the stuck id is gone
+        #expect(rig.feed.rows.isEmpty)          // the window was cleared, not slid
     }
 
     /// **A begin snapshot is not a finished first screen.** If the history

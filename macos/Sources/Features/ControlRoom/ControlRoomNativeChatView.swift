@@ -124,9 +124,13 @@ struct ControlRoomNativeChatView: View {
     /// **The bar's high-water mark, in points** (design §23.3): the deepest
     /// the reader has ever been, measured from the newest message. **Only ever
     /// grows** -- reaching 100 keeps 100, and coming back to the newest does
-    /// not shrink it. Reset when the map is replaced (a different group is a
-    /// different document).
+    /// not shrink it. Reset only when the **group** changes: a replaced map
+    /// may be a locate inside the same document (review M, Q3).
     @State private var barReached: Double = 0
+    /// **Which group `barReached` belongs to.** The mark is a document's, and
+    /// `.replaced` does not always mean a new document -- see
+    /// `ControlRoomChatIndexBar.keepsReached`.
+    @State private var barGroup: String?
     /// **The first valid reading is taken as it is**, not `max`ed against a
     /// zero: `max(0, depth)` publishes whatever the very first frame
     /// computed, and the first frame's document is not the one that settles
@@ -135,11 +139,16 @@ struct ControlRoomNativeChatView: View {
     @State private var barReachedSeeded = false
     /// **A landing screen is showing placeholders** (design §26). Set only by
     /// `jump(to:)` -- a scroll never sets it, which is what keeps the
-    /// placeholders off the scrolling path; cleared the moment the screen's
-    /// rows are all settled, or by the cap.
+    /// placeholders off the scrolling path. It ends one of two ways (review
+    /// M, Q4): every row drawn on the screen settled, or the screen stopped
+    /// changing for `ControlRoomChatPlaceholderWait.stall` -- and in both
+    /// cases the whole screen switches **once**.
     @State private var placeholdersOn = false
-    /// Invalidates the cap queued for an earlier landing.
-    @State private var placeholderToken: UInt64 = 0
+    /// **What the landing screen looked like last time**: the forms its
+    /// drawn rows carried, and when one last changed (review M, Q4).
+    @State private var placeholderWait = ControlRoomChatPlaceholderWait()
+    /// Invalidates the checks queued for an earlier landing.
+    @State private var placeholderTick: UInt64 = 0
     /// How many drawn rows make an estimate worth freezing.
     private static let estimateFreezeSample = 10
     /// The cap: after this many passes the estimate freezes whatever it is.
@@ -565,7 +574,7 @@ struct ControlRoomNativeChatView: View {
         // two moments its mark may breathe (task 2999 ④).
         breatheLocatedIfInView()
         publishViewportRows()
-        endPlaceholdersIfSettled()
+        placeholderLook()
     }
 
     // MARK: - Rows and frames
@@ -1054,13 +1063,34 @@ struct ControlRoomNativeChatView: View {
     /// exist for a landing, where nothing has been measured yet; a scroll has
     /// measured rows under it and a block appearing mid-scroll is the flicker
     /// they are meant to remove.
+    ///
+    /// **The wait is by progress, not by the clock** (review M, Q4). A 0.6 s
+    /// cap fired long before a slow screen had parsed its rows -- the store
+    /// is serial, so thirteen rows at p99 308 ms is about four seconds -- and
+    /// every row that finished afterwards moved the page under the reader,
+    /// which is exactly the flicker the placeholders exist to remove. So the
+    /// screen is looked at until it has nothing more to say: settled (the
+    /// switch), or unchanged for `stall` (the give-up, one switch, content
+    /// out). Both ends clear `placeholdersOn` once and never again for this
+    /// landing.
     private func beginPlaceholders() {
         placeholdersOn = true
-        placeholderToken &+= 1
-        let token = placeholderToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChatPlaceholder.cap) {
-            guard placeholderToken == token else { return }
-            placeholdersOn = false
+        placeholderWait = ControlRoomChatPlaceholderWait()
+        placeholderTick &+= 1
+        tickPlaceholderWait(placeholderTick)
+    }
+
+    /// **A landing screen is looked at until it ends.** A timer, not only
+    /// frames: a row's form can move while its frame does not (queued to
+    /// in flight draws the same block), so the frames preference alone would
+    /// not see the progress the wait is measuring. The interval is much
+    /// shorter than the stall it measures.
+    private func tickPlaceholderWait(_ token: UInt64) {
+        guard placeholderTick == token, placeholdersOn else { return }
+        placeholderLook()
+        guard placeholderTick == token, placeholdersOn else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + ControlRoomChatPlaceholderWait.tick) {
+            tickPlaceholderWait(token)
         }
     }
 
@@ -1072,26 +1102,49 @@ struct ControlRoomNativeChatView: View {
         return max(1, Int((viewportH / ControlRoomChatPlaceholder.rowHeight).rounded(.up)))
     }
 
-    /// **The screen may switch when every row on it has stopped changing.**
+    /// **One look at the landing screen, and the switch when the wait ends.**
+    ///
     /// Walks the drawn rows from the top of the window; the first unsettled
-    /// one leaves the placeholders up. The cap in `beginPlaceholders` is the
-    /// other way out.
-    private func endPlaceholdersIfSettled() {
+    /// one means the screen is not settled. **The second way out is
+    /// progress** (review M, Q4): a row can be waiting on a condition this
+    /// screen does not control (a budget, a window slot), and then the
+    /// placeholders would stay up for ever -- one grey screen with no
+    /// content, which is worse than switching. Both ends switch the whole
+    /// screen once and clear the flag; a row that settles afterwards draws
+    /// its own height and never turns the placeholders back on.
+    private func placeholderLook() {
         guard placeholdersOn, let group = feed.group else { return }
         let generation = feed.markdown.formGeneration
+        var forms: [String: String] = [:]
+        var settled = true
         var checked = 0
         for id in feed.rows.map(\.id) {
             guard checked < firstScreenRowCount else { break }
             guard let frame = frames[id], frame.height > 1 else { continue }
             checked += 1
             let form = feed.markdown.form(id: id, group: group, generation: generation)
-            guard ControlRoomChatMarkdownStore.isSettled(form: form) else { return }
+            forms[id] = form
+            if !ControlRoomChatMarkdownStore.isSettled(form: form) { settled = false }
         }
+        // Nothing drawn yet is not a screen to switch.
         guard checked > 0 else { return }
-        placeholdersOn = false
-        Self.windowLog.notice(
-            "placeholder: switched screen rows=\(checked, privacy: .public)"
+        let end = placeholderWait.look(
+            forms: forms, settled: settled, at: ProcessInfo.processInfo.systemUptime
         )
+        switch end {
+        case .settled:
+            placeholdersOn = false
+            Self.windowLog.notice(
+                "placeholder: switched screen rows=\(checked, privacy: .public)"
+            )
+        case .stalled:
+            placeholdersOn = false
+            Self.windowLog.notice(
+                "placeholder: stalled rows=\(checked, privacy: .public)"
+            )
+        case nil:
+            break
+        }
     }
 
     /// **`CHAT_JUMP_AFTER_MS` / `CHAT_JUMP_TO_INDEX` jump the list once**, for
@@ -1144,9 +1197,14 @@ struct ControlRoomNativeChatView: View {
     ) {
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- startedAt.uptimeNanoseconds)
             / 1_000_000_000
-        // **`endIndex` is how many rows are loaded.** It is the feed's own
-        // bounded window, not a number a group has: the rule only needs to
-        // know whether index `wanted` exists yet.
+        // **`endIndex` is how many rows are loaded** -- the same number as
+        // `count`, spelled differently on purpose. The gate
+        // (`control-room-hosts-do-not-decide.py`) matches the line's raw
+        // text, and the rule it guards is "a host may not work out for
+        // itself what the core said"; a debug hook asking "is the index
+        // there yet" is not that rule. **This is an exception, not a
+        // convention** (supervisor, 2026-11-08): a product path that spelled
+        // it this way would be going round the gate, not being one.
         let loaded = feed.rows.endIndex
         let step = plan.step(rows: loaded, elapsed: elapsed)
         guard step == .wait else {
@@ -2323,6 +2381,20 @@ struct ControlRoomNativeChatView: View {
                 "rows: \(before, privacy: .public)->\(ids.count, privacy: .public) first=\(ids.first ?? "-", privacy: .public) last=\(ids.last ?? "-", privacy: .public) cause=\(kind, privacy: .public) pinned=\(self.camera.pinned ? 1 : 0, privacy: .public) offset=\(Int(self.offsetY), privacy: .public)"
             )
         }
+        // **A replaced map is not always a new document** (review M, Q3): a
+        // locate -- or a drag to a place that was not loaded -- swaps the
+        // whole map inside one group. The bar's high-water mark is the
+        // *group's*, so only a different group starts it again; zeroing on
+        // every `.replaced` threw away the depth the reader had just reached
+        // the moment they searched for a newer message.
+        let newDocument = !ControlRoomChatIndexBar.keepsReached(
+            mapGroup: barGroup, newGroup: feed.group
+        )
+        barGroup = feed.group
+        if newDocument, change == .appended || change == .replaced {
+            barReached = 0
+            barReachedSeeded = false
+        }
         switch change {
         case .appended:
             if feed.locatedAnchor != nil {
@@ -2343,12 +2415,8 @@ struct ControlRoomNativeChatView: View {
             // on rows from another group. (Within one map it stays frozen --
             // that is §25.2's rule.)
             rowHeightEstimateSettled = false
-            // **And a new high-water mark**: group B must not inherit group
-            // A's depth. §23.3's rule is one document's -- and the seed is
-            // dropped with it, or the new document's first plan would be
-            // `max`ed against the old depth.
-            barReached = 0
-            barReachedSeeded = false
+            // **A new high-water mark only for a new group** -- replaced
+            // above, beside the change, so a locate keeps the depth.
             rowHeightEstimatePasses = 0
             mapEpoch &+= 1
             if feed.locatedAnchor != nil {
@@ -2723,10 +2791,7 @@ struct ControlRoomNativeChatView: View {
     private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
         if !feed.rows.isEmpty, height > 0 {
             let order = feed.rows.map(\.id)
-            // **The bar speaks in points now** (design §23.3). `total` is the
-            // document's own depth today; the reader's high-water mark
-            // replaces it in the next step, and until then an eviction still
-            // shortens the bar.
+            // **The bar speaks in points** (design §23.3).
             let documentNow = Double(documentBottom(plan: listPlan, layout: scrollLayout(listPlan)))
             // **The total is the high-water mark**, not the document: a
             // document that sheds rows must not shrink the bar. `max` with
@@ -3046,11 +3111,70 @@ enum ControlRoomChatPlaceholder {
     /// The whole row a placeholder makes, used to answer "how many rows is
     /// one screen" before anything has been measured.
     static let rowHeight: CGFloat = 16 + 4 + bodyHeight + 8
-    /// **How long a landing may wait for its rows.** The real measurements of
-    /// `pending -> markdown` are p50 9 ms / p99 308 ms / max 495 ms, so this
-    /// is "the slowest row still arrives"; longer and the landing reads as
-    /// stuck.
-    static let cap: TimeInterval = 0.6
+}
+
+/// **The landing screen's wait, as values** (review M, Q4).
+///
+/// The placeholders end when every row drawn on the screen has settled --
+/// but a row can sit on a condition this screen does not control
+/// (`deferred:budget`, `plain:no-window`), and then a time-only cap would
+/// forbid waiting too long while waiting-for-ever would leave one grey
+/// screen with no content. So the wait is **by progress**: while any row's
+/// form is changing, wait; once nothing has changed for `stall`, give up and
+/// switch the whole screen once. A time-only cap cannot tell a slow screen
+/// from a stuck one -- it fires between two rows of the slow one too, and
+/// the rows then switch one at a time, which is the flicker the placeholders
+/// exist to remove.
+struct ControlRoomChatPlaceholderWait {
+    enum End: Equatable {
+        /// Every row drawn on the screen has settled.
+        case settled
+        /// Nothing on the screen has changed for `stall`.
+        case stalled
+    }
+
+    /// **1000 ms, and the number has to be read against the store's serial
+    /// queue**: p99 for one row is 308 ms and rows finish one after another,
+    /// so the gap between two *changes* approaches that figure. 400 ms (the
+    /// first number offered) left less than a tenth of a second of margin
+    /// and would read a healthy slow screen as stuck.
+    static let stall: TimeInterval = 1.0
+    /// How often the screen is looked at. Much shorter than `stall`, so the
+    /// switch lands close to the moment the wait ends.
+    static let tick: TimeInterval = 0.05
+
+    private var forms: [String: String] = [:]
+    private var lastChange: TimeInterval = 0
+    private var armed = false
+    /// The switch was made; later looks change nothing.
+    private(set) var finished = false
+
+    /// One look. `forms` is what the screen's drawn rows carry now, `settled`
+    /// says every one of them has settled, `at` is any monotonic clock in
+    /// seconds. Returns the end when this look ends the wait, once.
+    mutating func look(
+        forms now: [String: String],
+        settled: Bool,
+        at time: TimeInterval
+    ) -> End? {
+        guard !finished else { return nil }
+        if !armed {
+            // The clock starts when the screen first exists, not when the
+            // jump was asked for.
+            armed = true
+            lastChange = time
+        } else if now != forms {
+            lastChange = time
+        }
+        forms = now
+        if settled {
+            finished = true
+            return .settled
+        }
+        guard time - lastChange >= Self.stall else { return nil }
+        finished = true
+        return .stalled
+    }
 }
 
 /// The plan behind `CHAT_AUTO_SCROLL`.

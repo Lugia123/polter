@@ -625,19 +625,42 @@ final class ControlRoomChatFeed: ObservableObject {
                 // window's top. **That was the real cause of "always comes
                 // back at the latest"; clearing the anchor in `stop()` was
                 // only half of it.**
-                if let saved = readingAnchor, recentre(on: saved) {
-                    armLive()
-                } else {
-                    // **§23.1 rule 3, said out loud**: the row is not in what
-                    // is loaded, so this resumption cannot reach it. Falling
-                    // back to the newest is allowed; doing it *silently* is
-                    // what made the old behaviour look like a decision.
-                    // **The anchor is kept** -- the next resume may have it.
-                    if let saved = readingAnchor {
+                if let saved = readingAnchor {
+                    if recentre(on: saved) {
+                        armLive()
+                    } else {
+                        // **§23.1 rule 3, said out loud**: the row is not in
+                        // what is loaded, so this resumption cannot reach it.
+                        // Falling back to the newest is allowed; doing it
+                        // *silently* is what made the old behaviour look
+                        // like a decision.
+                        //
+                        // **The fallback is a rebuild, not `goToLatest()`**
+                        // (review M, Q2). `goToLatest()` returns early when
+                        // the newer apron is empty -- which is exactly the
+                        // shape a located window leaves -- so this branch
+                        // used to *say* it fell back while doing nothing: the
+                        // anchor stayed stuck on a row the feed no longer
+                        // had, every resume logged the line below, and the
+                        // viewport stayed on the old window. A fresh first
+                        // screen is the one rebuild that reaches the
+                        // conversation's newest from a window that cannot
+                        // reach it, and it drops the anchor, so the next
+                        // resume starts from the top rule again.
                         Self.resumeLog.notice(
                             "resume: anchor-not-loaded id=\(saved, privacy: .public) → latest"
                         )
+                        returnToLatest()
+                        // The bootstrap arms live itself (`handleBegin`);
+                        // running on would arm a live read beside the one it
+                        // is starting.
+                        return
                     }
+                } else {
+                    // **No anchor is the not-seen rule**: there is no place
+                    // to keep, so the page comes back at the newest loaded
+                    // rows -- and `goToLatest()` is a no-op when it is
+                    // already there.
                     goToLatest()
                     armLive()
                 }

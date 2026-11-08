@@ -118,6 +118,18 @@ enum ControlRoomChatIndexBar {
         max(previous, top)
     }
 
+    /// **Whether a replaced map is still the same document** (review M, Q3).
+    ///
+    /// The high-water mark belongs to the **group**, not to the map: a locate
+    /// -- or a drag to a place that was not loaded -- swaps the whole map
+    /// inside one group, and zeroing on every `.replaced` threw the reader's
+    /// depth away the moment they searched for something. A different group
+    /// is a different document, and only that starts the mark again.
+    static func keepsReached(mapGroup: String?, newGroup: String?) -> Bool {
+        guard let mapGroup, let newGroup else { return false }
+        return mapGroup == newGroup
+    }
+
     /// **Points per drawn tick.** The track can show `trackH / tickSpacing`
     /// marks; past that one mark stands for a run of points and a drag moves
     /// in those steps. Row space said "N rows a step"; this says points, and
