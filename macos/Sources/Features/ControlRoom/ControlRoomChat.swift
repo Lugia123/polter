@@ -153,6 +153,11 @@ final class ControlRoomChatContainer: NSView {
             guard let i = chats.firstIndex(where: { $0.group == group }) else { continue }
             close(at: i, why: "more than four kept; looked at longest ago")
         }
+        // **The debug switch arms from here as well** (task 3070's
+        // instrument): `show` is what the chat page calls when it appears, and
+        // the version that armed only from `viewDidMoveToWindow` never printed
+        // a line. Idempotent -- `debugSwitchArmed` makes it a one-shot.
+        startDebugSwitchIfAsked()
     }
 
     /// The group whose chat is in front, as `show` last said.
@@ -287,14 +292,29 @@ final class ControlRoomChatContainer: NSView {
         debugSwitchArmed = true
         let afterMs = Double(env["CHAT_SWITCH_AFTER_MS"] ?? "") ?? 3000
         let backMs = Double(env["CHAT_SWITCH_BACK_AFTER_MS"] ?? "") ?? 4000
+        // **Armed says so** (the 16:35 run could not be read): a hook that ran
+        // and printed nothing looks exactly like one that never ran, and that
+        // is the reading that cost an hour. Everything this hook decides now
+        // leaves a line, including the ways it can refuse.
+        Ghostty.logger.notice(
+            "switchgroup: armed target=\(target, privacy: .public) from=\(self.front ?? "-", privacy: .public) after=\(Int(afterMs), privacy: .public) back=\(Int(backMs), privacy: .public) window=\(self.window == nil ? 0 : 1, privacy: .public)")
         DispatchQueue.main.asyncAfter(deadline: .now() + afterMs / 1000) { [weak self] in
             guard let self else { return }
             let from = self.front
             Ghostty.logger.notice(
                 "switchgroup: to=\(target, privacy: .public) from=\(from ?? "-", privacy: .public)")
             self.show(target)
+            guard self.front == target else {
+                Ghostty.logger.notice(
+                    "switchgroup: skipped reason=not-shown target=\(target, privacy: .public) front=\(self.front ?? "-", privacy: .public) ended=\(self.ended.contains(target) ? 1 : 0, privacy: .public)")
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + backMs / 1000) { [weak self] in
-                guard let self, let from else { return }
+                guard let self else { return }
+                guard let from else {
+                    Ghostty.logger.notice("switchgroup: skipped reason=no-from target=\(target, privacy: .public)")
+                    return
+                }
                 Ghostty.logger.notice("switchgroup: back=\(from, privacy: .public)")
                 self.show(from)
             }
