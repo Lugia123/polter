@@ -1374,17 +1374,29 @@ struct ControlRoomNativeChatView: View {
     private func startDebugSeekIfAsked() {
         guard !debugSeekArmed else { return }
         let env = ProcessInfo.processInfo.environment
-        guard let raw = env["CHAT_SEEK_DEPTH"], let depth = Double(raw), depth >= 0
-        else { return }
+        guard let raw = env["CHAT_SEEK_DEPTH"] else { return }
+        // **`+N` / `-N` is relative to the document as it is when the timer
+        // fires** (supervisor, 2026-11-08): an absolute depth cannot be
+        // guessed for a document that grows while the water mark rises --
+        // the 19:0x run asked for 14500 while the document had reached
+        // 15695, so the seek stayed inside it. `+2000` is "two thousand
+        // points past whatever the document is then", which is what the
+        // criterion actually means by "beyond".
+        let relative = raw.first == "+" || raw.first == "-"
+        let text = relative ? String(raw.dropFirst()) : raw
+        guard let value = Double(text), relative || value >= 0 else { return }
         debugSeekArmed = true
         let afterMs = Double(env["CHAT_SEEK_AFTER_MS"] ?? "") ?? 2000
         Self.windowLog.notice(
-            "seekdebug: armed depth=\(Int(depth), privacy: .public) after=\(Int(afterMs), privacy: .public)"
+            "seekdebug: armed depth=\(raw, privacy: .public) relative=\(relative ? 1 : 0, privacy: .public) after=\(Int(afterMs), privacy: .public)"
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + afterMs / 1000) {
+            let document = Double(self.liveDocumentHeight)
+            let depth = relative ? document + value : value
             Self.windowLog.notice(
-                "seekdebug: seek depth=\(Int(depth), privacy: .public)")
-            seek(toDepth: depth)
+                "seekdebug: seek depth=\(Int(depth), privacy: .public) document=\(Int(document), privacy: .public) relative=\(relative ? 1 : 0, privacy: .public)"
+            )
+            self.seek(toDepth: depth)
         }
     }
 
