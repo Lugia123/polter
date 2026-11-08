@@ -73,6 +73,13 @@ struct ControlRoomNativeChatView: View {
     /// left the bottom by itself. `nil` means "no reference": the next move
     /// is absolute (a jump, a rebase, a page's first projection).
     @State private var clipSeen: Double?
+    /// **Whether a clip origin has been written for this page yet** (task
+    /// 3071, third attempt). `offsetY` starts at 0 and 0 is also where a
+    /// document's top is, so the number cannot tell "not measured yet" from
+    /// "at the top" -- §5's two things that look alike need a flag. Written
+    /// with `offsetY` in `scrolled`, cleared when the page appears; until it
+    /// is set the index bar has no position to draw.
+    @State private var clipOriginKnown = false
     /// **The ruler `clipSeen` belongs to.** The clip's y is a pixel in a
     /// document whose row heights change when a page is measured; a delta
     /// across two rulers is not the reader's movement. When the epoch has
@@ -391,6 +398,7 @@ struct ControlRoomNativeChatView: View {
             // there is no landing action that could fail and be lost.
             camera = ControlRoomChatCamera.State(place: nil, pinned: true)
             clipSeen = nil
+            clipOriginKnown = false
             newBelow = false
             pendingReturnToLatest = false
             landedLocate = nil
@@ -1932,6 +1940,14 @@ struct ControlRoomNativeChatView: View {
         }
         let contentChanged = abs(content - contentH) > 0.5
         offsetY = y
+        // **The origin is written here and nowhere else** (task 3071), and
+        // **only for a document that has rows in it**: the callback that runs
+        // before the first screen (an empty document, so an origin of 0) is
+        // not an origin for anything -- the 15:5x run's bar drew `total - 0`
+        // from exactly that 0. The flag is set in the same statement as
+        // `offsetY`, so a body pass that sees a stale 0 also sees the flag
+        // unset.
+        if !feed.rows.isEmpty { clipOriginKnown = true }
         viewportH = viewport
         contentH = content
         let bottom = ControlRoomChatAnchor.isAtBottom(
@@ -2967,13 +2983,16 @@ struct ControlRoomNativeChatView: View {
     @ViewBuilder
     private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
         // **A bar with no position is not drawn** (task 3071, the first-frame
-        // flash). Before the first clip callback there is no origin, and the
-        // depth the arithmetic would use is `total - 0` -- the oldest end, on
-        // two numbers that are the same size, which the fraction can only
-        // read as 0. The bar appears when it has something true to say: a
-        // place from the camera, an origin from the clip, or a nonzero pixel
-        // offset. Its first `chat-bar` line is then a real position.
-        let hasPosition = clipSeen != nil || camera.place != nil || offsetY > 0
+        // flash). Before this page's first clip callback there is no origin,
+        // and the depth the arithmetic would use is `total - 0` -- the oldest
+        // end, on two numbers that are the same size, which the fraction can
+        // only read as 0. **The test is the flag, not the number** (§5): the
+        // 15:5x run had `pinned=0`, a place, `clipSeen` set and `offsetY == 0`
+        // all at once, so every "is there a position" shorthand said yes
+        // while the pixels had not caught up. `clipOriginKnown` is written by
+        // the callback that writes `offsetY`, so a body pass that cannot see
+        // the origin also cannot see the flag.
+        let hasPosition = clipOriginKnown
         if !feed.rows.isEmpty, height > 0, hasPosition {
             let order = feed.rows.map(\.id)
             // **The bar speaks in points** (design §23.3), and **on one

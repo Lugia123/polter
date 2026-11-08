@@ -157,6 +157,8 @@ final class ControlRoomChatContainer: NSView {
 
     /// The group whose chat is in front, as `show` last said.
     private var front: String?
+    /// The debug switch (`CHAT_SWITCH_GROUP`) is armed once per container.
+    private var debugSwitchArmed = false
 
     /// Hidden but the one in front; and the core told which one is in
     /// sight, which needs a window -- `show` comes from the page's
@@ -266,6 +268,37 @@ final class ControlRoomChatContainer: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         applyVisibility()
+        startDebugSwitchIfAsked()
+    }
+
+    /// **`CHAT_SWITCH_GROUP` / `CHAT_SWITCH_AFTER_MS` /
+    /// `CHAT_SWITCH_BACK_AFTER_MS`** (task 3070's instrument).
+    ///
+    /// The check this exists for -- leave a group and come back -- cannot be
+    /// driven by synthetic clicks (they do not reach SwiftUI's rows; the
+    /// terminal's own rule), so it leaves and comes back through the same
+    /// `show(_:)` the group list uses, and says so:
+    /// `switchgroup: to=… from=…` and then `switchgroup: back=…`. Absent the
+    /// variable nothing is read and no timer is armed.
+    private func startDebugSwitchIfAsked() {
+        guard !debugSwitchArmed else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let target = env["CHAT_SWITCH_GROUP"], !target.isEmpty else { return }
+        debugSwitchArmed = true
+        let afterMs = Double(env["CHAT_SWITCH_AFTER_MS"] ?? "") ?? 3000
+        let backMs = Double(env["CHAT_SWITCH_BACK_AFTER_MS"] ?? "") ?? 4000
+        DispatchQueue.main.asyncAfter(deadline: .now() + afterMs / 1000) { [weak self] in
+            guard let self else { return }
+            let from = self.front
+            Ghostty.logger.notice(
+                "switchgroup: to=\(target, privacy: .public) from=\(from ?? "-", privacy: .public)")
+            self.show(target)
+            DispatchQueue.main.asyncAfter(deadline: .now() + backMs / 1000) { [weak self] in
+                guard let self, let from else { return }
+                Ghostty.logger.notice("switchgroup: back=\(from, privacy: .public)")
+                self.show(from)
+            }
+        }
     }
 
     /// `front`, and one group a chat -- **made natively when this build has
