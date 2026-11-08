@@ -1592,6 +1592,62 @@ struct ControlRoomChatFeedTests {
         _ = polls
     }
 
+    /// **A fallback anchor is not "the reader was here"** (task 3070): a
+    /// merged page writes `readingAnchor` so trim keeps its rows, and a place
+    /// stored from that would land a person who never read anything at an
+    /// arbitrary row. Only the view's own word counts.
+    @Test func testAMergedPageDoesNotCountAsAReaderPlace() {
+        let rig = Rig()
+        var polls = 0
+        rig.door.reply = { request in
+            switch Door.method(request) {
+            case "chat_history_begin":
+                return .answer(self.begin(snapshot: []))
+            case "chat_history_poll":
+                polls += 1
+                if polls == 1 {
+                    return .answer(self.ready(
+                        messages: [self.message(anchor: "p:10")],
+                        stop: "full", token: self.olderToken
+                    ))
+                }
+                return .answer(self.ready(
+                    messages: [self.message(anchor: "p:8"), self.message(anchor: "p:9")],
+                    stop: "at_end", token: nil
+                ))
+            default:
+                return .notReady
+            }
+        }
+        rig.feed.start(group: "polter")
+        rig.scheduler.run(0.2)
+        rig.feed.stop()
+        rig.feed.start(group: "polter")
+        rig.feed.loadOlder()
+        rig.scheduler.run(0.2)
+
+        #expect(rig.feed.aboveCount == 2)
+        // There is an anchor (the merge fallback wrote one), and it is not a
+        // place anybody reported.
+        #expect(rig.feed.savedReading != nil)
+        #expect(!rig.feed.readingWasReported)
+
+        rig.feed.reading(anchor: "p:10", offset: 3)
+        #expect(rig.feed.readingWasReported)
+        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 3))
+    }
+
+    /// **A restored place is also the reading anchor** (task 3070): the
+    /// stop/start path and the view's adopt read the same pair, and the
+    /// restore itself is not a reader's word.
+    @Test func testARestoredPlaceIsTheReadingAnchor() {
+        let rig = Rig()
+        rig.feed.restore(.init(id: "p:10", offset: 7))
+        #expect(rig.feed.restoredPlace == .init(id: "p:10", offset: 7))
+        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 7))
+        #expect(!rig.feed.readingWasReported)
+    }
+
     /// **An anchor nobody has is rebuilt, not left stuck** (review M, Q2).
     ///
     /// `goToLatest()` returns early when the newer apron is empty -- the

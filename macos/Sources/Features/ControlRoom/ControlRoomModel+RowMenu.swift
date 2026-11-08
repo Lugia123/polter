@@ -398,6 +398,13 @@ extension ControlRoomModel {
         }
         do {
             try perform(.renameGroup(from: r.row, to: to))
+            // **The place a person was reading moves with the name** (task
+            // 3070). The core's answer is the only signal that the rename
+            // happened: the name is a group's identity, so nothing else
+            // remembers the old one. Through a closure because the container
+            // lives on the side that has real terminals (this file is compiled
+            // without it -- `mac-logic-tests` drops the model's handle).
+            onGroupRenamed?(r.row, to)
             renaming = nil
             // Selected again once the core lists it by its new name.
             if selection == r.row { madeGroup = to }

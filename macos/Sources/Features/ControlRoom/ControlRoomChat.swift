@@ -57,6 +57,10 @@ final class ControlRoomChatContainer: NSView {
 
     /// The one looked at longest ago first (`ControlRoomChatRules.lookedAt`).
     private var chats: [Chat] = []
+    /// **Where the last few groups were left** (task 3070): a chat that closes
+    /// takes its feed's reading anchor with it, and the container is what
+    /// outlives that. Bounded and least-recently-used inside the type.
+    private var readingPlaces = ControlRoomChatReadingPlaces()
     /// The groups whose chat's program ended.
     private(set) var ended: Set<String> = []
     /// What changed `ended`, for the page to draw again.
@@ -276,6 +280,13 @@ final class ControlRoomChatContainer: NSView {
         guard let ghostty, let app = ghostty.app else { return nil }
         if let askCore {
             let feed = ControlRoomChatFeed(ask: askCore)
+            // **A chat made again starts where it was closed** (task 3070):
+            // the store is the container's, so it outlives the feed this
+            // replaces. A group with no entry -- opened and never read --
+            // seeds nothing, and opens at the newest like any first screen.
+            if let place = readingPlaces.get(group) {
+                feed.restore(.init(id: place.id, offset: place.offset))
+            }
             let search = ControlRoomChatSearchFeed(ask: askCore)
             let pane = ControlRoomNativeChatPane(
                 group: group,
@@ -331,7 +342,7 @@ final class ControlRoomChatContainer: NSView {
         chats.first { $0.group == group }?.feed
     }
 
-    private func close(at i: Int, why: String) {
+    private func close(at i: Int, why: String, keepingPlace: Bool = true) {
         // **Asked before it leaves `chats`** (group seq 289, M4b 4): after,
         // `keyboardHolder` -- which looks among `chats` -- could never name
         // it, and a chat whose program ended kept the keyboard as it went.
@@ -342,6 +353,17 @@ final class ControlRoomChatContainer: NSView {
             return held === here
         } ?? false
         let chat = chats.remove(at: i)
+        // **The place goes with the group** (task 3070): the feed dies with
+        // the chat, so this is the last moment it can be read. Only a place a
+        // reader reported -- `readingAnchor` also has a merge fallback, and a
+        // group opened and left unread is the counter-case. A group that is
+        // *gone* (renamed, deleted, archived) keeps none: a renamed one was
+        // moved by `rename(from:to:)` before this ran.
+        if keepingPlace, chat.feed?.readingWasReported == true,
+           let place = chat.feed?.savedReading {
+            readingPlaces.put(
+                .init(id: place.id, offset: place.offset), for: chat.group)
+        }
         if heldKeyboard { takeKeyboard(out: chat, why: "closed") }
         // A native chat's polling stops with it (task 2791): a chat that is
         // gone must not go on asking the core.
@@ -378,11 +400,28 @@ final class ControlRoomChatContainer: NSView {
         show(group)
     }
 
+    /// **The core accepted a rename: the place moves with the name** (task
+    /// 3070). Read from the open chat first -- the `prune` that follows closes
+    /// it *without* keeping a place, because a group that is gone must not
+    /// leave one under a name nothing will ask for again.
+    func rename(from old: String, to new: String) {
+        if let chat = chats.first(where: { $0.group == old }),
+           chat.feed?.readingWasReported == true,
+           let place = chat.feed?.savedReading {
+            readingPlaces.put(
+                .init(id: place.id, offset: place.offset), for: old)
+        }
+        readingPlaces.renamed(from: old, to: new)
+    }
+
     /// The chats of groups `alive` no longer knows -- deleted, renamed,
     /// archived -- go.
     func prune(_ alive: (String) -> Bool) {
         for i in chats.indices.reversed() where !alive(chats[i].group) {
-            close(at: i, why: "its group is gone")
+            // **A gone group keeps no place**: deleted, archived, or renamed
+            // (whose place `rename(from:to:)` already moved). Capturing here
+            // would put it back under the old name.
+            close(at: i, why: "its group is gone", keepingPlace: false)
         }
         let gone = ended.filter { !alive($0) }
         if !gone.isEmpty {

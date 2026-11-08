@@ -366,6 +366,29 @@ final class ControlRoomChatFeed: ObservableObject {
         readingAnchor.map { ControlRoomChatCamera.Place(id: $0, offset: readingOffset) }
     }
 
+    /// **Whether a reader ever said where they were.** `readingAnchor` is also
+    /// written as a *fallback* when a page merges (`mergeHistory`), so a chat
+    /// that was opened and never scrolled still has one -- and a place kept
+    /// from that would land a person who never read anything at an arbitrary
+    /// row. Only `reading(anchor:offset:)` -- the view's own word -- sets
+    /// this (task 3070).
+    private(set) var readingWasReported = false
+
+    /// **The place a closed chat left behind**, seeded by the container when
+    /// the chat is made again (task 3070). Nil for a chat that was never
+    /// closed, which is every chat in the normal stop/start path: that path
+    /// keeps `readingAnchor` and does not touch this.
+    private(set) var restoredPlace: ControlRoomChatCamera.Place?
+
+    /// Seed a chat made again with the place its closed self was left at.
+    /// **It also becomes the reading anchor**, so the stop/start path and the
+    /// view's `savedReading` adopt see the same place.
+    func restore(_ place: ControlRoomChatCamera.Place) {
+        restoredPlace = place
+        readingAnchor = place.id
+        readingOffset = place.offset
+    }
+
     /// Whether a page older than the window can be asked for now. A page
     /// already out is not asked for again: the top edge calls `loadOlder` on
     /// every scroll event while the reader stays there, so this is what keeps
@@ -1267,6 +1290,9 @@ final class ControlRoomChatFeed: ObservableObject {
     func reading(anchor id: String?, offset: Double = 0) {
         readingAnchor = id
         readingOffset = offset
+        // **The view's own word** -- see `readingWasReported`: this is the
+        // only writer that means "a reader was here".
+        if id != nil { readingWasReported = true }
     }
 
     // MARK: - The window (task 3016 R4, amended by review C)

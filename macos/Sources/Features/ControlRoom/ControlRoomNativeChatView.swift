@@ -144,6 +144,10 @@ struct ControlRoomNativeChatView: View {
     /// **A seek waiting for an `around` to land on this id**, so a refusal can
     /// be said out loud and fall back to the oldest row still loaded.
     @State private var pendingSeekAnchor: String?
+    /// **The place a closed chat left, while its `around` is out** (task
+    /// 3070): the landing restores the id **and the offset**, which a locate's
+    /// centring would throw away.
+    @State private var pendingRestore: ControlRoomChatCamera.Place?
     /// **The first valid reading is taken as it is**, not `max`ed against a
     /// zero: `max(0, depth)` publishes whatever the very first frame
     /// computed, and the first frame's document is not the one that settles
@@ -422,6 +426,19 @@ struct ControlRoomNativeChatView: View {
                 Self.windowLog.notice(
                     "jumpdebug: missed anchor=\(pending, privacy: .public) trouble=\(trouble, privacy: .public)"
                 )
+            }
+            // **A restore whose row the log has shed falls back to the
+            // newest, and says so** (task 3070): the group is still the
+            // reader's, the row is not; a silent landing at the top would
+            // read as "it worked".
+            if let restore = pendingRestore {
+                pendingRestore = nil
+                Self.windowLog.notice(
+                    "resume: anchor-lost id=\(restore.id, privacy: .public) trouble=\(trouble, privacy: .public) → latest"
+                )
+                camera = ControlRoomChatCamera.State(place: nil, pinned: true)
+                clipSeen = nil
+                syncClip("restore-lost")
             }
             // **A seek whose row the log has shed lands on the oldest row
             // that is still loaded, and says so** (design §27.4 rule 3, task
@@ -2551,6 +2568,20 @@ struct ControlRoomNativeChatView: View {
             camera.place = saved
             camera.pinned = false
             clipSeen = nil
+            // **A place the container kept across the chat being closed**
+            // (task 3070). Its row is often not in the first screen -- the
+            // reader was mid-history -- so it is fetched back the same way
+            // the index bar fetches a far place: an `around`, then the saved
+            // **offset** rather than a centring (a place is not a message).
+            if feed.restoredPlace?.id == saved.id {
+                Self.windowLog.notice(
+                    "resume: anchor=\(saved.id, privacy: .public) offset=\(Int(saved.offset), privacy: .public) from=closed"
+                )
+                if rowIndexByID[saved.id] == nil {
+                    pendingRestore = saved
+                    feed.jump(to: saved.id)
+                }
+            }
         }
         // **R1-8: a located window's way out lands when the new map does.**
         if pendingReturnToLatest, !isLocated {
@@ -2585,6 +2616,17 @@ struct ControlRoomNativeChatView: View {
         // land on (the feed has said `TargetNotInWindow`); asking again is
         // the loop M5 closes.
         guard rowIndexByID[target] != nil || !settled else { return }
+        // **A restore lands on its place, not in the middle** (task 3070):
+        // the reader left at a row *and* an offset, and §23.1's rule 2 is
+        // that pair, not a centred row.
+        if let restore = pendingRestore, restore.id == target {
+            pendingRestore = nil
+            camera.place = restore
+            camera.pinned = false
+            clipSeen = nil
+            syncClip("restore")
+            return
+        }
         // **A locate lands the target in the middle of the viewport**, not on
         // its top edge (design §15, rule 3): the reader picked this message
         // to read it, and half a screen of its context on each side is the
@@ -2924,7 +2966,15 @@ struct ControlRoomNativeChatView: View {
     /// scroll: no page, no group, no window.
     @ViewBuilder
     private func indexBar(_ theme: Look.Theme, height: CGFloat) -> some View {
-        if !feed.rows.isEmpty, height > 0 {
+        // **A bar with no position is not drawn** (task 3071, the first-frame
+        // flash). Before the first clip callback there is no origin, and the
+        // depth the arithmetic would use is `total - 0` -- the oldest end, on
+        // two numbers that are the same size, which the fraction can only
+        // read as 0. The bar appears when it has something true to say: a
+        // place from the camera, an origin from the clip, or a nonzero pixel
+        // offset. Its first `chat-bar` line is then a real position.
+        let hasPosition = clipSeen != nil || camera.place != nil || offsetY > 0
+        if !feed.rows.isEmpty, height > 0, hasPosition {
             let order = feed.rows.map(\.id)
             // **The bar speaks in points** (design §23.3), and **on one
             // ruler**: the scroll view's own document height
@@ -2956,8 +3006,16 @@ struct ControlRoomNativeChatView: View {
             // **No place is not the oldest end** (task 3071): before the
             // first callback there is no clip origin, and `document - 0` drew
             // the thumb at the oldest end for two frames. Following the
-            // newest means the viewport is one screen off the document's end.
-            let following = camera.pinned || clipSeen == nil
+            // newest -- or having no place at all -- means the viewport is
+            // one screen off the document's end, which is a position the
+            // fraction reads as the end rather than as the top.
+            let following = camera.pinned || camera.place == nil || clipSeen == nil
+            // **`topP` moving while `offset` stands still is a reading, not a
+            // position** (task 3071): `cameraDepth` takes the camera row's y
+            // from `frames`, and those are still being measured at the bottom
+            // -- ±90 points of it, with the thumb clamped at the end
+            // throughout. Do not chase it as a jump; the thumb's own value is
+            // the position.
             let depth = cameraDepth(order: order, frames: frames, documentBottom: documentNow)
                 ?? (following
                     ? ControlRoomChatIndexBar.depthFollowingNewest(

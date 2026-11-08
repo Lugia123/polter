@@ -49,6 +49,50 @@ struct ChatTests {
         order = C.lookedAt("a", in: order)
         #expect(C.overKept(order + ["d", "e"], front: "e") == ["b"])
     }
+
+    // MARK: - The places a closed chat leaves (task 3070)
+
+    @Test func testAPlaceIsKeptUnderItsGroupAndCappedAtEight() {
+        var places = ControlRoomChatReadingPlaces()
+        #expect(places.get("polter") == nil)
+        places.put(.init(id: "p:499", offset: 12), for: "polter")
+        #expect(places.get("polter") == .init(id: "p:499", offset: 12))
+        for i in 0..<ControlRoomChatReadingPlaces.capacity {
+            places.put(.init(id: "p:\(i)", offset: 0), for: "g\(i)")
+        }
+        // Eight are remembered, and the first put is the one that went.
+        #expect(same(places.count, ControlRoomChatReadingPlaces.capacity))
+        #expect(places.get("polter") == nil)
+        #expect(places.get("g0") != nil)
+    }
+
+    /// **Asking counts as use**: the group a person came back to is not the
+    /// one evicted next, however long ago its place was put.
+    @Test func testReadingAPlaceAgainKeepsItOutOfTheEviction() {
+        var places = ControlRoomChatReadingPlaces()
+        for i in 0..<ControlRoomChatReadingPlaces.capacity {
+            places.put(.init(id: "p:\(i)", offset: 0), for: "g\(i)")
+        }
+        // `g0` was the oldest put; coming back to it makes `g1` the oldest.
+        #expect(places.get("g0") != nil)
+        places.put(.init(id: "p:9", offset: 0), for: "g9")
+        #expect(places.get("g0") != nil)
+        #expect(places.get("g1") == nil)
+    }
+
+    /// **A rename moves a place, it does not copy it**: the old name has no
+    /// entry afterwards, and the new one has the pair.
+    @Test func testARenameMovesThePlaceToTheNewName() {
+        var places = ControlRoomChatReadingPlaces()
+        places.put(.init(id: "p:499", offset: 12), for: "web-app")
+        places.renamed(from: "web-app", to: "store")
+        #expect(places.get("web-app") == nil)
+        #expect(places.get("store") == .init(id: "p:499", offset: 12))
+        // A rename of a group with no place changes nothing.
+        places.renamed(from: "nope", to: "other")
+        #expect(places.get("other") == nil)
+        #expect(same(places.count, 1))
+    }
 }
 
 struct RequestTests {

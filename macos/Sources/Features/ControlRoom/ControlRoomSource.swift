@@ -280,6 +280,12 @@ final class ControlRoomModel: ObservableObject {
     var perform: (ControlRoomActions.Act) throws -> Void = { _ in
         throw ControlRoomActions.Refusal(name: "NoCore")
     }
+    /// **The core accepted a rename: `(old, new)`** (task 3070). The chat
+    /// page's container carries a group's reading place with its name, and a
+    /// name is a group's identity (`GroupRename.zig`), so it has to be told
+    /// when that identity moves. Via a closure because the container lives on
+    /// the side with real terminals, which this file is compiled without.
+    var onGroupRenamed: ((String, String) -> Void)?
     /// Why the last "start a supervisor" was not done, and for which
     /// group: said on the right-hand side, under the button, until they
     /// try again or look at another group.

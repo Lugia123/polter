@@ -173,6 +173,12 @@ final class ControlRoomController: NSWindowController, NSWindowDelegate, TabGrou
         // `include/ghostty.h`, exported from `src/apprt/embedded.zig`.
         chats.askCore = ControlRoomChatCoreAdapter.ask(ghostty)
         chats.onEnded = { [weak self] ended in self?.model.chatEnded = ended }
+        // **A renamed group keeps the place its chat was left at** (task
+        // 3070): the name is the core's identity, so the store's key has to
+        // move with it -- and the model is where the rename's answer lands.
+        model.onGroupRenamed = { [weak chats] old, new in
+            chats?.rename(from: old, to: new)
+        }
         // Out of a chat, the keyboard goes to the list, as on Windows the
         // panel takes it: arrow keys move among the groups at once.
         chats.onKeyboardLeft = { [weak self] in self?.giveListTheKeyboardIfNobodyHasIt() }
