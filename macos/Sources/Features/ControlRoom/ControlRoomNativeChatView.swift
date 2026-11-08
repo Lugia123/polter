@@ -3081,8 +3081,19 @@ struct ControlRoomNativeChatView: View {
         // the newest line; reading the zero would write a mid-document `b`
         // into the bar for the first frames.
         let derived: Int
-        if camera.pinned || !clipOriginKnown {
-            derived = 1
+        // **An origin outside this table is the previous document's.** A rows
+        // change (a slide, a page landing) re-plans the window before the
+        // next clip callback moves the origin, so for one pass the table is
+        // the new one and `offsetY` still names a y in the old one. Read as a
+        // position, that y is past the end of the new document and comes back
+        // as line 1 -- the bar flashed from `b=50` to `b=1` and back during a
+        // resize (2026-11-09). Nothing to read is better than a wrong answer:
+        // keep the last line and let the callback that follows say the truth.
+        let contentBottomNow = table.contentBottom
+        let originBelongsHere = offsetY >= -1
+            && CGFloat(offsetY) <= contentBottomNow - viewportH + 1
+        if camera.pinned || !clipOriginKnown || !originBelongsHere {
+            derived = (camera.pinned || !clipOriginKnown) ? 1 : bottomLine
         } else {
             derived = table.line(viewportTop: offsetY, viewport: viewportH) ?? bottomLine
         }

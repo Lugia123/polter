@@ -328,12 +328,22 @@ private struct ControlRoomChatBlockScroll<Content: View>: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ControlRoomChatBlockScrollView {
         let view = ControlRoomChatBlockScrollView()
-        view.content = AnyView(content)
+        view.content = hosted
         return view
     }
 
     func updateNSView(_ view: ControlRoomChatBlockScrollView, context: Context) {
-        view.content = AnyView(content)
+        view.content = hosted
+    }
+
+    /// **Left-aligned even when the block is wider than its text.** The host
+    /// is as wide as the widest of the content and the clip; a `Text` with
+    /// `fixedSize(horizontal:)` is narrower than that whenever the block does
+    /// not need to scroll, and SwiftUI's default placement inside the host is
+    /// the centre -- which put short code blocks in the middle of their box
+    /// (seen on the real app 2026-11-09, the `struct Place` block).
+    private var hosted: AnyView {
+        AnyView(content.frame(maxWidth: .infinity, alignment: .leading))
     }
 
     /// **The width is the column's; the height is the content's.** Nothing
