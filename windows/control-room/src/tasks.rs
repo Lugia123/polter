@@ -535,7 +535,7 @@ pub(crate) mod tests {
                             unsaid.push(what);
                         }
                     }
-                    let at = crate::tasks_scene::layout(&t, 600.0, 700.0, 0.0, &crate::look::DARK, 1.0, &measure);
+                    let at = crate::tasks_scene::layout(&t, 600.0, 700.0, 0.0, &crate::look::DARK, 1.0, &measure, &|s: &str| s.to_string());
                     let _ = crate::tasks_scene::build(&t, &at, &crate::look::DARK, 1.0, None, true, None, &measure);
                     checked += 1;
                 }

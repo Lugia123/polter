@@ -1327,6 +1327,13 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
         unsafe { text_width(dc, font, text) as f64 / scale.max(0.1) }
     };
     let origin = Px { scale, ox: at.ox + at.len(page.x), oy: at.oy + at.len(page.y) };
+    // **The host's `tr`, handed to the page** (task 3157): the card labels,
+    // the seats' and the worktree's words are msgids `tasks_scene` marks
+    // with `n_`; without this the screen shows the English msgid even
+    // though `po/` has the translation. It is passed to `layout`, which is
+    // where those words are made and measured -- `build` only draws words
+    // the core sent and the detail `layout` already worked out.
+    let translate = |s: &str| tr(s);
     let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
     let mut typed_at: Option<RECT> = None;
     TASKS.with(|t| {
@@ -1336,18 +1343,18 @@ unsafe fn paint_tasks(dc: HDC, at: Px, page: Rect, theme: &Theme) {
             p.drawn = None;
             return;
         };
-        let mut lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+        let mut lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure, &translate);
         let max = lay.max_scroll();
         if p.scroll > max {
             p.scroll = max;
-            lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+            lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure, &translate);
         }
         if std::mem::take(&mut p.reveal) {
             if let Some(id) = p.selected {
                 let to = lay.reveal(id, p.scroll);
                 if to != p.scroll {
                     p.scroll = to;
-                    lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure);
+                    lay = tasks_scene::layout(data, page.w, page.h, p.scroll, theme, scale, &measure, &translate);
                 }
             }
         }

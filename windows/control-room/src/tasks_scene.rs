@@ -362,14 +362,17 @@ const LEAD_WORD: &str = n_("LEAD");
 
 /// The squad card's title, the mac host's words with the core's count
 /// (`{}` is where the count goes, as the other `n_` templates here have it).
-pub fn squad_title(seats: usize) -> String {
-    n_("Squad seat matrix ({} seats · adaptive)").replacen("{}", &seats.to_string(), 1)
+pub fn squad_title(seats: usize, tr: &dyn Fn(&str) -> String) -> String {
+    // **The template is translated, then the count goes in**: a catalogue's
+    // entry has its own `{}`, and substituting first would ask `tr` for a
+    // sentence no catalogue has.
+    tr(n_("Squad seat matrix ({} seats · adaptive)")).replacen("{}", &seats.to_string(), 1)
 }
 
 /// The tokens card's title: the core's total, as it sent it (a formatted
 /// size such as "110.6k"; the unit is the core's, nothing is added here).
-pub fn tokens_title(total: &str) -> String {
-    n_("Tokens used ({})").replacen("{}", total, 1)
+pub fn tokens_title(total: &str, tr: &dyn Fn(&str) -> String) -> String {
+    tr(n_("Tokens used ({})")).replacen("{}", total, 1)
 }
 
 /// One slice's width in a bar `w` wide: its percent of it, **and a percent
@@ -541,7 +544,7 @@ pub fn banner_height(d: &Detail) -> f64 {
 
 /// One seat: alias and LEAD, the terminal at the right, the slot's word,
 /// the role and the CLI -- the mac host's `seatTile`.
-fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
     let bg = tile_ground(theme);
     let mut out = vec![rrect(rect, card::TILE_RADIUS, bg, Some(tile_edge(bg, theme)))];
     let left = rect.x + card::TILE_PAD;
@@ -562,7 +565,8 @@ fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure) -> Vec<
     // The alias, then LEAD when it is the lead's seat.
     let alias_style = strong(l3(theme.text));
     let alias_w = measure(&s.alias, &alias_style);
-    let lead_w = if s.lead { measure(LEAD_WORD, &alias_style) + 2.0 * 4.0 } else { 0.0 };
+    let lead_word = tr(LEAD_WORD);
+    let lead_w = if s.lead { measure(&lead_word, &alias_style) + 2.0 * 4.0 } else { 0.0 };
     let alias_room = (right - term_w - (if term_w > 0.0 { 4.0 } else { 0.0 }) - left).max(0.0);
     out.push(text_at(Rect { x: left, y, w: alias_w.min(alias_room), h: card::ROW_H }, &s.alias, alias_style, Align::Left));
     if s.lead {
@@ -570,20 +574,24 @@ fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure) -> Vec<
         let pill_bg = if theme.dark { rgb(0xF5, 0x9E, 0x0B) } else { rgb(0xD9, 0x77, 0x06) };
         let fg = if theme.dark { BLACK } else { WHITE };
         out.push(rrect(pill, 3.0, pill_bg, None));
-        out.push(text_at(pill, LEAD_WORD, strong(l3(fg)), Align::Centre));
+        out.push(text_at(pill, &lead_word, strong(l3(fg)), Align::Centre));
     }
     y += card::ROW_H + card::TILE_SPACING;
 
     // The slot's word, with its dot; no word for a slot this build does not
     // know (`slot_word`).
     if let Some(word) = s.slot_word() {
+        // **The msgid becomes the row's word here**, the one place a seat's
+        // slot is drawn (task 3157): `slot_word` stays the table of msgids
+        // (`tasks.rs`) and this asks the host's `tr` for each.
+        let word = tr(word);
         let (fg, pill_bg) = seat_colours(&s.slot, bg, theme);
         let pill = Rect { x: left, y, w: (right - left).max(0.0), h: card::ROW_H };
         out.push(rrect(pill, 4.0, pill_bg, None));
         let dot = Rect { x: pill.x + 6.0, y: y + (card::ROW_H - card::DOT) / 2.0, w: card::DOT, h: card::DOT };
         out.push(rrect(dot, card::DOT / 2.0, fg, None));
         let word_x = dot.x + card::DOT + 5.0;
-        out.push(text_at(Rect { x: word_x, y, w: (pill.x + pill.w - 6.0 - word_x).max(0.0), h: card::ROW_H }, word, strong(l3(fg)), Align::Left));
+        out.push(text_at(Rect { x: word_x, y, w: (pill.x + pill.w - 6.0 - word_x).max(0.0), h: card::ROW_H }, &word, strong(l3(fg)), Align::Left));
         y += card::ROW_H + card::TILE_SPACING;
     }
 
@@ -593,10 +601,10 @@ fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure) -> Vec<
     out
 }
 
-fn squad_card(sq: &SquadDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn squad_card(sq: &SquadDetail, rect: Rect, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
     let bg = card_ground(theme);
     let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
-    out.push(card_title(&squad_title(sq.seats.len()), rect, theme));
+    out.push(card_title(&squad_title(sq.seats.len(), tr), rect, theme));
     if sq.seats.is_empty() {
         return out;
     }
@@ -607,57 +615,64 @@ fn squad_card(sq: &SquadDetail, rect: Rect, theme: &Theme, measure: Measure) -> 
     let h = tile_height(sq.seats.iter().any(|s| s.slot_word().is_some()));
     for (i, s) in sq.seats.iter().enumerate() {
         let tile = Rect { x: rect.x + card::PAD + i as f64 * (tile_w + card::TILE_GAP), y, w: tile_w, h };
-        out.extend(seat_tile(s, tile, theme, measure));
+        out.extend(seat_tile(s, tile, theme, measure, tr));
     }
     out
 }
 
 /// A row of "label: value" in a card: the label at the left in the faint
 /// colour, the value in what is left.
-fn labelled_row(rect: Rect, label: &str, value: &str, value_style: Style, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn labelled_row(rect: Rect, label: &str, value: &str, value_style: Style, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
+    // A card's label is a host msgid: asked of `tr` before it is measured,
+    // so the width is the translated word's (task 3157).
+    let label = tr(label);
     let label_style = l3(theme.text_tertiary);
-    let lw = measure(label, &label_style);
+    let lw = measure(&label, &label_style);
     let x = rect.x + lw + 4.0;
     vec![
-        text_at(Rect { w: lw, ..rect }, label, label_style, Align::Left),
+        text_at(Rect { w: lw, ..rect }, &label, label_style, Align::Left),
         text_at(Rect { x, w: (rect.x + rect.w - x).max(0.0), ..rect }, value, value_style, Align::Left),
     ]
 }
 
-fn worktree_card(wt: &WorktreeDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn worktree_card(wt: &WorktreeDetail, rect: Rect, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
     let bg = card_ground(theme);
     let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
-    out.push(card_title(WORKTREE_TITLE, rect, theme));
+    out.push(card_title(&tr(WORKTREE_TITLE), rect, theme));
     let x = rect.x + card::PAD;
     let w = (rect.w - 2.0 * card::PAD).max(0.0);
     let mut y = rect.y + card::PAD + card::ROW_H + card::SPACING;
-    out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, BRANCH_LABEL, &wt.branch, strong(mono(theme.text)), theme, measure));
+    out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, BRANCH_LABEL, &wt.branch, strong(mono(theme.text)), theme, measure, tr));
     y += card::ROW_H + card::SPACING;
     // A tree only planned has no path, and no row is drawn for it (the
     // core sends ""): not an empty line.
     if !wt.path.is_empty() {
-        out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, PATH_LABEL, &wt.path, mono(theme.text_secondary), theme, measure));
+        out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, PATH_LABEL, &wt.path, mono(theme.text_secondary), theme, measure, tr));
         y += card::ROW_H + card::SPACING;
     }
     let label_style = l3(theme.text_tertiary);
-    let lw = measure(STATE_LABEL, &label_style);
-    out.push(text_at(Rect { x, y, w: lw, h: card::ROW_H }, STATE_LABEL, label_style, Align::Left));
+    let state_label = tr(STATE_LABEL);
+    let lw = measure(&state_label, &label_style);
+    out.push(text_at(Rect { x, y, w: lw, h: card::ROW_H }, &state_label, label_style, Align::Left));
     if let Some(word) = wt.state_word() {
+        // The state's msgid is asked of `tr` here, as the slot's is
+        // (`state_word` stays the table).
+        let word = tr(word);
         let accent = worktree_accent(theme);
         let style = strong(l3(accent));
         let tag_bg = if theme.dark { scene::over(bg, accent, 0.2) } else { scene::over(bg, rgb(0x02, 0x84, 0xC7), 0.12) };
-        let tag_w = (measure(word, &style) + 2.0 * 5.0).min((x + w - (x + lw + 4.0)).max(0.0));
+        let tag_w = (measure(&word, &style) + 2.0 * 5.0).min((x + w - (x + lw + 4.0)).max(0.0));
         let tag = Rect { x: x + lw + 4.0, y, w: tag_w, h: card::ROW_H };
         out.push(rrect(tag, 3.0, tag_bg, None));
-        out.push(text_at(tag, word, style, Align::Centre));
+        out.push(text_at(tag, &word, style, Align::Centre));
     }
     out
 }
 
-fn tokens_card(tk: &TokensDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn tokens_card(tk: &TokensDetail, rect: Rect, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
     let bg = card_ground(theme);
     let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
-    out.push(card_title(&tokens_title(&tk.total), rect, theme));
+    out.push(card_title(&tokens_title(&tk.total, tr), rect, theme));
     let x = rect.x + card::PAD;
     let w = (rect.w - 2.0 * card::PAD).max(0.0);
     let mut y = rect.y + card::PAD + card::ROW_H + card::SPACING;
@@ -721,7 +736,7 @@ fn tokens_card(tk: &TokensDetail, rect: Rect, theme: &Theme, measure: Measure) -
 /// one** (`tasks::detail`): a task with no squad has no card, and a squad
 /// whose seats went unread is still a card with none in it -- two states,
 /// not one.
-fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: Measure) -> Vec<Draw> {
+fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: Measure, tr: &dyn Fn(&str) -> String) -> Vec<Draw> {
     let [squad_w, worktree_w, tokens_w] = banner_widths(w, d.squad.is_some(), d.worktree.is_some(), d.tokens.is_some());
     let mut out = Vec::new();
     let mut x = x0;
@@ -731,7 +746,7 @@ fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: M
     if let Some(sq) = &d.squad {
         if squad_w > 0.0 {
             let h = squad_height(sq);
-            out.extend(squad_card(sq, Rect { x, y: y0, w: squad_w, h }, theme, measure));
+            out.extend(squad_card(sq, Rect { x, y: y0, w: squad_w, h }, theme, measure, tr));
             x += squad_w;
             placed = true;
         }
@@ -742,7 +757,7 @@ fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: M
                 x += card::GAP;
             }
             let h = worktree_height(wt);
-            out.extend(worktree_card(wt, Rect { x, y: y0, w: worktree_w, h }, theme, measure));
+            out.extend(worktree_card(wt, Rect { x, y: y0, w: worktree_w, h }, theme, measure, tr));
             x += worktree_w;
             placed = true;
         }
@@ -753,7 +768,7 @@ fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: M
                 x += card::GAP;
             }
             let h = tokens_height(tk);
-            out.extend(tokens_card(tk, Rect { x, y: y0, w: tokens_w, h }, theme, measure));
+            out.extend(tokens_card(tk, Rect { x, y: y0, w: tokens_w, h }, theme, measure, tr));
         }
     }
     out
@@ -762,11 +777,20 @@ fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: M
 /// What the open task shows under its line, from `(x0, y0)` in a space
 /// `w` wide; and how tall it is. The banner (squad, worktree, tokens)
 /// comes first, above both columns, as the mac host's `VStack` has it.
-pub fn detail(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, scale: f64, measure: Measure) -> (Vec<Draw>, f64) {
+pub fn detail(
+    d: &Detail,
+    x0: f64,
+    y0: f64,
+    w: f64,
+    theme: &Theme,
+    scale: f64,
+    measure: Measure,
+    tr: &dyn Fn(&str) -> String,
+) -> (Vec<Draw>, f64) {
     let mut out = Vec::new();
     let banner = banner_height(d);
     let top = if banner > 0.0 {
-        out.extend(detail_banner(d, x0, y0, w, theme, measure));
+        out.extend(detail_banner(d, x0, y0, w, theme, measure, tr));
         y0 + banner + card::BANNER_GAP
     } else {
         y0
@@ -853,7 +877,16 @@ pub fn detail(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, scale: f64, m
 /// goal and the filter box at the top, then the list's viewport, then the
 /// keys' strip (#2083).
 #[allow(clippy::too_many_arguments)]
-pub fn layout(t: &Tasks, width: f64, height: f64, scroll: f64, theme: &Theme, scale: f64, measure: Measure) -> Layout {
+pub fn layout(
+    t: &Tasks,
+    width: f64,
+    height: f64,
+    scroll: f64,
+    theme: &Theme,
+    scale: f64,
+    measure: Measure,
+    tr: &dyn Fn(&str) -> String,
+) -> Layout {
     let x0 = k::PAD_X;
     let inner = (width - 2.0 * k::PAD_X).max(0.0);
     // A row more than one makes the goal a line taller each.
@@ -906,6 +939,7 @@ pub fn layout(t: &Tasks, width: f64, height: f64, scroll: f64, theme: &Theme, sc
                 theme,
                 scale,
                 measure,
+                tr,
             );
             drawn = draws;
             y += k::DETAIL_PAD_TOP + h + k::DETAIL_PAD_BOTTOM;
@@ -1267,6 +1301,13 @@ mod tests {
     use crate::tasks::decode;
     use crate::tasks::tests::{CLOSED, NULLS, OPEN, SQUAD};
 
+    /// The `tr` the existing tests pass: the catalogue is not consulted, so
+    /// the words stay the msgids they were written as. A test about the
+    /// lookup passes a marked one instead.
+    fn same(s: &str) -> String {
+        s.to_string()
+    }
+
     fn nominal(s: &str, style: &Style) -> f64 {
         let cells: usize = s.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
         cells as f64 * crate::look::stack_tab::NOMINAL_CELL_WIDTH * style.size / font::BODY
@@ -1296,7 +1337,7 @@ mod tests {
     #[test]
     fn the_open_task_is_lifted_with_its_detail_and_the_others_follow_it() {
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert_eq!((at.goal.y, at.head.y), (0.0, 28.0));
         assert_eq!(at.tasks[0].rect.y, 56.0);
         // #215 is second: a margin of glass before it.
@@ -1316,7 +1357,7 @@ mod tests {
     fn the_detail_is_as_tall_as_its_taller_column() {
         let t = decode(OPEN).unwrap();
         let d = t.open[1].detail.as_ref().unwrap();
-        let (_, h) = detail(d, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal);
+        let (_, h) = detail(d, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal, &same);
         // Left: label, three lines of wording, room, label, seven events and two gaps.
         let left = 24.0 + 3.0 * 20.0 + 12.0 + 24.0 + 7.0 * 24.0 + 2.0 * 20.0;
         assert_eq!(h, left);
@@ -1326,7 +1367,7 @@ mod tests {
         let mut short = d.clone();
         short.log.truncate(1);
         let short_left = 24.0 + 3.0 * 20.0 + 12.0 + 24.0 + 24.0;
-        let (_, h) = detail(&short, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal);
+        let (_, h) = detail(&short, 0.0, 0.0, 1000.0, &DARK, 1.0, &nominal, &same);
         assert!(h >= 24.0 + 4.0 * (20.0 + 20.0 + 12.0) && h > short_left, "{h}");
     }
 
@@ -1371,7 +1412,7 @@ mod tests {
     fn a_history_without_times_or_whos_is_drawn() {
         let drawn = |json: &str| {
             let t = decode(json).unwrap();
-            let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+            let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
             format!("{:?}", build(&t, &at, &DARK, 1.0, None, true, None, &nominal))
         };
         let (with, without) = (drawn(OPEN), drawn(NULLS));
@@ -1426,10 +1467,10 @@ mod tests {
     #[test]
     fn a_second_goal_row_makes_the_goal_a_line_taller() {
         let mut t = decode(OPEN).unwrap();
-        let one = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let one = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert_eq!((one.goal.h, one.head.y, one.goal_rows.len()), (k::GOAL_HEIGHT, k::GOAL_HEIGHT, 1));
         t.goal_lines = vec!["第 5 轮进行中（2026-10-22）：".into(), "- frontend：列表多选和工具条".into(), "- api: PATCH /api/tasks".into()];
-        let two = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let two = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert_eq!(two.goal_rows.len(), 2);
         assert_eq!(two.goal.h, k::GOAL_HEIGHT + k::BODY_LINE_HEIGHT);
         assert_eq!(two.head.y, one.head.y + k::BODY_LINE_HEIGHT);
@@ -1442,15 +1483,53 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), vec!["第 5 轮进行中（2026-10-22）：", "- frontend：列表多选和工具条"]);
         assert_eq!(rows[1].0 - rows[0].0, k::BODY_LINE_HEIGHT);
         t.goal_lines.clear();
-        let none = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let none = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert_eq!((none.goal.h, none.goal_rows.len()), (k::GOAL_HEIGHT, 0), "no goal keeps its room");
+    }
+
+    /// **The host's own words are looked up while they are made** (task
+    /// 3157). Every msgid `tasks_scene` marks with `n_` -- the three cards'
+    /// titles, the labels in them, the seats' slots, the worktree's state
+    /// and LEAD -- goes through the `tr` it is handed. A `tr` that marks
+    /// what it sees proves the lookup; **the identity `tr` below is the
+    /// negative control**: the same screen then carries the msgids, which is
+    /// exactly what Windows showed while `paint_tasks` passed no `tr`.
+    #[test]
+    fn the_hosts_words_are_looked_up_while_they_are_drawn() {
+        let marked = |s: &str| format!("«{s}»");
+        let t = decode(SQUAD).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &marked);
+        let d = build(&t, &at, &DARK, 1.0, None, true, None, &nominal);
+        let words: Vec<String> = texts(&d).into_iter().map(|(_, s)| s).collect();
+        for w in [
+            "«Squad seat matrix (3 seats · adaptive)»",
+            "«Its own worktree (isolated)»",
+            "«Tokens used (110.6k)»",
+            "«Branch:»",
+            "«Path:»",
+            "«State:»",
+            "«Ready»",
+            "«LEAD»",
+            "«Seated»",
+            "«Not seated yet»",
+            "«Seat left»",
+        ] {
+            assert!(words.iter().any(|s| s == w), "{w:?} was not drawn; got {words:?}");
+        }
+        // **The negative control**: no lookup, no marker -- and the msgid
+        // itself is on the screen.
+        let plain = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
+        let dp = build(&t, &plain, &DARK, 1.0, None, true, None, &nominal);
+        let plain_words: Vec<String> = texts(&dp).into_iter().map(|(_, s)| s).collect();
+        assert!(plain_words.iter().any(|s| s == "Branch:"), "{plain_words:?}");
+        assert!(!plain_words.iter().any(|s| s.contains('«')), "an identity `tr` must draw no marker: {plain_words:?}");
     }
 
     /// The state's symbol stands in the middle of its column.
     #[test]
     fn the_symbol_is_in_the_middle_of_its_column() {
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let d = build(&t, &at, &DARK, 1.0, None, true, None, &nominal);
         let [g, ..] = columns(at.tasks[0].rect);
         let ring = d.iter().find_map(|x| match x {
@@ -1464,7 +1543,7 @@ mod tests {
     fn the_rail_runs_from_the_first_dot_to_the_last_and_a_gap_is_dashed() {
         let t = decode(OPEN).unwrap();
         let d = t.open[1].detail.as_ref().unwrap();
-        let (draws, _) = detail(d, 0.0, 100.0, 1000.0, &DARK, 1.0, &nominal);
+        let (draws, _) = detail(d, 0.0, 100.0, 1000.0, &DARK, 1.0, &nominal, &same);
         let rails: Vec<(f64, f64, bool)> = draws
             .iter()
             .filter_map(|d| match d {
@@ -1487,7 +1566,7 @@ mod tests {
     #[test]
     fn a_press_finds_its_task_and_the_closed_line() {
         let t = decode(CLOSED).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert!(at.glass.is_none());
         let r = at.tasks[7].rect;
         assert_eq!(at.task_at(r.x + 1.0, r.y + 1.0), Some(t.closed[1].id));
@@ -1512,8 +1591,8 @@ mod tests {
     #[test]
     fn the_keys_have_a_strip_of_their_own_and_the_list_scrolls_above_it() {
         let t = decode(OPEN).unwrap();
-        let a = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
-        let b = layout(&t, 1200.0, 800.0, 50.0, &DARK, 1.0, &nominal);
+        let a = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
+        let b = layout(&t, 1200.0, 800.0, 50.0, &DARK, 1.0, &nominal, &same);
         // #2083, plan A: the strip is the page's width and 40 tall at its
         // bottom; the list is seen from under the goal to the strip's top.
         assert_eq!(a.strip, Rect { x: 0.0, y: 760.0, w: 1200.0, h: 40.0 });
@@ -1523,7 +1602,7 @@ mod tests {
         assert_eq!(a.content_height, b.content_height);
         assert_eq!(a.content_height, a.section.unwrap().y + 28.0 - a.viewport.y);
         // Nothing is pressed through the strip.
-        let tall = layout(&decode(CLOSED).unwrap(), 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal);
+        let tall = layout(&decode(CLOSED).unwrap(), 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal, &same);
         let under = tall.tasks.iter().find(|x| x.rect.y < tall.strip.y + 10.0 && x.rect.y + x.rect.h > tall.strip.y + 10.0).unwrap();
         assert_eq!(tall.task_at(under.rect.x + 1.0, tall.strip.y + 10.0), None);
     }
@@ -1535,18 +1614,18 @@ mod tests {
     fn the_selected_task_is_kept_a_line_inside_the_list() {
         let t = decode(CLOSED).unwrap();
         // 300 tall: the list is seen from 28 to 260.
-        let at = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal, &same);
         let id = |i: usize| at.tasks[i].id;
         assert_eq!(at.follow(id(0), 0.0), 0.0);
         // #7 is at 56 + 7 * 28 = 252: brought up so its bottom is a line
         // over the strip.
         let to = at.follow(id(7), 0.0);
-        let after = layout(&t, 1200.0, 300.0, to, &DARK, 1.0, &nominal);
+        let after = layout(&t, 1200.0, 300.0, to, &DARK, 1.0, &nominal, &same);
         assert_eq!(after.tasks[7].rect.y + 28.0, after.viewport.y + after.viewport.h - 28.0);
         // Going back up: a line's room over it.
-        let down = layout(&t, 1200.0, 300.0, 200.0, &DARK, 1.0, &nominal);
+        let down = layout(&t, 1200.0, 300.0, 200.0, &DARK, 1.0, &nominal, &same);
         let up = down.follow(id(3), 200.0);
-        let back = layout(&t, 1200.0, 300.0, up, &DARK, 1.0, &nominal);
+        let back = layout(&t, 1200.0, 300.0, up, &DARK, 1.0, &nominal, &same);
         assert_eq!(back.tasks[3].rect.y, back.viewport.y + 28.0);
         // Never past the ends.
         assert_eq!(at.follow(id(13), 0.0), at.max_scroll());
@@ -1558,18 +1637,18 @@ mod tests {
     #[test]
     fn the_open_one_comes_back_with_its_line_at_the_top() {
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal, &same);
         let open = at.tasks[1].clone();
         assert_eq!(at.glass.map(|g| g.y), Some(open.rect.y));
         // In sight with a line's room already: following would not move.
         assert_eq!(at.follow(open.id, 0.0), 0.0);
         let to = at.reveal(open.id, 0.0);
         assert!(to <= at.max_scroll());
-        let after = layout(&t, 1200.0, 300.0, to, &DARK, 1.0, &nominal);
+        let after = layout(&t, 1200.0, 300.0, to, &DARK, 1.0, &nominal, &same);
         // A line of room over it, as any other has (task 2124).
         assert_eq!(after.tasks[1].rect.y, after.viewport.y + 28.0);
         // Any other: as the arrow keys bring it.
-        let low = layout(&t, 1200.0, 300.0, 200.0, &DARK, 1.0, &nominal);
+        let low = layout(&t, 1200.0, 300.0, 200.0, &DARK, 1.0, &nominal, &same);
         assert_eq!(low.reveal(low.tasks[0].id, 200.0), low.follow(low.tasks[0].id, 200.0));
     }
 
@@ -1600,7 +1679,7 @@ mod tests {
     #[test]
     fn the_selected_task_wears_the_chip_and_its_bar() {
         let t = decode(CLOSED).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let r = at.tasks[2].rect;
         let rounds = |d: &[Draw]| -> Vec<(Rect, Rgba, Option<Rgba>)> {
             d.iter().filter_map(|x| match x {
@@ -1650,7 +1729,7 @@ mod tests {
         let t = decode(crate::tasks::tests::FILTER).unwrap();
         for theme in [&DARK, &crate::look::LIGHT] {
             for keys in [true, false] {
-                let at = layout(&t, 1200.0, 800.0, 0.0, theme, 1.0, &nominal);
+                let at = layout(&t, 1200.0, 800.0, 0.0, theme, 1.0, &nominal, &same);
                 let d = build(&t, &at, theme, 1.0, Some(at.tasks[0].id), keys, None, &nominal);
                 let chip = chip_colour(theme.terminal_background, theme, keys);
                 let ground = d.iter().find_map(|x| match x {
@@ -1689,7 +1768,7 @@ mod tests {
             }
         }
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 388.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 388.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let said: Vec<String> = texts(&build(&t, &at, &DARK, 1.0, None, true, None, &nominal)).into_iter().map(|(_, s)| s).collect();
         assert!(!said.contains(&"状态".to_string()) && !said.contains(&"负责人".to_string()) && !said.contains(&"多久没动".to_string()), "{said:?}");
     }
@@ -1699,7 +1778,7 @@ mod tests {
     #[test]
     fn a_filter_puts_its_box_under_the_goal_and_marks_what_it_found() {
         let t = decode(crate::tasks::tests::FILTER).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let f = at.filter.as_ref().unwrap();
         assert_eq!((f.field.y, f.field.h), (28.0 + 4.0, 28.0));
         assert_eq!(at.viewport.y, 28.0 + 4.0 + 28.0 + 8.0);
@@ -1715,7 +1794,7 @@ mod tests {
         assert!(said.contains(&"2 / 6 条".to_string()) && said.contains(&"清空".to_string()));
         // Nothing matched: what the core says of it, under the heading.
         let n = decode(crate::tasks::tests::NOMATCH).unwrap();
-        let nat = layout(&n, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let nat = layout(&n, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         assert!(nat.tasks.is_empty());
         let nd: Vec<String> = texts(&build(&n, &nat, &DARK, 1.0, None, true, None, &nominal)).into_iter().map(|(_, s)| s).collect();
         assert!(nd.contains(&"没有标题里含「弹窗」的任务".to_string()));
@@ -1726,11 +1805,11 @@ mod tests {
     #[test]
     fn the_right_hand_key_stays_and_the_left_ones_give_way() {
         let t = decode(OPEN).unwrap();
-        let wide = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let wide = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let r = wide.hint_closed.unwrap();
         assert_eq!(r.x + r.w, 1200.0 - 24.0);
         let said = |w: f64| -> Vec<String> {
-            let at = layout(&t, w, 800.0, 0.0, &DARK, 1.0, &nominal);
+            let at = layout(&t, w, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
             texts(&build(&t, &at, &DARK, 1.0, None, true, None, &nominal)).into_iter().filter(|(rect, _)| rect.y >= at.strip.y).map(|(_, s)| s).collect()
         };
         let all = said(1200.0);
@@ -1756,14 +1835,14 @@ mod tests {
     fn a_fade_says_there_is_more() {
         let t = decode(CLOSED).unwrap();
         let fades = |scroll: f64| -> Vec<bool> {
-            let at = layout(&t, 1200.0, 300.0, scroll, &DARK, 1.0, &nominal);
+            let at = layout(&t, 1200.0, 300.0, scroll, &DARK, 1.0, &nominal, &same);
             build(&t, &at, &DARK, 1.0, None, true, None, &nominal).iter().filter_map(|d| match d {
                 Draw::Fade { from_top, .. } => Some(*from_top),
                 _ => None,
             }).collect()
         };
         assert_eq!(fades(0.0), [false]);
-        let max = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal).max_scroll();
+        let max = layout(&t, 1200.0, 300.0, 0.0, &DARK, 1.0, &nominal, &same).max_scroll();
         assert_eq!(fades(max), [true]);
         assert_eq!(fades(max / 2.0), [true, false]);
     }
@@ -1779,7 +1858,7 @@ mod tests {
         assert_eq!(narrow[4].x + narrow[4].w, 617.0);
         // Its heading and its words are not drawn.
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 629.0 + 48.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 629.0 + 48.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let said: Vec<String> = texts(&build(&t, &at, &DARK, 1.0, None, true, None, &nominal)).into_iter().map(|(_, s)| s).collect();
         assert!(!said.contains(&"多久没动".to_string()) && !said.contains(&"17 分钟".to_string()));
     }
@@ -1787,7 +1866,7 @@ mod tests {
     #[test]
     fn every_word_drawn_is_the_cores_or_a_tasks_number() {
         let t = decode(OPEN).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let d = build(&t, &at, &DARK, 1.0, None, true, None, &nominal);
         let mut said: Vec<String> = texts(&d).into_iter().map(|(_, s)| s).collect();
         for d in &d {
@@ -1840,7 +1919,7 @@ mod tests {
     #[test]
     fn the_banner_sits_above_the_two_columns_and_says_the_cores_words() {
         let t = decode(SQUAD).unwrap();
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let d = t.open.iter().find_map(|x| x.detail.as_ref()).unwrap();
         let words = texts(&at.detail);
         let at_word = |w: &str| words.iter().find(|(_, s)| s == w).map(|(r, _)| *r);
@@ -1905,9 +1984,9 @@ mod tests {
     /// core's colour -- the pieces the page composes by.
     #[test]
     fn the_cards_titles_and_the_tokens_numbers_are_the_cores() {
-        assert_eq!(squad_title(3), "Squad seat matrix (3 seats · adaptive)");
-        assert_eq!(squad_title(0), "Squad seat matrix (0 seats · adaptive)");
-        assert_eq!(tokens_title("110.6k"), "Tokens used (110.6k)");
+        assert_eq!(squad_title(3, &same), "Squad seat matrix (3 seats · adaptive)");
+        assert_eq!(squad_title(0, &same), "Squad seat matrix (0 seats · adaptive)");
+        assert_eq!(tokens_title("110.6k", &same), "Tokens used (110.6k)");
         // A slice is its percent of the bar, and a percent this build
         // cannot mean does not run past the bar.
         assert_eq!((bar_span(200.0, 35), bar_span(200.0, 0), bar_span(200.0, 100), bar_span(200.0, 250)), (70.0, 0.0, 200.0, 200.0));
@@ -1924,14 +2003,14 @@ mod tests {
     #[test]
     fn no_squad_and_a_squad_whose_seats_did_not_arrive_are_two_pages() {
         let none = decode(OPEN).unwrap();
-        let at = layout(&none, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&none, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let said: Vec<String> = texts(&at.detail).into_iter().map(|(_, s)| s).collect();
         assert!(!said.iter().any(|s| s.starts_with("Squad seat matrix")), "no squad, no card: {said:?}");
         // The same answer with the seats taken away: the card is drawn.
         let broken = crate::reader::edited(&crate::json::parse(SQUAD).unwrap(), "open[1].detail.squad.seats", None);
         let t = crate::tasks::decode_value(&broken).unwrap();
         assert!(t.missing.iter().any(|m| m.ends_with("squad.seats")), "{:?}", t.missing);
-        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal, &same);
         let said: Vec<String> = texts(&at.detail).into_iter().map(|(_, s)| s).collect();
         assert!(said.contains(&"Squad seat matrix (0 seats · adaptive)".to_string()), "{said:?}");
     }
