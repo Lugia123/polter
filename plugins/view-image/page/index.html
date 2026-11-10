@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Image</title>
+<!--
+  The `view-image` plugin's preview page (task 3151).
+
+  **Read-only, and it says so by what it calls.** The page uses three of the
+  bridge's eight calls -- `info`, `read` and `look` -- and never `propose`,
+  `dirty`, `readRel`, `openPath` or `watch`. There is no edit button because
+  the manifest declares neither `edits` nor `hands_edit_to`, and nothing here
+  could write anyway.
+
+  **The bytes come from `window.polter`, not from a URL.** `read(offset,
+  length)` answers base64 of a span of the ticket's own file, and every byte
+  of it went through the core's `files_resolve(token, rel)`, which judges the
+  path against the ticket's scope. This page never builds a path and never
+  fetches one: no `fetch`, no `XMLHttpRequest`, no `<img src>` at a local
+  path. `connect-src 'none'` would stop a request; not making one is why that
+  policy is a second line rather than the only one.
+
+  **What is a picture is decided by the file's own first bytes (task 3117's
+  rule, task 3151 here), not by its name.** One small read (1 KiB) is taken
+  for the header; when it is not one of the formats below the page refuses
+  with a sentence and **reads nothing further** -- the body is never fetched.
+  A text file renamed `.png` lands here, which is the defect this page would
+  otherwise draw as a broken image.
+
+  **The image is shown from a `blob:` when the engine allows it, and from a
+  `data:` URL when it does not.** Both hosts' plugin-page policy is
+  `img-src 'self' data:` -- no `blob:` -- so the data form is the one the
+  policy names and the blob form is tried first only because it does not
+  double the bytes in a string. A picture that fails to load in either form
+  gets a sentence, never a silent blank.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    font-size: var(--size-body, 13px);
+    background: var(--well, Canvas); color: var(--text, CanvasText);
+  }
+  header {
+    flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line, rgba(128,128,128,.3));
+    color: var(--text-secondary, inherit);
+  }
+  header .name { color: var(--text, CanvasText); font-weight: 600; }
+  header .meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+  header .badge {
+    border: 1px solid var(--line, rgba(128,128,128,.4));
+    border-radius: var(--radius-card, 4px); padding: 0 5px;
+    color: var(--text-tertiary, inherit); font-size: .85em;
+  }
+  header .mode { color: var(--text-tertiary, inherit); font-size: .85em; }
+  main { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; }
+
+  /* The stage: a checkerboard, because the only thing that says a PNG is
+     transparent is what is behind it. */
+  .stage {
+    flex: 1 1 auto; min-width: 0; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+    background-color: #fff;
+    background-image:
+      linear-gradient(45deg, #dcdcdc 25%, transparent 25%, transparent 75%, #dcdcdc 75%),
+      linear-gradient(45deg, #dcdcdc 25%, transparent 25%, transparent 75%, #dcdcdc 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .stage { background-color: #2a2a2a; background-image:
+      linear-gradient(45deg, #3a3a3a 25%, transparent 25%, transparent 75%, #3a3a3a 75%),
+      linear-gradient(45deg, #3a3a3a 25%, transparent 25%, transparent 75%, #3a3a3a 75%); }
+  }
+  .stage img { display: block; cursor: zoom-in; }
+  body[data-fit="fit"] .stage img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  body[data-fit="actual"] .stage { align-items: flex-start; justify-content: flex-start; min-width: max-content; min-height: max-content; }
+  body[data-fit="actual"] .stage img { max-width: none; max-height: none; cursor: zoom-out; }
+
+  .notice {
+    margin: 10px 12px; padding: 8px 10px; align-self: flex-start;
+    border: 1px solid var(--line, rgba(128,128,128,.3));
+    border-radius: var(--radius-card, 4px);
+    background: var(--panel, transparent); color: var(--text-secondary, inherit);
+  }
+  .notice.problem { color: var(--problem, #c0392b); }
+  .empty { padding: 16px 12px; color: var(--text-tertiary, inherit); }
+
+  /* The refusal is the whole page, not a note beside a picture: nothing is
+     drawn, so nothing announces a picture that is not there. */
+  body.refused header { display: none; }
+  body.refused main { align-items: center; justify-content: center; }
+  .refusal { padding: 24px; text-align: center; color: var(--text-secondary, inherit); }
+</style>
+</head>
+<body data-fit="fit">
+<header>
+  <span class="name" id="name">&nbsp;</span>
+  <span class="badge" id="badge"></span>
+  <span class="meta" id="meta"></span>
+  <span class="mode" id="mode"></span>
+</header>
+<main>
+  <div class="stage" id="stage" hidden><img id="image" alt=""></div>
+  <div class="empty" id="empty"></div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // The most one `read` answers with. **The host's own ceiling rather than a
+  // number invented here**: `PreviewRoutes.readMax` is 4 MiB, and asking for
+  // more only comes back short.
+  var READ_MAX = 4 * 1024 * 1024;
+
+  // What is read to judge the header. 1 KiB, because an SVG may carry an XML
+  // declaration, a comment and a doctype before `<svg`; every binary format
+  // below needs its first 16 bytes.
+  var SNIFF = 1024;
+
+  // Past this the page says so and does not read at all: the bytes are held
+  // whole before they can be drawn, and this page takes 32 MiB.
+  var TOO_LARGE = 32 * 1024 * 1024;
+
+  var strings = {
+    en: {
+      loading: "Reading the image…",
+      size: "size",
+      empty: "This file is empty.",
+      notImage: "This is not a picture, so there is nothing to show here.",
+      tooLarge: "This image is {Size}, which is more than the {Limit} this preview will read.",
+      refused: "The preview could not be shown: {Why}",
+      noBridge: "This page was opened without the preview bridge, so the image cannot be read.",
+      cannotDraw: "The picture was read, but it could not be drawn.",
+      fit: "fit",
+      actual: "100%"
+    },
+    "zh-Hans": {
+      loading: "正在读取图片…",
+      size: "大小",
+      empty: "这个文件是空的。",
+      notImage: "这不是图片，没有可以显示的内容。",
+      tooLarge: "这张图有 {Size}，超过预览会读取的 {Limit}。",
+      refused: "没法显示这份预览：{Why}",
+      noBridge: "这个页面没有带着预览桥打开，所以读不到图片。",
+      cannotDraw: "图片读到了，但画不出来。",
+      fit: "适应",
+      actual: "100%"
+    }
+  };
+  var lang = (navigator.language || "en").toLowerCase();
+  var L = strings[lang.indexOf("zh") === 0 ? "zh-Hans" : "en"];
+  function say(key, vars) {
+    var s = L[key] || strings.en[key] || key;
+    if (!vars) return s;
+    for (var k in vars) s = s.split("{" + k + "}").join(vars[k]);
+    return s;
+  }
+
+  var el = {
+    name: document.getElementById("name"),
+    badge: document.getElementById("badge"),
+    meta: document.getElementById("meta"),
+    mode: document.getElementById("mode"),
+    stage: document.getElementById("stage"),
+    image: document.getElementById("image"),
+    empty: document.getElementById("empty")
+  };
+
+  function bytes(n) {
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    var units = ["B", "KB", "MB", "GB"], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + " " + units[i];
+  }
+
+  function failed(why) {
+    el.stage.hidden = true;
+    el.empty.className = "notice problem";
+    el.empty.textContent = say("refused", { Why: String(why) });
+  }
+
+  // ---- What the bytes are ------------------------------------------------
+  //
+  // **A name is not a picture** (task 3117's rule): the same judgement the
+  // Windows host's `image_kind` makes, on the file's own first bytes. SVG is
+  // the one format with no fixed signature -- it is text, so the prolog is
+  // skipped and the root element looked for.
+  //
+  // **This table is `test/fixtures/image-magic.tsv`, row for row**, and the
+  // test beside `Plugin.zig` holds the two together. A pattern is
+  // `prefix:<hex>` (the file starts with these bytes), `riff:<hex>` (RIFF at
+  // 0 and the form type at 8), `ftyp:<brand>|<brand>` (the ISO container's
+  // major brand at 8) or `svg` (the prolog rule below).
+  var MAGIC = [
+    ["image/png", "prefix:89504e470d0a1a0a"],
+    ["image/jpeg", "prefix:ffd8ff"],
+    ["image/gif", "prefix:474946383761"],
+    ["image/gif", "prefix:474946383961"],
+    ["image/webp", "riff:57454250"],
+    ["image/bmp", "prefix:424d"],
+    ["image/x-icon", "prefix:00000100"],
+    ["image/avif", "ftyp:avif|avis"],
+    ["image/tiff", "prefix:49492a00"],
+    ["image/tiff", "prefix:4d4d002a"],
+    ["image/svg+xml", "svg"]
+  ];
+
+  function hexBytes(hex) {
+    var out = new Uint8Array(hex.length >> 1);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  function at(head, want, where) {
+    if (head.length < where + want.length) return false;
+    for (var i = 0; i < want.length; i++) if (head[where + i] !== want[i]) return false;
+    return true;
+  }
+
+  function asciiBytes(s) {
+    var out = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+
+  /// The prolog an SVG may carry before its root element, skipped: a UTF-8
+  /// BOM, whitespace, an XML declaration, comments and a doctype, in any
+  /// order. Then `<svg` followed by whitespace, `>` or `/` -- a file whose
+  /// text merely begins with the letters `<svgx` is not one.
+  function looksSvg(head) {
+    var s = "";
+    for (var i = 0; i < head.length; i++) s += String.fromCharCode(head[i]);
+    if (s.charCodeAt(0) === 0xef && s.charCodeAt(1) === 0xbb && s.charCodeAt(2) === 0xbf) s = s.slice(3);
+    s = s.replace(/^\s+/, "");
+    for (var n = 0; n < 8; n++) {
+      if (s.slice(0, 2) === "<?") {
+        var x = s.indexOf("?>"); if (x < 0) return false;
+        s = s.slice(x + 2).replace(/^\s+/, ""); continue;
+      }
+      if (s.slice(0, 4) === "<!--") {
+        var c = s.indexOf("-->"); if (c < 0) return false;
+        s = s.slice(c + 3).replace(/^\s+/, ""); continue;
+      }
+      if (/^<!doctype/i.test(s)) {
+        var d = s.indexOf(">"); if (d < 0) return false;
+        s = s.slice(d + 1).replace(/^\s+/, ""); continue;
+      }
+      break;
+    }
+    return /^<svg[\s>/]/i.test(s);
+  }
+
+  function imageKind(head) {
+    for (var i = 0; i < MAGIC.length; i++) {
+      var mime = MAGIC[i][0], pattern = MAGIC[i][1];
+      // `svg` is the one pattern with no colon: SVG has no fixed signature.
+      if (pattern === "svg") {
+        if (looksSvg(head)) return mime;
+        continue;
+      }
+      var cut = pattern.indexOf(":");
+      var how = pattern.slice(0, cut), arg = pattern.slice(cut + 1);
+      if (how === "prefix") {
+        if (at(head, hexBytes(arg), 0)) return mime;
+      } else if (how === "riff") {
+        if (at(head, hexBytes("52494646"), 0) && at(head, hexBytes(arg), 8)) return mime;
+      } else if (how === "ftyp") {
+        if (!at(head, hexBytes("66747970"), 4)) continue;
+        var brands = arg.split("|");
+        for (var b = 0; b < brands.length; b++) {
+          if (at(head, asciiBytes(brands[b]), 8)) return mime;
+        }
+      }
+    }
+    return null;
+  }
+
+  // ---- Reading -----------------------------------------------------------
+
+  function base64Bytes(b64) {
+    var raw = atob(b64), out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function join(parts, total) {
+    var out = new Uint8Array(total), at = 0;
+    for (var i = 0; i < parts.length; i++) { out.set(parts[i], at); at += parts[i].length; }
+    return out;
+  }
+
+  /// `length` bytes from `offset`, in as many `read` calls as the host's
+  /// ceiling needs. The last answer may be shorter than asked when the file
+  /// ends there, which is the file and not an error.
+  async function readRange(offset, length) {
+    var parts = [], pos = offset, left = length, total = 0;
+    while (left > 0) {
+      var want = Math.min(READ_MAX, left);
+      var answer = await window.polter.read(pos, want);
+      if (!answer || typeof answer.base64 !== "string") throw "the image could not be read";
+      var chunk = base64Bytes(answer.base64);
+      if (chunk.length === 0) break;
+      parts.push(chunk); total += chunk.length; pos += chunk.length; left -= chunk.length;
+      if (chunk.length < want) break;
+    }
+    return join(parts, total);
+  }
+
+  function bytesToBase64(b) {
+    var binary = "", step = 0x8000;
+    for (var i = 0; i < b.length; i += step) {
+      binary += String.fromCharCode.apply(null, b.subarray(i, i + step));
+    }
+    return btoa(binary);
+  }
+
+  // ---- Drawing -----------------------------------------------------------
+
+  var mode = "fit";
+  function setMode(next) {
+    mode = next;
+    document.body.dataset.fit = mode;
+    el.mode.textContent = say(mode === "fit" ? "fit" : "actual");
+  }
+
+  function describe(info, w, h) {
+    var parts = [];
+    if (w && h) parts.push(w + "×" + h + " px");
+    if (typeof info.size === "number") parts.push(bytes(info.size));
+    el.meta.textContent = parts.join(" · ");
+  }
+
+  function showImage(info, body, mime) {
+    var url = null;
+    try {
+      var blob = new Blob([body], { type: mime });
+      if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+        url = URL.createObjectURL(blob);
+      }
+    } catch (e) { url = null; }
+
+    var fellBack = url === null;
+    el.image.onload = function () {
+      el.stage.hidden = false;
+      el.empty.className = "empty";
+      el.empty.textContent = "";
+      describe(info, el.image.naturalWidth, el.image.naturalHeight);
+      setMode("fit");
+    };
+    el.image.onerror = function () {
+      if (url) { try { URL.revokeObjectURL(url); } catch (e) {} url = null; }
+      if (!fellBack) {
+        // **`img-src 'self' data:` and not `blob:`** is the policy both hosts
+        // send a plugin page, so when the engine will not load the blob this
+        // is the same bytes in the form the policy names.
+        fellBack = true;
+        el.image.src = "data:" + mime + ";base64," + bytesToBase64(body);
+        return;
+      }
+      el.stage.hidden = true;
+      el.empty.className = "notice problem";
+      el.empty.textContent = say("cannotDraw");
+    };
+    el.image.src = url || ("data:" + mime + ";base64," + bytesToBase64(body));
+  }
+
+  function refuseNotImage() {
+    document.body.classList.add("refused");
+    el.stage.hidden = true;
+    el.empty.className = "refusal";
+    el.empty.textContent = say("notImage");
+  }
+
+  function tooLarge(info) {
+    el.empty.className = "notice";
+    el.empty.textContent = say("tooLarge", { Size: bytes(info.size), Limit: bytes(TOO_LARGE) });
+  }
+
+  // Click the picture, or press + / 0, to move between fit and actual size.
+  el.image.addEventListener("click", function () {
+    setMode(mode === "fit" ? "actual" : "fit");
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "+" || e.key === "=") { setMode("actual"); e.preventDefault(); }
+    else if (e.key === "0") { setMode("fit"); e.preventDefault(); }
+  });
+
+  // ---- The run -----------------------------------------------------------
+
+  async function run() {
+    var polter = window.polter;
+    if (!polter || typeof polter.info !== "function" || typeof polter.read !== "function") {
+      el.empty.className = "notice problem";
+      el.empty.textContent = say("noBridge");
+      return;
+    }
+
+    // The host's own tokens, so the page draws in the colours of the window
+    // around it rather than inventing a palette beside it. Best effort: a
+    // bridge that cannot answer `look` must not stop the image being shown.
+    if (typeof polter.look === "function") {
+      try {
+        var look = await polter.look();
+        var root = document.documentElement.style;
+        if (look && look.colours) {
+          var c = look.colours;
+          if (c.text) root.setProperty("--text", c.text);
+          if (c.text_secondary) root.setProperty("--text-secondary", c.text_secondary);
+          if (c.text_tertiary) root.setProperty("--text-tertiary", c.text_tertiary);
+          if (c.well) root.setProperty("--well", c.well);
+          if (c.panel) root.setProperty("--panel", c.panel);
+          if (c.line) root.setProperty("--line", c.line);
+          if (c.problem) root.setProperty("--problem", c.problem);
+        }
+        if (look && look.font) {
+          if (look.font.ui) root.setProperty("--font-ui", "\"" + look.font.ui + "\", system-ui, sans-serif");
+          if (look.font.mono) root.setProperty("--font-mono", "\"" + look.font.mono + "\", monospace");
+        }
+        if (look && look.size) {
+          var body = look.size.body, min = look.size.min;
+          var size = typeof min === "number" ? Math.max(body || min, min) : body;
+          if (typeof size === "number") root.setProperty("--size-body", size + "px");
+          if (typeof look.size.line_height === "number") root.setProperty("--line-height", look.size.line_height + "px");
+        }
+        if (look && look.radius && typeof look.radius.card === "number") {
+          root.setProperty("--radius-card", look.radius.card + "px");
+        }
+      } catch (e) { /* the tokens are a courtesy; the picture is the job. */ }
+    }
+
+    el.empty.textContent = say("loading");
+
+    var info;
+    try { info = await polter.info(); } catch (why) { return failed(why); }
+    if (!info || typeof info !== "object") {
+      return failed("the file could not be described");
+    }
+    el.name.textContent = info.name || "";
+
+    // A directory is not a picture and has nothing to read.
+    if (info.kind !== "file") return refuseNotImage();
+
+    // **Said before the first read**, because the sentence is about the read
+    // that would have to happen.
+    if (typeof info.size === "number" && info.size > TOO_LARGE) return tooLarge(info);
+    if (info.size === 0) { el.empty.textContent = say("empty"); return; }
+
+    // One small read judges the header. **A file that is not a picture is
+    // read no further**: the refusal is where this page stops reading, not a
+    // step on the way to fetching the body.
+    var head;
+    try { head = await readRange(0, Math.min(SNIFF, info.size)); } catch (why) { return failed(why); }
+    var mime = imageKind(head);
+    if (!mime) return refuseNotImage();
+    el.badge.textContent = mime.slice(mime.indexOf("/") + 1).toUpperCase();
+
+    var whole = head;
+    if (info.size > head.length) {
+      var rest;
+      try { rest = await readRange(head.length, info.size - head.length); } catch (why) { return failed(why); }
+      whole = join([head, rest], head.length + rest.length);
+    }
+    showImage(info, whole, mime);
+  }
+
+  setMode("fit");
+  run();
+})();
+</script>
+</body>
+</html>

@@ -215,6 +215,13 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             // with one of them has one row rather than two rows over one
             // binary. Both ship: a person may have either version.
             "opencode-v2",
+            // **The picture preview** (task 3151). A page plugin with no
+            // `exec`, like `edit-text`: it claims the image extensions and
+            // `image/*`, and its page reads the ticket through the preview
+            // bridge and draws it. What it shows is decided by the file's own
+            // first bytes rather than its name, so a text file under a `.png`
+            // name is refused instead of drawn as a broken picture.
+            "view-image",
         };
 
         for (shipped) |key| {

@@ -1,0 +1,49 @@
+# What a view-image page judges a file to be from its own first bytes: one
+# table, two readers (task 3151).
+#
+# Read by:
+#   * the shipped page, `plugins/view-image/page/index.html`, whose `MAGIC`
+#     array is these rows -- the test beside `Plugin.zig` holds the two
+#     together, row for row, so a page table and this file cannot drift; and
+#   * the page harness (`polter-artifacts/3151/page/`), which reads the head
+#     bytes and asks the shipped page's own `imageKind` what it answers.
+#
+# **The rule is task 3117's**: a name is not a picture. The same judgement is
+# made by the Windows host's `image_kind` and the macOS host's `imageMIME` for
+# a chat image, and this is the preview page's copy of the set.
+#
+# A `pattern` is the page's own spelling, and the four forms are:
+#   prefix:HEX      the file starts with these bytes
+#   riff:HEX        `RIFF` at 0 and this form type at 8 (WebP)
+#   ftyp:a|b        the ISO container's major brand at 8, one of these
+#   svg             a UTF-8 BOM and whitespace skipped, then an optional XML
+#                   declaration, comments and a doctype, then `<svg` followed
+#                   by whitespace, `>` or `/` -- SVG is text and has no fixed
+#                   signature
+#
+# A row with `-` in `pattern` and `kind` is a **negative**: those bytes are not
+# a picture and must match nothing. `head_hex` is a concrete head those bytes
+# would have, so both readers measure the same thing. `why` is never empty.
+#
+# NOTE: **Both readers assert this number**: `# rows: 18`.
+#
+# rows: 18
+pattern	kind	head_hex	why
+prefix:89504e470d0a1a0a	image/png	89504e470d0a1a0a0000000d49484452	PNG signature and the IHDR chunk length
+prefix:ffd8ff	image/jpeg	ffd8ffe000104a464946	JPEG, SOI and an APP0 marker
+prefix:474946383761	image/gif	4749463837610100	GIF87a
+prefix:474946383961	image/gif	4749463839610100	GIF89a
+riff:57454250	image/webp	52494646240000005745425056503820	a RIFF container whose form type is WEBP
+prefix:424d	image/bmp	424d3600000000000000	a bitmap file header
+prefix:00000100	image/x-icon	0000010001001010000001002000	an ICO directory entry
+ftyp:avif|avis	image/avif	0000001c66747970617669666d696631	an ISO container whose major brand is AVIF
+prefix:49492a00	image/tiff	49492a0008000000	TIFF, little-endian
+prefix:4d4d002a	image/tiff	4d4d002a00000008	TIFF, big-endian
+svg	image/svg+xml	3c73766720786d6c6e733d22687474703a2f2f7777772e77332e6f72672f323030302f737667223e	an SVG root element with no prolog
+-	-	74686973206973206e6f742061207069637475726520617420616c6c210a	30 bytes of text under any name (the file 3117 shipped as fake.png)
+-	-	524946460000000057415645	a RIFF container that is WAVE, not WebP
+-	-	89504e	the PNG signature cut to three bytes
+-	-	ffd8	the JPEG SOI cut to two bytes
+-	-	4749	GIF cut to two bytes
+-	-	255044462d312e34	a PDF
+-	-	00	a single NUL byte

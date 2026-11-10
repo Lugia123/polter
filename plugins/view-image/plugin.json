@@ -1,0 +1,17 @@
+{
+  "key": "view-image",
+  "name": "Image",
+  "version": "1.0.0",
+  "description": "Shows a picture: reads it through the preview bridge and draws it on a page of its own -- fit to the window or 100%, with the pixel size and the byte size in the header, and a checkerboard behind anything transparent. What is shown is decided by the file's own first bytes rather than by its name, so a text file renamed .png is refused with a sentence instead of drawn as a broken picture. Read-only: there is nothing here that writes.",
+
+  "preview": {
+    "extensions": [
+      ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+      ".ico", ".avif", ".tif", ".tiff", ".svg"
+    ],
+    "mime": ["image/*"],
+    "render": "page",
+    "page": "page/index.html",
+    "reads": "file"
+  }
+}
