@@ -22343,6 +22343,47 @@ test "2758 S6: files_open names the preview plugin that won, and says none when 
     try testing.expectEqualStrings("none", unclaimed.object.get("plugin").?.object.get("status").?.string);
 }
 
+// Task 3146, through the whole core path a host uses: a real file on disk
+// whose name has no extension, the rule, and the one answer a host acts on.
+// The text case carries what the page needs to draw it (`encoding`); the
+// binary case carries the tag that makes the page refuse it -- **claimed on
+// its name, which is not permission to draw its bytes**.
+test "3146: files_open opens a file with no extension as text, and claims a binary too" {
+    var r: FilesRig = undefined;
+    try r.init();
+    defer r.deinit();
+    try r.put("w/LICENSE", "MIT\n");
+    try r.put("w/setup", "MZ\x00\x00binary");
+
+    var views = [_]FakePreview{
+        rigPreview("edit-text", 50, &.{ "", ".md" }, .file, true),
+    };
+    r.fake.previews = &views;
+
+    const text = try r.open("LICENSE", "file");
+    const p = text.object.get("plugin").?.object;
+    try testing.expectEqualStrings("matched", p.get("status").?.string);
+    try testing.expectEqualStrings("edit-text", p.get("key").?.string);
+    // A matched choice does not replace the ticket, and the page draws from
+    // these two fields: the name it has and the text it is.
+    try testing.expectEqual(@as(usize, 32), text.object.get("token").?.string.len);
+    const info = text.object.get("info").?.object;
+    try testing.expectEqualStrings("LICENSE", info.get("name").?.string);
+    try testing.expectEqualStrings("utf8", info.get("encoding").?.string);
+
+    // The binary is claimed too -- the rule reads the name, not the bytes --
+    // and the same answer says `binary`, which is what the text page refuses
+    // to draw.
+    const bin = try r.open("setup", "file");
+    try testing.expectEqualStrings("matched", bin.object.get("plugin").?.object.get("status").?.string);
+    try testing.expectEqualStrings("binary", bin.object.get("info").?.object.get("encoding").?.string);
+
+    // A name with an extension nobody declared is still nobody's.
+    try r.put("w/blob.wat", "w\n");
+    const unclaimed = try r.open("blob.wat", "file");
+    try testing.expectEqualStrings("none", unclaimed.object.get("plugin").?.object.get("status").?.string);
+}
+
 test "2789: a matched plugin carries the page a host loads, and the directory it came from" {
     var r: FilesRig = undefined;
     try r.init();

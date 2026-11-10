@@ -328,6 +328,11 @@ pub const Preview = struct {
     /// leading dot: `".md"`. **Required** -- a plugin that named none would
     /// be one that can never be chosen, which is the failure that looks
     /// exactly like a plugin that is simply never needed.
+    ///
+    /// **`""` is the empty extension**: a file whose own name has none
+    /// (`LICENSE`, `.gitignore`, `notes.`), which no dotted spelling can
+    /// name and which is the one shape an extension table otherwise cannot
+    /// cover (task 3146). It is not a wildcard -- `"*"` is passed over.
     extensions: []const []const u8,
 
     /// Types by sniffed MIME, when the extension is not enough. Optional.
@@ -754,12 +759,21 @@ fn beats(priority: i32, key: []const u8, than_priority: i32, than_key: []const u
 ///
 /// `ext` is without its dot (`"md"`), as `extensionOf` gives it; a
 /// declaration is spelled with one (`.md`), as `extensionList` stores it.
+/// **The exception is the empty declaration `""`, which is the empty
+/// extension** -- the file's own name has none, and `extensionOf` answers
+/// `""` for every shape of that (no dot, a dotfile, a trailing dot, an empty
+/// name). It answers files with no extension and nothing else: a manifest
+/// that writes `""` has not written a wildcard, and `"*"` is passed over at
+/// load rather than meaning every file (task 3146).
 fn previewClaims(preview: Preview, ext: []const u8, mime: ?[]const u8) bool {
-    if (ext.len > 0) {
-        for (preview.extensions) |declared| {
-            if (declared.len < 2 or declared[0] != '.') continue;
-            if (std.ascii.eqlIgnoreCase(declared[1..], ext)) return true;
+    for (preview.extensions) |declared| {
+        if (declared.len == 0) {
+            if (ext.len == 0) return true;
+            continue;
         }
+        if (ext.len == 0) continue;
+        if (declared.len < 2 or declared[0] != '.') continue;
+        if (std.ascii.eqlIgnoreCase(declared[1..], ext)) return true;
     }
 
     if (mime) |actual| {
@@ -1930,6 +1944,14 @@ fn previewOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) Allocat
 /// and storing them differently would make whichever the picker compared
 /// against decide which manifests work. An entry that is not a dotted name is
 /// passed over and said, the way every other list here treats one bad item.
+///
+/// **The empty string is a declaration and not a bad item** (task 3146): it
+/// is the extension a file's own name has when it has none -- `LICENSE`,
+/// `.gitignore`, `notes.`, the shapes `extensionOf` answers `""` for -- and
+/// `previewClaims` matches it against exactly those. It is taken here
+/// because the list is the only place a manifest can name it; a wildcard
+/// (`"*"`) is still passed over, so no manifest claims every file by
+/// writing one.
 fn extensionList(
     arena: Allocator,
     key: []const u8,
@@ -1950,7 +1972,12 @@ fn extensionList(
             .string => |s| s,
             else => continue,
         };
-        if (raw.len < 2 or raw[0] != '.') {
+        // **The empty extension**, kept as written: there is nothing to lower
+        // and no dot to check. `raw[1..]` below would be an invalid slice for
+        // it, which is the other reason this is taken before those checks
+        // rather than inside them.
+        const empty = raw.len == 0;
+        if (!empty and (raw.len < 2 or raw[0] != '.')) {
             log.warn(
                 "plugin {s}: preview.{s} has \"{s}\", which is not an extension " ++
                     "(a dot and a name, like \".md\"); passed over",
@@ -1971,8 +1998,8 @@ fn extensionList(
         // above.** It was written there and left out of the code once, which
         // is what a reader would never notice: the sentence and the guard
         // have to be edited together or the guard is the half that goes.
-        if (std.mem.indexOfScalar(u8, raw[1..], '.') != null or
-            std.mem.indexOfAny(u8, raw, " \t/\\") != null)
+        if (!empty and (std.mem.indexOfScalar(u8, raw[1..], '.') != null or
+            std.mem.indexOfAny(u8, raw, " \t/\\") != null))
         {
             log.warn(
                 "plugin {s}: preview.{s} has \"{s}\", which holds a second dot, a " ++
@@ -1990,6 +2017,10 @@ fn extensionList(
                 .{ key, name, Preview.max_extensions },
             );
             break;
+        }
+        if (empty) {
+            out.append(arena, "") catch break;
+            continue;
         }
         const lower = arena.alloc(u8, raw.len) catch break;
         for (raw, lower) |c, *dst| dst.* = std.ascii.toLower(c);
@@ -3838,6 +3869,77 @@ test "2644: a manifest that declares a preview and no exec loads as a page" {
     try testing.expectEqual(default_preview_max_bytes, p.max_bytes);
 }
 
+// Task 3146. **The empty string is the empty extension**, and the list is
+// where a manifest names it: a file whose own name has no extension is
+// answered by this entry alone, and no dotted spelling can name it. Loaded
+// beside a dotted one so what is measured is that both are stored, not that
+// the list happened to start with an empty string.
+test "3146: the empty extension is a declaration a manifest can write" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try manifestDir(alloc, io,
+        \\{"key":"edit-text","name":"Text",
+        \\ "preview":{"extensions":["",".md"],"reads":"file","page":"page/index.html"}}
+    );
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    const m = try load(alloc, io, dir);
+    const p = m.preview.?;
+    try testing.expectEqual(@as(usize, 2), p.extensions.len);
+    try testing.expectEqualStrings("", p.extensions[0]);
+    try testing.expectEqualStrings(".md", p.extensions[1]);
+}
+
+// **The shipped text plugin is where a person meets this rule**, and a core
+// that can read `""` beside a manifest that does not write it is the bug
+// exactly as it was. Read through the shipped file rather than a manifest
+// stood up by hand, so deleting the entry is a red test rather than a
+// quiet regression.
+test "3146: the shipped text plugin answers for a file with no extension" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const text = std.Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "plugins/edit-text/plugin.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read plugins/edit-text/plugin.json ({t}). Run `zig build test` from the repository root.\n",
+            .{err},
+        );
+        return error.ShippedPluginUnreadable;
+    };
+
+    const obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{})).object;
+    const p = (try previewOf(a, "edit-text", obj)).?;
+    var empty = false;
+    for (p.extensions) |e| {
+        if (e.len == 0) empty = true;
+    }
+    try testing.expect(empty);
+
+    // And the rule against the manifest that ships, so the two halves are
+    // measured together: a name with no extension is claimed (the page is
+    // what refuses a binary), and a name with one nobody declared is not.
+    var manifest: Manifest = .{ .key = "edit-text", .preview = p };
+    const candidates = [_]Candidate{.{ .manifest = &manifest, .enabled = true, .dir = "" }};
+    try testing.expectEqualStrings("edit-text", pickKey(&candidates, .{ .path = "setup" }));
+    try testing.expectEqualStrings("edit-text", pickKey(&candidates, .{ .path = ".gitignore" }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "blob.wat" }));
+}
+
 // Both halves in one manifest. `shape` must say `resident`: there **is** a
 // process, and the half that has a lifetime is the one that decides.
 test "2644: a manifest that declares both a preview and an exec is resident" {
@@ -3890,8 +3992,15 @@ test "2644: a preview section that cannot be acted on is not read at all" {
         .{ .why = "extensions is not a list", .preview =
         \\"preview":{"extensions":".md","reads":"file","page":"a.html"}
         },
+        // **`"*"` stands where `""` used to** (task 3146). This case guarded
+        // "a list with no readable entry leaves the plugin with no preview";
+        // it used to include `""` as one of the unreadable spellings, and an
+        // empty string is now a declaration -- the empty extension -- rather
+        // than a typo. The guard itself is unchanged: still two unreadable
+        // entries and nothing else, and `"*"` is in the list on purpose,
+        // because the new declaration must not have become a wildcard.
         .{ .why = "every extension is unreadable", .preview =
-        \\"preview":{"extensions":["md",".tar.gz",""],"reads":"file","page":"a.html"}
+        \\"preview":{"extensions":["md",".tar.gz","*"],"reads":"file","page":"a.html"}
         },
         // The one an absent value must never become: the widest scope.
         .{ .why = "no reads", .preview =
@@ -6630,6 +6739,50 @@ test "2743 S5: the shapes with no extension get no match" {
     try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = ".gitignore" }));
     try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "notes." }));
     try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "" }));
+}
+
+// Task 3146. **The way to answer the four shapes above is the empty
+// declaration**, and it answers exactly those: a name that has an extension
+// is decided by that extension, even one nobody declared.
+//
+// The test above stays as it is, and that is the point: it is what a
+// manifest that does not write `""` gets, which is every manifest until it
+// writes one. What this measures is what changes when it does.
+test "3146: the empty declaration answers a file whose name has no extension" {
+    var text = previewManifest("edit-text", 50, &.{ "", ".md" }, &.{});
+    const candidates = [_]Candidate{.{ .manifest = &text, .enabled = true, .dir = "" }};
+
+    // The shapes `extensionOf` answers `""` for -- the same four the test
+    // above hands to a manifest that cannot name the empty extension.
+    for ([_][]const u8{ "notes", "LICENSE", "Makefile", ".gitignore", ".env", "notes.", "a.d/b", "" }) |path| {
+        testing.expectEqualStrings("edit-text", pickKey(&candidates, .{ .path = path })) catch {
+            std.debug.print("the empty extension did not answer: \"{s}\"\n", .{path});
+            return error.TestUnexpectedResult;
+        };
+    }
+
+    // A name with an extension is not answered by `""`: `README.md` is
+    // answered by `.md`, and the other two by nothing at all.
+    try testing.expectEqualStrings("edit-text", pickKey(&candidates, .{ .path = "README.md" }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "a.out" }));
+    try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = "logo.png" }));
+}
+
+// **`""` is a declaration and not a wildcard.** A manifest that writes it
+// claims files with no extension and stops there; `"*"` -- which the loader
+// passes over, so this manifest can only be one a caller built, which is
+// what makes it worth pinning here as well -- claims nothing at all.
+test "3146: the empty declaration is not a wildcard" {
+    var only_empty = previewManifest("empty", 50, &.{""}, &.{});
+    const empty = [_]Candidate{.{ .manifest = &only_empty, .enabled = true, .dir = "" }};
+    try testing.expectEqualStrings("empty", pickKey(&empty, .{ .path = "LICENSE" }));
+    try testing.expectEqual(Choice.none, refusal(&empty, .{ .path = "README.md" }));
+    try testing.expectEqual(Choice.none, refusal(&empty, .{ .path = "a.out" }));
+
+    var wildcard = previewManifest("wild", 50, &.{"*"}, &.{});
+    const wild = [_]Candidate{.{ .manifest = &wildcard, .enabled = true, .dir = "" }};
+    try testing.expectEqual(Choice.none, refusal(&wild, .{ .path = "LICENSE" }));
+    try testing.expectEqual(Choice.none, refusal(&wild, .{ .path = "a.md" }));
 }
 
 test "2743 S5: MIME is an alternative to the extension, not a second requirement" {
