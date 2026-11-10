@@ -7092,3 +7092,132 @@ test "3151: the image-magic fixture and the shipped page name one table" {
         };
     }
 }
+
+// ---- 3156: the Markdown preview ------------------------------------------
+//
+// `view-markdown` and `edit-text` both claim `.md`. What decides between them
+// is `priority`, and the tie-break below it is the key's byte order --
+// `edit-text` < `view-markdown`, so a manifest that forgot its priority loses
+// to the plain-text page. These two tests hold both halves down: that the
+// shipped manifest wins, and that it wins *because of the priority* rather
+// than because of the listing.
+
+test "3156: the shipped markdown plugin wins .md from edit-text, and .txt stays edit-text's" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const read = struct {
+        fn f(io: std.Io, alloc: Allocator, path: []const u8) ![]u8 {
+            return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024)) catch |err| {
+                std.debug.print("cannot read {s} ({t}). Run `zig build test` from the repository root.\n", .{ path, err });
+                return error.ShippedPluginUnreadable;
+            };
+        }
+    }.f;
+
+    const md_text = try read(threaded.io(), a, "plugins/view-markdown/plugin.json");
+    const edit_text = try read(threaded.io(), a, "plugins/edit-text/plugin.json");
+
+    const md_obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, md_text, .{})).object;
+    const edit_obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, edit_text, .{})).object;
+    const md_preview = (try previewOf(a, "view-markdown", md_obj)).?;
+    const edit_preview = (try previewOf(a, "edit-text", edit_obj)).?;
+
+    // The four names the manifest claims, and no empty extension (a file with
+    // no extension is still `edit-text`'s, task 3146).
+    try testing.expectEqual(@as(usize, 4), md_preview.extensions.len);
+    for (md_preview.extensions) |e| {
+        try testing.expect(e.len > 1 and e[0] == '.');
+    }
+
+    // **The priority has to be above `edit-text`'s, not merely written
+    // down.** `Preview.priority` defaults to 50 and `edit-text` does not
+    // write one, so a `view-markdown` at 10 (or at the default) loses; the
+    // assertion names both numbers so a wrong one red here rather than in a
+    // host.
+    try testing.expect(md_preview.priority > edit_preview.priority);
+
+    var edit: Manifest = .{ .key = "edit-text", .preview = edit_preview };
+    var md: Manifest = .{ .key = "view-markdown", .preview = md_preview };
+    const shipped = [_]Candidate{
+        .{ .manifest = &edit, .enabled = true, .dir = "" },
+        .{ .manifest = &md, .enabled = true, .dir = "" },
+    };
+
+    for ([_][]const u8{ "README.md", "notes.MD", "guide.markdown", "a.mdown", "b.mkd" }) |path| {
+        testing.expectEqualStrings("view-markdown", pickKey(&shipped, .{ .path = path })) catch {
+            std.debug.print("a markdown name went to the wrong plugin: \"{s}\"\n", .{path});
+            return error.TestUnexpectedResult;
+        };
+    }
+
+    // The names the text plugin still owns, and the one it must keep owning:
+    // a `.md` brings a page, a `.txt` stays the plain viewer.
+    for ([_][]const u8{ "notes.txt", "data.json", "script.zig", "LICENSE" }) |path| {
+        testing.expectEqualStrings("edit-text", pickKey(&shipped, .{ .path = path })) catch {
+            std.debug.print("a text name left edit-text: \"{s}\"\n", .{path});
+            return error.TestUnexpectedResult;
+        };
+    }
+
+    // **And the reason the priority is there**: at `edit-text`'s priority the
+    // tie is broken by the lower key, which is `edit-text`. This is what a
+    // manifest that forgot its priority would get, measured rather than
+    // argued.
+    var tied_preview = md_preview;
+    tied_preview.priority = edit_preview.priority;
+    var tied: Manifest = .{ .key = "view-markdown", .preview = tied_preview };
+    const level = [_]Candidate{
+        .{ .manifest = &edit, .enabled = true, .dir = "" },
+        .{ .manifest = &tied, .enabled = true, .dir = "" },
+    };
+    try testing.expectEqualStrings("edit-text", pickKey(&level, .{ .path = "README.md" }));
+}
+
+// The other half of "it ships": the list the installer reads names it. The
+// product check (`zig-out/share/ghostty/polter/plugins/view-markdown`) is the
+// reading that the file really lands; this is the cheap one that goes red in
+// the same run as the rest, so a build that was not made cannot be the first
+// thing to notice.
+test "3156: the shipped list names view-markdown" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const text = std.Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "src/build/GhosttyResources.zig",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read src/build/GhosttyResources.zig ({t}). Run `zig build test` from the repository root.\n",
+            .{err},
+        );
+        return error.ShippedPluginUnreadable;
+    };
+
+    const open_marker = "const shipped = [_][]const u8{";
+    const open = std.mem.indexOf(u8, text, open_marker) orelse {
+        std.debug.print("GhosttyResources.zig has no `{s}`\n", .{open_marker});
+        return error.MissingShippedList;
+    };
+    const from = open + open_marker.len;
+    const close = std.mem.indexOfPos(u8, text, from, "\n        };") orelse {
+        std.debug.print("the shipped list has no closing brace\n", .{});
+        return error.MissingShippedList;
+    };
+    const list = text[from..close];
+
+    try testing.expect(std.mem.indexOf(u8, list, "\"view-markdown\"") != null);
+    // And the image plugin beside it, so the list is read as the list rather
+    // than as a substring of something else.
+    try testing.expect(std.mem.indexOf(u8, list, "\"view-image\"") != null);
+}
