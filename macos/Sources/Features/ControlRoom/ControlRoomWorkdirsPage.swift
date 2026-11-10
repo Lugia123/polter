@@ -1400,37 +1400,20 @@ struct ControlRoomWorkdirsPage: View {
     /// **The file itself is not drawn here.** What a preview holds is
     /// `PreviewSlot`'s: this page writes the ticket into **its own cell**
     /// for the group in front (`cell`, task 2775), and draws what the slot
-    /// holds through the same `PreviewWebView` that panel uses. A second
+    /// holds through the same `PreviewBody` that panel uses. A second
     /// reader of a file would be a second answer about what is open.
     @ViewBuilder
     private var workBody: some View {
         let state = ghostty.previewStore.state(cell)
         if !state.token.isEmpty {
-            switch state.presentation {
-            case .unavailable, .browser:
-                // The plugin claims this file and there is nothing to draw in
-                // its place; the file itself is **not** rendered here
-                // (task 2779 S7B). Which sentence is `PreviewTicket`'s, so
-                // this page and the pane cannot say two different things.
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: Tile.emptyGlyphSize))
-                        .foregroundStyle(theme.textSecondary.color.opacity(Tile.emptyGlyphOpacity))
-                    Text(state.presentation == .browser
-                         ? PreviewTicket.browserPreviewNotYet
-                         : PreviewTicket.pluginUnavailable)
-                        .font(.system(size: Tile.wordsSize))
-                        .foregroundStyle(theme.textSecondary.color)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, Tile.emptyWordsGap)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .file, .pluginPage:
-                PreviewWebView(token: state.token, presentation: state.presentation)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            // **One body for every shell** (task 3153). The pane, this page
+            // and the chat's sidebar draw a ticket through `PreviewBody`, so
+            // a `render: browser` plugin is drawn here exactly as the pane
+            // draws it. This switch was written before that view existed
+            // (task 2574 put the "not built here yet" sentence on both
+            // shells); task 2793 built the view and taught the pane, and
+            // this page kept the old words -- one plugin, two faces.
+            PreviewBody(token: state.token, presentation: state.presentation)
         } else {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
