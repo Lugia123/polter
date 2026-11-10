@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Markdown</title>
+<!--
+  The `view-markdown` plugin's preview page (task 3156).
+
+  **Read-only, and it says so by what it calls.** The page uses two of the
+  bridge's eight calls -- `info` and `read` -- and never `propose`, `dirty`,
+  `readRel`, `openPath`, `watch` or `look`. There is no edit button because
+  the manifest declares neither `edits` nor `hands_edit_to`.
+
+  **Nothing a document says can load anything.** This is the security rule
+  the page exists around, and it has three halves, all of them in the marked
+  renderers below:
+
+    * an image (`![alt](target)`) becomes a line of text carrying its alt and
+      its target -- **no `<img>` element is produced at all**, so no request
+      is made;
+    * raw HTML in the markdown is escaped and shown as text, so an
+      `<img src=...>` or `<script>` written into the document is characters,
+      not markup;
+    * a link keeps its text and (when it differs) its target as text --
+      **no `href`**, so nothing is clickable and `openPath` is never called.
+
+  The page never builds a path and never fetches one: `connect-src 'none'` and
+  `img-src 'self' data:` are the host's policy, and not making a request is
+  what makes that a second line rather than the only one.
+
+  **The bytes come from `window.polter`**: `info` to know what the file is,
+  `read(0, n)` for its text. The marked and highlight.js builds are the ones
+  under `vendor/`, copied byte for byte from `web/chat/vendor/` (marked
+  12.0.2, MIT; highlight.js 11.12.0, BSD-3-Clause), with their licences
+  beside them. A fenced block is highlighted only when its language is one
+  highlight.js knows; a block with no language stays plain.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif);
+    font-size: var(--size-body, 13px);
+    background: var(--well, Canvas); color: var(--text, CanvasText);
+  }
+  header {
+    flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-bottom: 1px solid var(--line, rgba(128,128,128,.3));
+    color: var(--text-secondary, inherit);
+  }
+  header .name { color: var(--text, CanvasText); font-weight: 600; }
+  header .meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+  header .hint { color: var(--text-tertiary, inherit); font-size: .85em; }
+  header button {
+    font: inherit; font-size: .85em; color: var(--text-secondary, inherit);
+    background: transparent; border: 1px solid var(--line, rgba(128,128,128,.4));
+    border-radius: var(--radius-card, 4px); padding: 1px 7px; cursor: pointer;
+  }
+  header button.on { color: var(--text, CanvasText); border-color: var(--text-secondary, rgba(128,128,128,.7)); }
+
+  main { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
+  article { padding: 10px 14px; max-width: 52em; }
+  article > :first-child { margin-top: 0; }
+  article h1, article h2, article h3, article h4, article h5, article h6 {
+    line-height: 1.25; margin: 1.1em 0 .5em;
+  }
+  article h1 { font-size: 1.5em; }
+  article h2 { font-size: 1.3em; }
+  article h3 { font-size: 1.15em; }
+  article p { margin: .6em 0; }
+  article ul, article ol { padding-left: 1.6em; }
+  article li { margin: .2em 0; }
+  article blockquote {
+    margin: .6em 0; padding: .1em .8em;
+    border-left: 3px solid var(--line, rgba(128,128,128,.4));
+    color: var(--text-secondary, inherit);
+  }
+  article hr { border: 0; border-top: 1px solid var(--line, rgba(128,128,128,.4)); margin: 1.2em 0; }
+  article table { border-collapse: collapse; margin: .8em 0; }
+  article th, article td { border: 1px solid var(--line, rgba(128,128,128,.4)); padding: 3px 8px; }
+  article a { color: inherit; text-decoration: none; }
+  article code {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: .95em;
+  }
+  article :not(pre) > code {
+    background: var(--panel, rgba(128,128,128,.12));
+    border-radius: var(--radius-card, 4px); padding: 0 3px;
+  }
+  article pre {
+    margin: .8em 0; padding: 8px 10px; overflow: auto;
+    background: var(--panel, rgba(128,128,128,.1));
+    border: 1px solid var(--line, rgba(128,128,128,.25));
+    border-radius: var(--radius-card, 4px);
+  }
+  article pre code {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: .95em; line-height: 1.45; white-space: pre;
+  }
+
+  /* An image is a line of text, and it looks like a line of text -- the
+     placeholder must not read as a broken picture or an empty box. */
+  .md-image {
+    display: inline-block; margin: 2px 0; padding: 1px 6px;
+    border: 1px dashed var(--line, rgba(128,128,128,.5));
+    border-radius: var(--radius-card, 4px);
+    color: var(--text-secondary, inherit);
+  }
+  .md-image-target, .md-link-target {
+    color: var(--text-tertiary, inherit);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: .9em;
+  }
+
+  .source {
+    margin: 0; padding: 10px 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: var(--size-body, 13px); line-height: 1.5;
+    white-space: pre; tab-size: 4; overflow: auto;
+  }
+
+  .notice {
+    margin: 10px 14px; padding: 8px 10px;
+    border: 1px solid var(--line, rgba(128,128,128,.3));
+    border-radius: var(--radius-card, 4px);
+    background: var(--panel, transparent); color: var(--text-secondary, inherit);
+  }
+  .notice.problem { color: var(--problem, #c0392b); }
+  .empty { padding: 16px 14px; color: var(--text-tertiary, inherit); }
+</style>
+</head>
+<body>
+<header>
+  <span class="name" id="name">&nbsp;</span>
+  <span class="meta" id="meta"></span>
+  <span class="hint" id="hint"></span>
+  <button type="button" id="btnRender">Rendered</button>
+  <button type="button" id="btnSource">Source</button>
+</header>
+<main>
+  <article id="doc"></article>
+  <pre class="source" id="source" hidden></pre>
+  <div class="empty" id="empty"></div>
+</main>
+
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // The most this page reads and draws. **The host's own ceiling rather than
+  // a number invented here**: `PreviewRoutes.readMax` is 4 MiB, so asking for
+  // more would only come back short.
+  var READ_MAX = 4 * 1024 * 1024;
+
+  var strings = {
+    en: {
+      loading: "Reading the file…",
+      empty: "This file is empty.",
+      notText: "This file is not text, so there is nothing to show here.",
+      refused: "The preview could not be shown: {Why}",
+      noBridge: "This page was opened without the preview bridge, so the file cannot be read.",
+      truncated: "Showing the first {Shown} of {Total}. The rest is not loaded.",
+      truncatedUnknown: "Showing {Shown}. The file's total size is unknown; there may be more.",
+      image: "image",
+      rendered: "Rendered",
+      source: "Source",
+      imagesBlocked: "Images are never loaded here — a security limit. Each one is shown with its alt text and target.",
+      owned: "UTF-8"
+    },
+    "zh-Hans": {
+      loading: "正在读取文件…",
+      empty: "这个文件是空的。",
+      notText: "这个文件不是文本，没有可以显示的内容。",
+      refused: "没法显示这份预览：{Why}",
+      noBridge: "这个页面没有带着预览桥打开，所以读不到文件。",
+      truncated: "只显示了前 {Shown}（共 {Total}），其余没有加载。",
+      truncatedUnknown: "已显示 {Shown}。文件总大小未知，可能还有内容。",
+      image: "图片",
+      rendered: "渲染",
+      source: "源码",
+      imagesBlocked: "这里从不加载图片——这是安全限制。每张图都只显示它的 alt 文本和原目标。",
+      owned: "UTF-8"
+    }
+  };
+  var lang = (navigator.language || "en").toLowerCase();
+  var L = strings[lang.indexOf("zh") === 0 ? "zh-Hans" : "en"];
+  function say(key, vars) {
+    var s = L[key] || strings.en[key] || key;
+    if (!vars) return s;
+    for (var k in vars) s = s.split("{" + k + "}").join(vars[k]);
+    return s;
+  }
+
+  var el = {
+    name: document.getElementById("name"),
+    meta: document.getElementById("meta"),
+    hint: document.getElementById("hint"),
+    doc: document.getElementById("doc"),
+    source: document.getElementById("source"),
+    empty: document.getElementById("empty"),
+    btnRender: document.getElementById("btnRender"),
+    btnSource: document.getElementById("btnSource")
+  };
+  el.hint.textContent = say("imagesBlocked");
+  el.btnRender.textContent = say("rendered");
+  el.btnSource.textContent = say("source");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function bytes(n) {
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    var units = ["B", "KB", "MB", "GB"], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + " " + units[i];
+  }
+
+  function failed(why) {
+    el.doc.hidden = true;
+    el.source.hidden = true;
+    el.empty.className = "notice problem";
+    el.empty.textContent = say("refused", { Why: String(why) });
+  }
+
+  function plain(key) {
+    el.doc.hidden = true;
+    el.source.hidden = true;
+    el.empty.className = "empty";
+    el.empty.textContent = say(key);
+  }
+
+  // ---- Rendering ---------------------------------------------------------
+  //
+  // **The three ways a document could load or open something are all
+  // overridden here** (task 3156): an image is text, raw HTML is text, a
+  // link is text. `code` is the fourth and the only one that produces
+  // markup: a fenced block whose language highlight.js knows is highlighted,
+  // and one with no language (or a language it does not know) stays plain.
+  function configureRenderers() {
+    if (!window.marked) return false;
+    window.marked.use({
+      gfm: true,
+      breaks: false,
+      async: false,
+      renderer: {
+        // **marked 12's renderers take positional arguments, not tokens**:
+        // `image(href, title, text)`, `link(href, title, text)`,
+        // `html(raw, block)` and `code(text, lang, escaped)`.
+        image: function (href, title, alt) {
+          var target = href ? String(href) : "";
+          var text = alt ? String(alt) : "";
+          var out = '<span class="md-image">' + esc(say("image"));
+          if (text) out += ": " + esc(text);
+          if (target) out += ' — <span class="md-image-target">' + esc(target) + "</span>";
+          return out + "</span>";
+        },
+        link: function (href, title, text) {
+          var target = href ? String(href) : "";
+          var label = text ? String(text) : "";
+          if (!target || target === label) return '<span class="md-link">' + esc(label) + "</span>";
+          return '<span class="md-link">' + esc(label) +
+            ' <span class="md-link-target">' + esc(target) + "</span></span>";
+        },
+        html: function (raw) {
+          return esc(raw || "");
+        },
+        code: function (source, infostring) {
+          var text = source ? String(source) : "";
+          var lang = String(infostring || "").trim().split(/\s+/)[0];
+          var plainCode = "<pre><code" +
+            (lang ? ' class="language-' + esc(lang) + '"' : "") + ">" +
+            esc(text) + "</code></pre>";
+          if (!lang || !window.hljs || !window.hljs.getLanguage(lang)) return plainCode;
+          try {
+            var out = window.hljs.highlight(text, {
+              language: lang, ignoreIllegals: true
+            }).value;
+            return '<pre><code class="hljs language-' + esc(lang) + '">' + out + "</code></pre>";
+          } catch (e) {
+            // Highlighting is cosmetic; a failure leaves the plain code.
+            return plainCode;
+          }
+        }
+      }
+    });
+    return true;
+  }
+
+  function renderMarkdown(text) {
+    if (!window.marked) return "<pre>" + esc(text) + "</pre>";
+    var html;
+    try {
+      html = window.marked.parse(text);
+    } catch (e) {
+      return "<pre>" + esc(text) + "</pre>";
+    }
+    // The belt over the renderers' braces: `<img` cannot be produced by any
+    // of them, but if a marked release ever emits one another way it is text
+    // here too. Text that *says* `<img` is already escaped to `&lt;img` by
+    // the renderers, so this cannot corrupt a code sample.
+    return html.replace(/<img\b/gi, "&lt;img");
+  }
+
+  // ---- Reading -----------------------------------------------------------
+
+  function base64ToText(b64) {
+    var raw = atob(b64);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    // `fatal: false`: a file that is mostly text but has one bad byte still
+    // has something worth reading.
+    return new TextDecoder("utf-8", { fatal: false }).decode(out);
+  }
+
+  function decodedBytes(b64) {
+    var pad = 0;
+    if (b64.length > 0 && b64.charAt(b64.length - 1) === "=") pad++;
+    if (b64.length > 1 && b64.charAt(b64.length - 2) === "=") pad++;
+    return Math.floor(b64.length * 3 / 4) - pad;
+  }
+
+  var READABLE = { utf8: true, utf8_bom: true, other: true };
+
+  // ---- The view switch ---------------------------------------------------
+
+  var view = "render";
+  function setView(next) {
+    view = next;
+    var rendered = view === "render";
+    el.doc.hidden = !rendered;
+    el.source.hidden = rendered;
+    el.btnRender.classList.toggle("on", rendered);
+    el.btnSource.classList.toggle("on", !rendered);
+  }
+  el.btnRender.addEventListener("click", function () { setView("render"); });
+  el.btnSource.addEventListener("click", function () { setView("source"); });
+
+  // ---- The run -----------------------------------------------------------
+
+  async function run() {
+    var polter = window.polter;
+    if (!polter || typeof polter.info !== "function" || typeof polter.read !== "function") {
+      el.empty.className = "notice problem";
+      el.empty.textContent = say("noBridge");
+      return;
+    }
+
+    el.empty.textContent = say("loading");
+
+    var info;
+    try { info = await polter.info(); } catch (why) { return failed(why); }
+    if (!info || typeof info !== "object") {
+      return failed("the file could not be described");
+    }
+    el.name.textContent = info.name || "";
+    if (typeof info.size === "number") el.meta.textContent = bytes(info.size);
+
+    if (info.kind !== "file") return plain("notText");
+    if (typeof info.encoding === "string" && READABLE[info.encoding] !== true) {
+      return plain("notText");
+    }
+    if (info.size === 0) return plain("empty");
+
+    var length = typeof info.size === "number" ? Math.min(info.size, READ_MAX) : READ_MAX;
+    var answer;
+    try { answer = await polter.read(0, length); } catch (why) { return failed(why); }
+    if (!answer || typeof answer.base64 !== "string") {
+      return failed("the file could not be read");
+    }
+
+    var text = base64ToText(answer.base64);
+
+    if (typeof info.size === "number" && decodedBytes(answer.base64) < info.size) {
+      var note = document.createElement("div");
+      note.className = "notice";
+      note.textContent = say("truncated", {
+        Shown: bytes(decodedBytes(answer.base64)),
+        Total: bytes(info.size)
+      });
+      el.empty.parentNode.insertBefore(note, el.empty);
+    }
+
+    el.doc.innerHTML = renderMarkdown(text);
+    el.source.textContent = text;
+    el.empty.textContent = "";
+    setView("render");
+  }
+
+  // The renderers are configured before the first render; the page is useless
+  // without marked, and `renderMarkdown` says so by drawing the text itself.
+  configureRenderers();
+  setView("render");
+  run();
+})();
+</script>
+</body>
+</html>

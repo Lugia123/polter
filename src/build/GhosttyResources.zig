@@ -222,6 +222,14 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             // first bytes rather than its name, so a text file under a `.png`
             // name is refused instead of drawn as a broken picture.
             "view-image",
+            // **The Markdown preview** (task 3156). A page plugin that claims
+            // `.md` and its sibling spellings **above** `edit-text`, which
+            // claims `.md` as plain text at the default priority: without a
+            // higher `priority` the tie would be broken by key and
+            // `edit-text` would win. Its page renders the file with the
+            // vendored marked and highlight.js, and loads nothing the
+            // document names.
+            "view-markdown",
         };
 
         for (shipped) |key| {

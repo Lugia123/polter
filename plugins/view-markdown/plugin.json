@@ -1,0 +1,14 @@
+{
+  "key": "view-markdown",
+  "name": "Markdown",
+  "version": "1.0.0",
+  "description": "Shows a Markdown file as what it says: headings, lists, tables and fenced code, with the code highlighted by language, and a switch at the top to see the source exactly as it is. **Nothing in the document is loaded or opened** -- an image is drawn as a line of text with its alt and its target rather than fetched, a link is text rather than a button, and the page never builds a path. Read-only: there is nothing here that writes.",
+
+  "preview": {
+    "extensions": [".md", ".markdown", ".mdown", ".mkd"],
+    "render": "page",
+    "page": "page/index.html",
+    "reads": "file",
+    "priority": 60
+  }
+}
