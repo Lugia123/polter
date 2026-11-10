@@ -114,9 +114,9 @@ enum ControlRoomOverall {
         /// monitor, which are in no group.
         var group: String?
         var category: String
-        /// **Which process the rising row is.** Two sidecars of one group are
-        /// two rows with one group between them, so the group alone does not
-        /// say which one is climbing. Nothing on the page draws it yet; it is
+        /// **Which process the rising row is.** Two terminals of one group
+        /// are two rows with one group between them, so the group alone does
+        /// not say which one is climbing. Nothing on the page draws it yet; it is
         /// here because it is the fact that tells the two apart
         /// (`OverallPage.zig`'s `Rise.pid`).
         var pid: UInt64
@@ -163,8 +163,23 @@ enum ControlRoomOverall {
         var totalMib: UInt64
     }
 
+    /// **One of the table's group headings, counted and added up by the core**
+    /// (task 3119): the first layer under the main process. `group` empty is
+    /// the rows in no group, drawn last as its own layer rather than lost.
+    ///
+    /// **Both numbers are the core's** (`OverallPage.zig`'s
+    /// `tableGroupsOf`): the host draws the heading and groups nothing.
+    struct TableGroup: Equatable {
+        /// The group's name; empty for the rows in no group.
+        var group: String
+        /// How many rows stand under this heading: terminals and chats.
+        var count: UInt64
+        /// What those rows' memory adds up to, MiB.
+        var totalMib: UInt64
+    }
+
     /// The whole answer's `polter` block: the numbers the four figures draw
-    /// and the three stacked layers.
+    /// and the stacked layers.
     struct Whole {
         /// **The whole tree Polter is responsible for**, MiB: its own process
         /// and every terminal's tree, which is what the system charges to it
@@ -186,7 +201,7 @@ enum ControlRoomOverall {
         /// When Polter started, on the reader's own clock: the chart's
         /// x-axis begins here.
         var runStarted: String
-        /// The three layers, oldest cell first, for each span. **In the
+        /// The layers, oldest cell first, for each span. **In the
         /// order the stack is drawn**, which is the core's order
         /// (`layers`), not one this side sorts.
         var series: Series
@@ -196,17 +211,28 @@ enum ControlRoomOverall {
         /// the rows nor works out whose they are
         /// (`ControlRoomOverall.Process.category`).
         var processes: [Process]
-        /// **The table's three headings, each with the core's own count and
+        /// **The table's category headings, each with the core's own count and
         /// total** (`Section`): the rows under them are `processes`, taken in
         /// the order they arrive, and neither number is worked out here.
+        /// The main process is the one heading left (task 3119).
         var sections: [Section]
+        /// **The table's group layer under the main process** (task 3119):
+        /// one heading per group, in the core's own order, then the rows in
+        /// no group (`group: ""`). The rows under a heading are the
+        /// `processes` whose `group` is that name; the count and the total
+        /// are the core's, so this side draws them and adds nothing up.
+        ///
+        /// Empty for an answer from before the layer existed, and then the
+        /// table is drawn the way it was (a heading per category, each
+        /// terminal on its own) rather than as an empty list.
+        var tableGroups: [TableGroup]
         /// **The row the chart's rise line and its sentence are about**, as
         /// the core chose it; nil when nothing is rising. Never worked out
         /// here (`Rise`).
         var rise: Rise?
     }
 
-    /// One span's three layers. **The step between cells is the core's**:
+    /// One span's layers. **The step between cells is the core's**:
     /// the host places a point, it does not choose the resolution.
     struct Series {
         var hour: [Layer]
@@ -219,7 +245,7 @@ enum ControlRoomOverall {
         /// (`riseMarkFraction`).
         var nowS: UInt64
 
-        /// The three layers of a span, in the core's order.
+        /// The layers of a span, in the core's order.
         func layers(_ span: Span) -> [Layer] { span == .day ? hour : week }
         func stepS(_ span: Span) -> UInt64 { span == .day ? hourStepS : weekStepS }
 
@@ -253,11 +279,19 @@ enum ControlRoomOverall {
         }
     }
 
+    /// **What the frame's bar says while the whole of Polter is in front**
+    /// (task 3113): the overall view belongs to no group, so the bar cannot
+    /// take the selected row's name -- with a group called `polter`
+    /// selected, the page's own title read `polter`, and with a lone
+    /// terminal selected it read that terminal's title.
+    static let pageTitle = String(localized: "Polter performance monitoring",
+                                  comment: "总控台：整体视图上方标题栏")
+
     /// One process behind the table (task 2149, handoff §3): what the core
     /// read, and the two verdicts it made itself.
     struct Process: Equatable {
-        /// **Which of the table's three groups this row is drawn in**, as
-        /// the core named it (`main`, `chats`, `sidecars`). The core has the
+        /// **Which grouping of the table this row is drawn in**, as
+        /// the core named it (`main`, `chats`, `terminals`). The core has the
         /// row's kind beside it and this side **must not read that**: which
         /// kind belongs to which group is the core's own rule
         /// (`Overall.categoryOf`), and a host mapping the four kinds itself
@@ -288,8 +322,33 @@ enum ControlRoomOverall {
         /// When the process started; null for a row that is several
         /// processes or a platform that does not say.
         var started: String?
-        /// The terminal this row is, for a sidecar or a chat.
+        /// The terminal this row is, for a sidecar or a chat: its id, in
+        /// the spelling the rest of the control room uses
+        /// (`0x00000000000000ab`).
         var terminal: String?
+        /// **What that terminal is called** (task 3113): the title on its
+        /// tab, so that the row reads as the terminal it is. Nil when
+        /// nothing has named it, and then the row is named by its id alone.
+        var terminalTitle: String?
+        /// **The processes in that terminal's tree**, heaviest first (task
+        /// 3113, second round): the table draws the terminal as a group and
+        /// puts these under it, so a reader looking for what ate the memory
+        /// can see the agent, its MCP servers and the build. Empty for a
+        /// row that is not a terminal.
+        var children: [Child]
+        /// **How many of the tree's processes are not in `children`**: a
+        /// busy tree holds more than a row has room for, and the table says
+        /// how many are left out rather than showing a shortened list as
+        /// the whole (`tools/control-room-hosts-do-not-decide.py`'s rule
+        /// about a cut: mark where the rest is).
+        var childrenMore: UInt64
+
+        /// One process inside a terminal's tree.
+        struct Child: Equatable {
+            var pid: UInt64
+            var name: String
+            var memMib: UInt64
+        }
 
         /// Whether this row is one the table's own ordering already puts
         /// last: the monitor's, drawn as "其中：性能监控".
@@ -398,7 +457,7 @@ enum ControlRoomOverall {
     }
 
     /// All of Polter: the numbers the overall view's four blocks draw, the
-    /// three stacked layers of its chart, and the rows of its process table
+    /// stacked layers of its chart, and the rows of its process table
     /// (task 2149, handoff §6).
     ///
     /// **A missing `polter` is not this answer at all** (`decode` refuses
@@ -421,6 +480,7 @@ enum ControlRoomOverall {
                 nowS: series.flatMap { r.int($0, "polter.series", "now_s") } ?? 0),
             processes: readProcesses(r, p),
             sections: readSections(r, p),
+            tableGroups: readTableGroups(r, p),
             rise: readRise(r, p))
     }
 
@@ -442,6 +502,28 @@ enum ControlRoomOverall {
             return Section(category: r.text(o, path, "category"),
                            count: r.int(o, path, "count") ?? 0,
                            totalMib: r.int(o, path, "total_mib") ?? 0)
+        }
+    }
+
+    /// **The table's group layer, read verbatim** (task 3119): the core's
+    /// names, counts and totals, in the core's order. The last one may have
+    /// an empty `group` -- the rows in no group -- and that is a layer, not a
+    /// missing fact.
+    ///
+    /// A missing list is an answer from before the layer existed, and then
+    /// the table is drawn the way it was (`tableLines`), never as an empty
+    /// one.
+    private static func readTableGroups(_ r: ControlRoomAnswerReader,
+                                        _ p: ControlRoomAnswerReader.Object) -> [TableGroup] {
+        r.list(p, "polter", "table_groups").enumerated().compactMap { i, item in
+            let path = ControlRoomAnswerReader.at("polter.table_groups", i)
+            guard let o = item as? ControlRoomAnswerReader.Object else {
+                r.miss(path)
+                return nil
+            }
+            return TableGroup(group: r.text(o, path, "group"),
+                              count: r.int(o, path, "count") ?? 0,
+                              totalMib: r.int(o, path, "total_mib") ?? 0)
         }
     }
 
@@ -483,6 +565,16 @@ enum ControlRoomOverall {
                 return nil
             }
             let growth = r.obj(o, path, "growth")
+            let children = r.list(o, path, "children").enumerated().compactMap { j, item -> Process.Child? in
+                let at = ControlRoomAnswerReader.at("\(path).children", j)
+                guard let c = item as? ControlRoomAnswerReader.Object else {
+                    r.miss(at)
+                    return nil
+                }
+                return Process.Child(pid: r.int(c, at, "pid") ?? 0,
+                                     name: r.text(c, at, "name"),
+                                     memMib: r.int(c, at, "mem_mib") ?? 0)
+            }
             return Process(
                 category: r.text(o, path, "category"),
                 pid: r.int(o, path, "pid") ?? 0,
@@ -496,12 +588,15 @@ enum ControlRoomOverall {
                 alive: r.bool(o, path, "alive") ?? true,
                 diedAt: r.nullableText(o, path, "died_at"),
                 started: r.nullableText(o, path, "started"),
-                terminal: r.nullableText(o, path, "terminal"))
+                terminal: r.nullableText(o, path, "terminal"),
+                terminalTitle: r.nullableText(o, path, "terminal_title"),
+                children: children,
+                childrenMore: r.int(o, path, "children_more") ?? 0)
         }
     }
 
     /// The three layers of one span, **in the order the core stacked them**
-    /// (`.main`, `.chats`, `.sidecars`). Nothing here sorts them or works
+    /// (`.main`, `.chats`, `.terminals`). Nothing here sorts them or works
     /// out which is which: the name arrives beside the cells
     /// (`tools/control-room-hosts-do-not-decide.py`).
     private static func readLayers(_ r: ControlRoomAnswerReader, _ s: ControlRoomAnswerReader.Object?,
@@ -713,11 +808,28 @@ enum ControlRoomOverall {
     // MARK: - The process table (handoff §6, the third of slice 2's three
     // blocks)
 
-    /// One line of the process table: a group's own heading, or a process
-    /// under one.
+    /// One line of the process table: a category's own heading, a process
+    /// under one, or a terminal with the processes inside it.
     enum TableLine: Equatable {
         case section(Section)
+        /// **A group of the table** (task 3119): the first layer under the
+        /// main process. Its own line is the core's name for it and the
+        /// core's two numbers; the terminals and the chat that carry that
+        /// group stand under it.
+        case grouping(TableGroup)
         case process(Process)
+        /// **A terminal, drawn as a group** (task 3113, second round): its
+        /// own line names it (title and id) and `child` lines stand under
+        /// it. There is no category heading over the terminals any more --
+        /// the table is a list of terminals, not of shapes of process.
+        case terminal(Process)
+        /// One process inside the terminal above it.
+        case child(Process.Child)
+        /// "and N more processes" under those: the row carries the heaviest
+        /// ones, and the core says how many did not fit. A list that
+        /// stopped at twelve of thirty-one is a shortened list, and the
+        /// table says so rather than showing it as the whole.
+        case more(UInt64)
 
         /// The heading, on the line that is one; nil on a process's line.
         var sectionOrNil: Section? {
@@ -725,36 +837,120 @@ enum ControlRoomOverall {
             return nil
         }
 
-        /// The pid, on a process's line; nil on a heading's. For tests and
-        /// for anything that wants to point at a row.
+        /// The pid, on a process's or a terminal's line; nil on a heading's
+        /// and on a child's. For tests and for anything that wants to point
+        /// at a row.
         var pidOrNil: UInt64? {
-            if case let .process(p) = self { return p.pid }
+            switch self {
+            case let .process(p), let .terminal(p): return p.pid
+            case .section, .grouping, .child, .more: return nil
+            }
+        }
+
+        /// The group, on the line that is a group's: nil on every other.
+        var groupOrNil: TableGroup? {
+            if case let .grouping(g) = self { return g }
             return nil
         }
     }
 
-    /// **The table's lines, in the core's own order**: one heading per group
-    /// the core sent, and under it the rows the core named that group on --
-    /// each row drawn once, in the order the core's `processes` has them.
+    /// **The table's lines, three layers deep** (task 3119): the main
+    /// process's heading and its rows; then one group's heading and the
+    /// terminals and chat carrying that group's name; then a terminal's own
+    /// processes and the line that says how many did not fit.
     ///
-    /// **Which row is whose group is the core's word on the row**
-    /// (`Process.category`) matched against the core's own heading
-    /// (`Section.category`): two facts it sent, compared as the two strings
-    /// it chose. Nothing here sorts the rows, weighs them against each other
-    /// or works out a group the core did not name
-    /// (`tools/control-room-hosts-do-not-decide.py`).
+    /// **Which row is under which heading is the core's word on the row**
+    /// (`Process.category` for the main heading, `Process.group` for a
+    /// group), matched against the core's own headings -- two facts it sent,
+    /// compared as the two strings it chose. Nothing here sorts the rows,
+    /// weighs them against each other or works out a group the core did not
+    /// name (`tools/control-room-hosts-do-not-decide.py`). The headings'
+    /// count and total are the core's too, drawn as they came.
     ///
-    /// **A row whose category is no heading** -- an answer that carries rows
-    /// and no such group -- is left out rather than drawn in a group of its
-    /// own, because the host would then be naming a group the core did not.
-    static func tableLines(_ w: Whole) -> [TableLine] {
+    /// **A row in no group is a layer of its own** (`group: ""`), drawn
+    /// last: a terminal nobody has put in a group would otherwise be
+    /// invisible.
+    ///
+    /// **An answer from before the group layer** is drawn the way it was
+    /// (`legacyTableLines`): a heading per category and each terminal on its
+    /// own. A missing list is not an empty table.
+    ///
+    /// **`folded` is the reader's, not the core's** (task 3113): which
+    /// groups the person has closed is a fact about the page in front of
+    /// them, like which span the chart is drawn over. A heading that is
+    /// folded keeps its line and loses the rows under it; the core's count
+    /// on that line still says how many there are, which is what the closed
+    /// row is for.
+    ///
+    /// **Every key carries what kind of line it is** (`category:main`,
+    /// `group:polter`, `term:0x…`): a group really can be called `main`, and
+    /// a bare `main` would fold the main process's heading with the group
+    /// (task 3119).
+    static func tableLines(_ w: Whole, folded: Set<String> = []) -> [TableLine] {
+        guard !w.tableGroups.isEmpty else { return legacyTableLines(w, folded: folded) }
         var out: [TableLine] = []
         for s in w.sections {
             out.append(.section(s))
+            if folded.contains(sectionKey(s.category)) { continue }
             for p in w.processes where p.category == s.category { out.append(.process(p)) }
+        }
+        for g in w.tableGroups {
+            out.append(.grouping(g))
+            if folded.contains(groupKey(g.group)) { continue }
+            // **The main process and the monitor are in no group** (their
+            // `group` is nil), so the empty-name layer cannot pick them up.
+            for p in w.processes where p.category != "main" && (p.group ?? "") == g.group {
+                // A terminal is its own foldable group; a chat is one row
+                // under its group (task 3119).
+                if p.category == "terminals" {
+                    out.append(.terminal(p))
+                    if folded.contains(terminalKey(p)) { continue }
+                    for c in p.children { out.append(.child(c)) }
+                    if p.childrenMore > 0 { out.append(.more(p.childrenMore)) }
+                } else {
+                    out.append(.process(p))
+                }
+            }
         }
         return out
     }
+
+    /// **The table before the group layer existed** (task 3119): a heading
+    /// per category the core sent, and each terminal that has no heading as
+    /// its own group. Kept so that an older core draws the table it always
+    /// drew rather than none.
+    private static func legacyTableLines(_ w: Whole, folded: Set<String>) -> [TableLine] {
+        var out: [TableLine] = []
+        let grouped = Set(w.sections.map(\.category))
+        for s in w.sections {
+            out.append(.section(s))
+            if folded.contains(sectionKey(s.category)) { continue }
+            for p in w.processes where p.category == s.category { out.append(.process(p)) }
+        }
+        for p in w.processes where !grouped.contains(p.category) && p.terminal != nil {
+            out.append(.terminal(p))
+            if folded.contains(terminalKey(p)) { continue }
+            for c in p.children { out.append(.child(c)) }
+            if p.childrenMore > 0 { out.append(.more(p.childrenMore)) }
+        }
+        return out
+    }
+
+    /// **A category heading's fold key**: its category, behind the word that
+    /// says what kind of line it is.
+    static func sectionKey(_ category: String) -> String { "category:\(category)" }
+
+    /// **A group's fold key**: the group's name, behind `group:`. The empty
+    /// name -- the rows in no group -- is a key of its own, not a wildcard.
+    static func groupKey(_ group: String) -> String { "group:\(group)" }
+
+    /// **A terminal's fold key**: the terminal's id, behind `term:`. A row
+    /// with no id falls back to its pid.
+    static func terminalKey(_ p: Process) -> String { "term:" + (p.terminal ?? String(p.pid)) }
+
+    /// The old spelling, kept for the callers that fold a terminal: the same
+    /// key as `terminalKey`, now carrying what kind of line it is.
+    static func foldKey(_ p: Process) -> String { terminalKey(p) }
 
     /// What the table calls one row.
     ///
@@ -765,30 +961,41 @@ enum ControlRoomOverall {
     /// "其中" is what says so in the person's language.
     ///
     /// The other rows are named from what the core sent beside them: the
-    /// group a chat is, the terminal a sidecar serves, and the application
-    /// itself for the main process. **The names are the host's** -- they are
-    /// sentences in the person's language and belong in the catalogue -- and
-    /// the facts in them are the core's.
+    /// group a chat is, the terminal a terminal's row is, and the
+    /// application itself for the main process. **The names are the host's**
+    /// -- they are sentences in the person's language and belong in the
+    /// catalogue -- and the facts in them are the core's.
     ///
-    /// **A sidecar's row names its terminal and not its group.** Both facts
-    /// arrive on that row -- the core says which group the terminal behind
-    /// the sidecar is in, and that is what draws in the table's own "which
-    /// group" column -- so naming it by the group first made every sidecar
-    /// read "Chat web-app", the same words as the chat in that group. Which
-    /// of the two a row is named by is the core's own `category`, the same
-    /// word this file already switches on for the section headings.
+    /// **A terminal's row is named by the terminal** (task 3113, the user's
+    /// ruling): its title and its id, not one word for every row of the
+    /// kind. The word "sidecar" named the process shape the core had split
+    /// out of that terminal's tree, and the row is the whole tree -- a
+    /// reader looking for "the build that ate the memory" is looking for a
+    /// terminal, and the table has to be able to say which one.
+    ///
+    /// A title that never arrived leaves the id alone rather than half a
+    /// name; a row with neither is the terminal's own word.
     static func rowName(_ p: Process) -> String {
         if p.isTheMonitor {
             return String(localized: "of which: performance monitoring",
                           comment: "总控台：整体视图进程表里监控自己那一行，说明它已经算在主进程里了")
         }
         switch p.category {
-        case "sidecars":
-            if let terminal = p.terminal, !terminal.isEmpty {
-                return String(format: String(localized: "Sidecar for %@",
-                                             comment: "总控台：整体视图进程表，MCP 边车那一行，参数是它服务的终端"),
-                              terminal)
+        case "terminals":
+            let id = p.terminal.flatMap { $0.isEmpty ? nil : $0 }
+            if let title = p.terminalTitle, !title.isEmpty {
+                if let id {
+                    // **Both, and in one string a translator places**: the
+                    // name the person gave the terminal, and which terminal
+                    // it is.
+                    return String(format: String(localized: "%@ %@",
+                                                 comment: "总控台：整体视图进程表，一个终端那一行：先是它的标题，再是它的 0x… id"),
+                                  title, id)
+                }
+                return title
             }
+            if let id { return id }
+            return String(localized: "Terminal", comment: "总控台：整体视图进程表，一个终端既没有标题也没有 id 时那一行")
         case "chats":
             if let group = p.group, !group.isEmpty {
                 return String(format: String(localized: "Chat %@",
@@ -926,6 +1133,29 @@ enum ControlRoomOverall {
                       tableHead: CGRect(x: left, y: tableTop + CGFloat(o.tableTop), width: w,
                                         height: CGFloat(o.tableHeadHeight)),
                       contentHeight: tableTop)
+    }
+
+    /// Where one of the machine's two little curves is drawn inside its card
+    /// (task 3113): the box its points are scaled into, and where that box
+    /// stands in the card.
+    ///
+    /// **The box has its own origin at zero on purpose.** `ControlRoomResources.curve`
+    /// maps points into the rect it is handed -- its left edge and its bottom
+    /// -- and the view then places that box by `at`. Handing it a rect that
+    /// already carried the card's origin put the origin in twice: the line
+    /// was drawn one padding right and a head's height below where it
+    /// belonged, and its newest points left the card at the bottom right.
+    /// One rect, one origin (task 3090's chart card was the same mistake in
+    /// another drawing path).
+    static func miniCurve(in card: CGRect) -> (box: CGRect, at: CGPoint) {
+        let o = Look.OverallPage.self
+        let box = CGRect(x: 0, y: 0,
+                         width: max(0, card.width - 2 * CGFloat(o.cardPadX)),
+                         height: CGFloat(o.miniHeight))
+        // The head's line, then its gap, from the card's own padding.
+        let at = CGPoint(x: CGFloat(o.cardPadX),
+                         y: CGFloat(o.cardPadY) + CGFloat(o.miniHeadHeight) + CGFloat(o.miniTop))
+        return (box, at)
     }
 
     /// How tall the table is with `rows` lines in it -- one per group and one

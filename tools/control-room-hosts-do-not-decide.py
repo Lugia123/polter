@@ -162,19 +162,13 @@ EXCEPTIONS = {
      "reads the core's kind",
      'Text(item.kind == .ordered ? "\\(item.ordinal)." : "\u2022")'):
         (1, "local Markdown list marker style (.ordered), not a snapshot group kind"),
-    # Task 2793's mac feed and view (2982): the same bounded in-memory window
-    # as the eviction bound above, counted to find where the live tail starts
-    # and to look a row up by id. None of these is the number of rows the core
-    # said a group has.
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "if let index = indexByID[id], index < feed.rows.count {"):
-        (1, "looking a row up by id in the feed's own bounded window"),
+    # Task 2793's mac feed and view (2982): the bounded in-memory window the
+    # chat draws, counted to bound a row lookup by id. Not the number of rows
+    # the core said a group has. (The anchor and its window went with the
+    # native list -- design v3 §七 -- and their entries with them.)
     ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
      "guard index < feed.rows.count else { return false }"):
         (1, "the same id lookup's bound, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "index.reserveCapacity(feed.rows.count)"):
-        (1, "sizing a local index table to the window being walked"),
     ('windows/control-room/src/chat_rows.rs', 'picks a winner by comparing',
      ".min_by_key(|r| r.top.saturating_sub(at).saturating_abs())"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
@@ -198,49 +192,6 @@ EXCEPTIONS = {
     ('macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift', 'counts rows',
      "guard index > 0, index < feed.rows.count else { return false }"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"window: disagree top=\\(Int(self.cameraTopY()), privacy: .public) offset=\\(Int(offset), privacy: .public) intake=\\(n, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) above=\\(self.feed.aboveCount, privacy: .public) below=\\(self.feed.belowCount, privacy: .public)\""):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"window: side=\\(side, privacy: .public) dir=\\(direction, privacy: .public) moved=\\(moved, privacy: .public) want=\\(want, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) pinned=\\(self.camera.pinned ? 1 : 0, privacy: .public) place=\\(self.camera.place.map { \"\\($0.id)@\\(Int($0.offset))\" } ?? \"-\", privacy: .public) contentH=\\(Int(self.contentH), privacy: .public) live=\\(Int(self.liveDocumentHeight), privacy: .public) topID=\\(topIDBefore, privacy: .public) topIDAfter=\\(topIDAfter, privacy: .public) drawnAbove=\\(Int(drawnAbove), privacy: .public) loadedAbove=\\(Int(drawnAbove + apronAbove), privacy: .public) drawnBelow=\\(Int(drawnBelow), privacy: .public) loadedBelow=\\(Int(drawnBelow + apronBelow), privacy: .public) apronAbove=\\(self.feed.aboveCount, privacy: .public) apronBelow=\\(self.feed.belowCount, privacy: .public) viewport=\\(Int(reading.viewport), privacy: .public) margin=\\(Int(ControlRoomChatWindow.marginScreens * reading.viewport), privacy: .public) hasEarlier=\\(self.feed.hasEarlier ? 1 : 0, privacy: .public) hasNewer=\\(self.feed.hasNewer ? 1 : 0, privacy: .public) offset=\\(Int(self.offsetY), privacy: .public) content=\\(Int(reading.content), privacy: .public)\""):
-        (1, "the window's own trace: the rows already loaded into its document and its two aprons, never the number a group has"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"bounds: hand=\\(hand ? 1 : 0, privacy: .public) branch=\\(branch, privacy: .public) offset=\\(Int(y), privacy: .public) delta=\\(Int(delta), privacy: .public) content=\\(Int(content), privacy: .public) doc=\\(Int(self.currentDocumentBottom()), privacy: .public) contentH=\\(Int(self.contentH), privacy: .public) live=\\(Int(self.liveDocumentHeight), privacy: .public) viewer=\\(self.handleAttached ? 1 : 0, privacy: .public) pinned=\\(self.camera.pinned ? 1 : 0, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) frames=\\(self.frames.count, privacy: .public) n=\\(self.boundsLines, privacy: .public)\""):
-        (1, "the bounds trace: the rows already loaded into the window's document and the frames it holds, never the number a group has"),
-    # Task 3016 (the ruler diagnostics): the heights/estimate traces, added
-    # only to find which ruler moves under a still anchor.
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"heights: changed=\\(changed.count, privacy: .public) \\(sample, privacy: .public) frames=\\(value.count, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public) est=\\(Int(self.feed.rowHeightEstimate), privacy: .public)\""):
-        (1, "the height trace: rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"est: \\(Int(estimateBefore), privacy: .public) -> \\(Int(self.feed.rowHeightEstimate), privacy: .public) measured=\\(self.frames.count, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public)\""):
-        (1, "the estimate trace: rows already loaded into the window, not a group total"),
-
-    # Task 3016 (the anchor model): the window's own traces and the walk that
-    # finds the nearest loaded row. Every count below is over rows already in
-    # the window, never the number a group has.
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "rows: feed.rows.count,"):
-        (2, "the viewport trace's row count, taken in the same body pass as the window it describes"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"auto: start points=\\(points, privacy: .public) back=\\(back, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public)\""):
-        (1, "the auto-scroll trace: the rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"anchor: unnormalizable index=\\(index, privacy: .public) offset=\\(Int(offset), privacy: .public) rows=\\(self.feed.rows.count, privacy: .public)\""):
-        (1, "the anchor's own trace: the rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"anchor: lost id=\\(place.id, privacy: .public) reason=\\(reason, privacy: .public) moved=\\(id, privacy: .public) rows=\\(self.feed.rows.count, privacy: .public)\""):
-        (1, "the anchor's own trace: the rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"anchor: lost id=\\(place.id, privacy: .public) reason=\\(reason, privacy: .public) moved=- rows=\\(self.feed.rows.count, privacy: .public)\""):
-        (1, "the anchor's own trace when there is nowhere to put it back: the rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "for distance in 0..<rows.count {"):
-        (1, "the nearest-row walk searches the rows already loaded into the window, not a group total"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "if ahead < rows.count, case let .message(id) = rows[ahead] { return id }"):
-        (1, "the nearest-row walk searches the rows already loaded into the window, not a group total"),
 
     # Task 3016 R4's window: the document and its two aprons are the feed's
     # own bounded set. Every count and sort below is over rows already loaded
@@ -282,12 +233,6 @@ EXCEPTIONS = {
     ("macos/Sources/Features/ControlRoom/ControlRoomChatFeed.swift", "counts rows",
      "self.rows.removeLast(rows.count)"):
         (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "counts rows",
-     "\"top-hit: count=\\(topHits, privacy: .public) rows=\\(feed.rows.count, privacy: .public) pinned=\\(camera.pinned, privacy: .public)\""):
-        (1, "the chat page is a window over a stream: these count the rows already loaded into it (its own geometry, its own lookups, its own trace), never the number a group has"),
-    ("macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift", "sorts",
-     "heights.sort()"):
-        (1, "sorting the measured heights of rows already laid out, to take a median; not an order of the group"),
 }
 
 

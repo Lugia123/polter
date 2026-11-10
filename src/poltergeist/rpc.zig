@@ -37,6 +37,7 @@ pub const squad = @import("squad.zig");
 const secret = @import("secret.zig");
 pub const files = @import("files/main.zig");
 pub const worktree = @import("worktree.zig");
+const titles = @import("titles.zig");
 
 const log = std.log.scoped(.poltergeist);
 
@@ -3340,6 +3341,107 @@ test "a split nobody asked to mind is not reported as a refused watch" {
     try testing.expect(res.opened.watch == .not_asked);
 }
 
+// -- issue #77: a terminal Polter opens is named ----------------------------
+
+test "3087: a terminal opened in a directory is pinned with the directory's name" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var fake: FakeHost = .{ .open_result = 0x3333 };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/Users/me/ghostty",
+    } });
+    try testing.expectEqual(@as(?Bus.Id, 0x3333), res.opened.id);
+
+    // **Two titles, and both of them.** The surface's is what
+    // `terminal_list` and the chat's member names read; the tab's is what
+    // the person sees. One without the other is the defect this test is
+    // for: a worker named in `terminal_list` and `Claude Code` on its tab.
+    try testing.expectEqual(@as(usize, 2), fake.actions_n);
+    try testing.expectEqual(@as(Bus.Id, 0x3333), fake.actions[0].id);
+    try testing.expectEqualStrings("set_surface_title:ghostty", fake.actions[0].action);
+    try testing.expectEqualStrings("set_tab_title:ghostty", fake.actions[1].action);
+
+    // ⚠️ **Both names are non-empty on purpose.** The pin is what keeps the
+    // CLI's own `Claude Code` from replacing it on the next prompt, and an
+    // empty `set_surface_title:` is how a caller *unpins* -- the opposite
+    // of what this is for -- so the fallback is a name, not nothing.
+
+    // No directory of its own: `terminal`, never an empty name (which would
+    // be an unpin, the opposite of what this is for).
+    fake.actions_n = 0;
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{} });
+    try testing.expectEqual(@as(usize, 2), fake.actions_n);
+    try testing.expectEqualStrings("set_surface_title:terminal", fake.actions[0].action);
+}
+
+test "3087: a terminal that has not appeared yet carries its name with the request" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The ordinary case: `place: auto` on a runtime that splits on its own
+    // thread -- the reply has no id to pin.
+    var fake: FakeHost = .{ .open_result = null, .open_placed = .split };
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_open = .{
+        .cwd = "/tmp/work",
+        .place = .here,
+    } });
+    try testing.expect(res.opened.id == null);
+    // Nothing to name yet: an action on a terminal that is not there would
+    // be an error, not a name.
+    try testing.expectEqual(@as(usize, 0), fake.actions_n);
+    // The name went with the request, and the host pins it when it appears.
+    try testing.expectEqualStrings("work", fake.opened.?.title);
+}
+
+test "3087: a squad seat is pinned with its alias and task; a bare role with its name" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    // Seats of one task tell apart by their alias; seats of one alias in
+    // two tasks by the number.
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .task = 1,
+        .member = "test",
+    } });
+    try testing.expect(res == .opened);
+    try testing.expectEqual(@as(usize, 2), fake.actions_n);
+    try testing.expectEqualStrings("set_surface_title:test·1", fake.actions[0].action);
+    try testing.expectEqualStrings("set_tab_title:test·1", fake.actions[1].action);
+    // The same name travels with the request, for a terminal that arrives
+    // after the reply (the pending half of the road).
+    try testing.expectEqualStrings("test·1", fake.role_launched.?.title);
+
+    // A bare role is its own name (`role_list`'s `name`), not its key:
+    // `worker-dev` reads `Dev` on the tab.
+    fake.actions_n = 0;
+    fake.persona_name = "Dev";
+    _ = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{
+        .key = "worker-dev",
+        .cwd = "/tmp",
+    } });
+    try testing.expectEqual(@as(usize, 2), fake.actions_n);
+    try testing.expectEqualStrings("set_surface_title:Dev", fake.actions[0].action);
+    try testing.expectEqualStrings("set_tab_title:Dev", fake.actions[1].action);
+}
+
 test "where a terminal went, and why it went to a tab, reach the caller" {
     var b = try testBus(testing.allocator);
     defer b.deinit();
@@ -3555,6 +3657,16 @@ test "Polter's own switches are refused, and never reach the terminal" {
     try testing.expect(fake.acted != null);
 }
 
+/// A close that went through answers with a sentence about where the
+/// terminal is now, not a bare `ok` (task 3137). Returns the sentence; a
+/// reply of any other shape is the failure this helper exists to catch.
+fn closedReply(res: wire.Response) ![]const u8 {
+    return switch (res) {
+        .text => |t| t,
+        else => error.CloseReportedAsBareOk,
+    };
+}
+
 test "closing a terminal in the arrangement does not stop to ask" {
     // The bug: a supervisor asked to close a worker it was minding, the
     // terminal put up the same confirmation a misclicking user would get,
@@ -3569,7 +3681,7 @@ test "closing a terminal in the arrangement does not stop to ask" {
     const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_action = .{ .id = worker, .action = "close_surface" },
     });
-    try testing.expectEqual(wire.Response.ok, res);
+    _ = try closedReply(res);
     try testing.expect(!fake.acted.?.confirm_close);
 
     // The other marked kind, and the one easy to leave out because it is
@@ -3579,7 +3691,7 @@ test "closing a terminal in the arrangement does not stop to ask" {
     const sup = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_action = .{ .id = other, .action = "close_surface" },
     });
-    try testing.expectEqual(wire.Response.ok, sup);
+    _ = try closedReply(sup);
     try testing.expect(!fake.acted.?.confirm_close);
 }
 
@@ -3601,7 +3713,7 @@ test "#989: a worker an agent opened is closed without asking, even after it was
     const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_action = .{ .id = other, .action = "close_surface" },
     });
-    try testing.expectEqual(wire.Response.ok, res);
+    _ = try closedReply(res);
     // Handed down as "no consent needed": the host closes it outright.
     try testing.expect(!fake.acted.?.confirm_close);
 }
@@ -3625,7 +3737,7 @@ test "closing an unmarked busy terminal is refused, and the refusal is not repor
     const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
         .terminal_action = .{ .id = other, .action = "close_surface" },
     });
-    try testing.expectEqual(wire.Response.ok, res);
+    _ = try closedReply(res);
     try testing.expect(fake.acted.?.confirm_close);
 
     // #989: when the host says the close needed the user's consent, it
@@ -3670,7 +3782,7 @@ test "closing a tab or a window answers the same way closing a surface does" {
         const marked = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
             .terminal_action = .{ .id = worker, .action = action },
         });
-        try testing.expectEqual(wire.Response.ok, marked);
+        _ = try closedReply(marked);
         try testing.expect(!fake.acted.?.confirm_close);
 
         // Unmarked: consent would be needed, same as a surface -- and the
@@ -3679,7 +3791,7 @@ test "closing a tab or a window answers the same way closing a surface does" {
         const unmarked = try dispatch(arena.allocator(), &b, plain.host(), term(boss), .{
             .terminal_action = .{ .id = other, .action = action },
         });
-        try testing.expectEqual(wire.Response.ok, unmarked);
+        _ = try closedReply(unmarked);
         try testing.expect(plain.acted.?.confirm_close);
 
         // And the dialog going up is never `ok`. This is the one that
@@ -3692,6 +3804,45 @@ test "closing a tab or a window answers the same way closing a surface does" {
         if (refused != .failed) return error.RefusalReportedAsDone;
         try testing.expectEqualStrings("UserTerminal", refused.failed.code);
     }
+}
+
+test "3137: a close answers with where the terminal is now, not a bare ok" {
+    // The report: a supervisor closes a worker's pane with `close_surface`,
+    // is told `ok`, and the terminal is still in `terminal_list`. The pane
+    // did go -- what stays is the terminal itself, in no window or tab,
+    // with its shell still running -- and `ok` said nothing about the one
+    // thing that had changed. The reply now carries it, and it is the same
+    // `Bus.housed` that `terminal_list` reports as `shown`.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    // The host in these tests moves nothing, so the window has said
+    // nothing: the reply says the terminal is still in a tab rather than
+    // pretending it is gone -- the honest half for a host that closes
+    // after the reply (Windows queues the close).
+    var fake: FakeHost = .{};
+    const before = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = worker, .action = "close_surface" },
+    });
+    try testing.expect(std.mem.indexOf(u8, try closedReply(before), "shown:true") != null);
+
+    // The window's word arrives (inside the call on macOS): the same close
+    // of a terminal in that state answers with where it is now.
+    _ = b.noteUnhoused(worker, true);
+    fake.acted = null;
+    const after = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = worker, .action = "close_surface" },
+    });
+    try testing.expect(std.mem.indexOf(u8, try closedReply(after), "shown:false") != null);
+
+    // And an action that is not a close still answers plainly: one `ok`,
+    // nothing said about a window it never touched.
+    const plain = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .terminal_action = .{ .id = worker, .action = "new_tab" },
+    });
+    try testing.expectEqual(wire.Response.ok, plain);
 }
 
 test "the confirm answer is about closing and nothing else carries it" {
@@ -3830,7 +3981,7 @@ test "1746: a question the CLI asks before it starts on the screen: no key but c
 /// it, for the tests below: one entry, `enter`, at the trust box.
 const agy_answer: Plugin.StartupSays.Answer = .{
     .contains = "Do you trust the contents of this project?",
-    .key = "enter",
+    .keys = &.{"enter"},
     .description = "auto-trust the new workspace (box default: Yes)",
 };
 
@@ -3869,6 +4020,34 @@ test "2635: terminal_answer_prompt presses the declared key at a startup questio
     try testing.expectEqual(@as(usize, 1), fake.keys_n);
     // Not an arrow first: one key, the declared one, and no walk.
     try testing.expectEqualStrings("enter", fake.keys_pressed[0]);
+}
+
+test "3088: terminal_answer_prompt presses a whole key sequence in one call" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Claude Code's API-key box: the cursor starts on `No (recommended)`,
+    // and one arrow up puts it on `Yes`. Both keys go in the one call --
+    // split across calls, the second would never be sent, because after
+    // `arrow_up` the screen no longer matches `❯ No (recommended)`.
+    const api_key_answer: Plugin.StartupSays.Answer = .{
+        .contains = "❯ No (recommended)",
+        .keys = &.{ "arrow_up", "enter" },
+        .description = "use the API key the launcher set (cursor starts on No)",
+    };
+    var fake: FakeHost = .{ .startup_question = true, .startup_answer = .{ .key = api_key_answer }, .key_outcome = .written };
+    const r = try dispatch(alloc, &b, fake.host(), term(boss), .{ .terminal_answer_prompt = .{ .id = worker } });
+
+    try testing.expect(r == .text);
+    try testing.expectEqual(@as(usize, 2), fake.keys_n);
+    try testing.expectEqualStrings("arrow_up", fake.keys_pressed[0]);
+    try testing.expectEqualStrings("enter", fake.keys_pressed[1]);
+    // The reply names the sequence, so a reader can tell what was pressed
+    // without reconstructing it from the declaration.
+    try testing.expect(std.mem.indexOf(u8, r.text, "arrow_up then enter") != null);
 }
 
 test "2635: the declared key is pressed and choice takes no part in it" {
@@ -7347,6 +7526,12 @@ pub const Host = struct {
             alloc: std.mem.Allocator,
         ) anyerror![]const u8,
 
+        /// A role's own name -- `role_list`'s `name` for `key` -- or null
+        /// when there is no role by that key. Borrowed and valid for the
+        /// request; the title a terminal opened for a bare role is pinned
+        /// with (issue #77).
+        personaName: *const fn (ctx: *anyopaque, key: []const u8) ?[]const u8,
+
         /// Write one role (JSON) into the library. Errors are
         /// `PersonaStore.WriteError`'s names.
         personaPut: *const fn (ctx: *anyopaque, json: []const u8) anyerror!void,
@@ -7394,6 +7579,9 @@ pub const Host = struct {
             /// A squad's seat the terminal is to take, with the squad's
             /// override over the role; null for a start that is not one.
             seat: ?MemberSeat,
+            /// As `openTerminal`'s: the name to pin when the terminal is
+            /// made after this returns. Empty: no name.
+            title: []const u8,
         ) anyerror!Opened,
 
         /// Find or make the worktree `name` of the repository `cwd` is in
@@ -7487,6 +7675,12 @@ pub const Host = struct {
             cwd: []const u8,
             by: Bus.Id,
             place: Placement,
+            /// What to pin the terminal's title to when the runtime has
+            /// not made it by the time this returns (`titles.zig`). The
+            /// caller pins it itself once it has an id; this is the same
+            /// name for the other half of the road, where there is no id
+            /// to send it to yet. Empty: no name.
+            title: []const u8,
         ) anyerror!Opened,
 
         /// Do one of the terminal's own keybinding actions to it.
@@ -8298,8 +8492,9 @@ pub const Host = struct {
         cwd: []const u8,
         by: Bus.Id,
         place: Placement,
+        title: []const u8,
     ) anyerror!Opened {
-        return self.vtable.openTerminal(self.ctx, alloc, cwd, by, place);
+        return self.vtable.openTerminal(self.ctx, alloc, cwd, by, place, title);
     }
 
     fn worktreePrepare(self: Host, alloc: std.mem.Allocator, by: Bus.Id, cwd: []const u8, name: []const u8) anyerror!worktree.Prepared {
@@ -8358,6 +8553,10 @@ pub const Host = struct {
         return self.vtable.personaCatalog(self.ctx, alloc);
     }
 
+    fn personaName(self: Host, key: []const u8) ?[]const u8 {
+        return self.vtable.personaName(self.ctx, key);
+    }
+
     fn launchers(self: Host, alloc: std.mem.Allocator, by: Bus.Id, op: LauncherOp) anyerror![]const u8 {
         return self.vtable.launchers(self.ctx, alloc, by, op);
     }
@@ -8390,8 +8589,9 @@ pub const Host = struct {
         beside: ?Bus.Id,
         group: []const u8,
         seat: ?MemberSeat,
+        title: []const u8,
     ) anyerror!Opened {
-        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside, group, seat);
+        return self.vtable.personaLaunch(self.ctx, alloc, by, key, cli, cwd, place, into, beside, group, seat, title);
     }
 
     fn quietMs(self: Host, id: Bus.Id) u64 {
@@ -10585,7 +10785,12 @@ fn dispatchOne(
                 .go => |t| t,
                 .stop => |no| return no,
             };
-            const opened = host.openTerminal(alloc, if (tree) |t| t.dir else p.cwd, caller, p.place) catch |err| return switch (err) {
+            // ⚠️ **The dir its terminal will actually stand in**, which is
+            // the tree's when one was asked for; `p.cwd` is empty far more
+            // often than not, and the name is read off this.
+            const dir = if (tree) |t| t.dir else p.cwd;
+            const name = titles.directoryName(dir);
+            const opened = host.openTerminal(alloc, dir, caller, p.place, name) catch |err| return switch (err) {
                 error.NotAbsolute => hostFailure(
                     "BadParams",
                     "a working directory has to be an absolute path.",
@@ -10645,6 +10850,12 @@ fn dispatchOne(
             };
 
             if (tree) |t| if (opened.id) |id| host.worktreeOpened(t.dir, id);
+            // **Named, so a tab of them can be told apart** (issue #77): an
+            // agent CLI titles itself on every prompt, and the pin is what
+            // keeps that from replacing the one thing that says which
+            // terminal this is. No id means no terminal yet; the name went
+            // with the request and the host pins it when it appears.
+            if (opened.id) |id| pinTitle(alloc, host, id, name);
             return .{ .opened = .{
                 .id = opened.id,
                 .watch = watch,
@@ -10768,7 +10979,16 @@ fn dispatchOne(
                 .go => |t| t,
                 .stop => |no| return no,
             };
-            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.start() else p.cwd, p.place, p.in, p.beside, p.group, seat) catch |err| return switch (err) {
+            // **The name this worker's terminal is pinned with** (issue
+            // #77): a seat is its alias and its task, so two seats of one
+            // squad tell apart; anything else is the role's own name. A key
+            // with no name behind it cannot get this far (`personaLaunch`
+            // answers NoSuchRole), so the key is only ever a stand-in.
+            const name: []const u8 = if (seat) |s|
+                try titles.seatName(alloc, s.alias, s.task)
+            else
+                host.personaName(key) orelse key;
+            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.start() else p.cwd, p.place, p.in, p.beside, p.group, seat, name) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -10869,6 +11089,10 @@ fn dispatchOne(
             // it when it appears, and `terminal_list` will have it in a
             // moment.
             if (tree) |t| if (opened.id) |id| host.worktreeOpened(t.dir, id);
+            // **Named here, or by the host when it arrives** (issue #77):
+            // the same pin `terminal_open` sends, under the seat's or the
+            // role's name instead of a directory's.
+            if (opened.id) |id| pinTitle(alloc, host, id, name);
             return .{
                 .opened = .{
                     .id = opened.id,
@@ -11056,6 +11280,18 @@ fn dispatchOne(
                     "the terminal would not do that just now",
                 ),
             };
+
+            // **A close answers with what the window did with the terminal,
+            // not a bare `ok`** (task 3137). `ok` was true and useless: the
+            // pane goes, the terminal stays in `terminal_list` as a seat
+            // nobody can see (macOS keeps a closed pane's terminal -- see
+            // `wire.TerminalInfo.shown`), and the caller had no field to
+            // read that from. Every other action keeps the bare `ok`: it
+            // put something into a terminal, and there is nothing further
+            // to say about where the terminal now is.
+            if (closesSomething(actions.nameOf(p.action))) {
+                return .{ .text = try closeOutcome(alloc, bus, p.id, actions.nameOf(p.action)) };
+            }
             return .ok;
         },
 
@@ -11308,12 +11544,13 @@ fn dispatchOne(
             // not on the screen any more.
             //
             // ⚠️ **What is deliberately not here.** `choice` takes no part:
-            // the answer to one of these is a single keystroke the plugin
-            // named (`Plugin.StartupSays.Answer.key`), not an option in a
-            // list, so there is no highlight to walk and nothing for a
-            // count to mean. A `choice` of 2 that matches still presses the
-            // declared key, and says so in its reply rather than reporting
-            // an option taken. The bounds check above still runs first, so
+            // the answer to one of these is the keystroke sequence the
+            // plugin named (`Plugin.StartupSays.Answer.keys`), not an
+            // option in a list, so there is no highlight to walk and
+            // nothing for a count to mean. A `choice` of 2 that matches
+            // still presses the declared keys, and says so in its reply
+            // rather than reporting an option taken. The bounds check above
+            // still runs first, so
             // an impossible count is `BadParams` on this path as on every
             // other. `Host.sendKey`'s guard is not consulted either -- this
             // goes through `sendStartupAnswerKey`, the second door, which exists
@@ -12315,6 +12552,53 @@ fn lessById(_: void, a: wire.TerminalInfo, b: wire.TerminalInfo) bool {
     return a.id < b.id;
 }
 
+/// The actions that ask the window to take a terminal away, as opposed to
+/// the ones that put something into it (task 3137).
+///
+/// Three, and named rather than matched by a prefix: a close is the family
+/// whose reply has something left to say after it succeeded, so a prong
+/// added here by mistake would make an ordinary action answer with a
+/// sentence about a window it never touched.
+fn closesSomething(name: []const u8) bool {
+    return std.mem.eql(u8, name, "close_surface") or
+        std.mem.eql(u8, name, "close_tab") or
+        std.mem.eql(u8, name, "close_window");
+}
+
+/// What a close that went through has to report (task 3137): whether the
+/// terminal is still in a tab, which is the one fact the caller cannot get
+/// from anywhere else and the one that decides what it sees next in
+/// `terminal_list`.
+///
+/// **Both halves are honest about when they were measured.** On macOS the
+/// window takes the view out inside the call, so the answer is read after
+/// the fact; on Windows the close is queued and the terminal is still in
+/// its tab when this runs -- said as "was still in a tab when this reply
+/// was written", rather than pretending either way. The question itself is
+/// `Bus.housed`, the same one `describe` reports as `shown`.
+fn closeOutcome(
+    alloc: std.mem.Allocator,
+    bus: *const Bus,
+    id: Bus.Id,
+    name: []const u8,
+) std.mem.Allocator.Error![]const u8 {
+    if (bus.housed(id)) return std.fmt.allocPrint(
+        alloc,
+        "{s}: the window took the request for terminal {x}, which was still in a tab " ++
+            "when this reply was written (terminal_list: shown:true). A terminal the " ++
+            "window has closed and kept is listed with shown:false -- it is in no " ++
+            "window, and its program may still be running.",
+        .{ name, id },
+    );
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}: terminal {x} is in no window or tab now (terminal_list: shown:false). " ++
+            "It is a seat nobody can see: its program may still be running -- the " ++
+            "row's `resources` says what is left -- and terminal_read still reads it.",
+        .{ name, id },
+    );
+}
+
 fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     // A terminal with no entry is one nobody has put under watch. It gets
     // its identity and nothing else: quiet time is not measured for it, and
@@ -12323,10 +12607,18 @@ fn describe(bus: *const Bus, host: Host, id: Bus.Id) wire.TerminalInfo {
     // Asked only of a terminal with no agent: one with an agent is past it.
     const question = !present and host.startupReach(id) == .blocked;
     const resources: ?wire.Resources = if (host.resourceUsage(id)) |u| .{ .usage = u, .limits = bus.limitsOf(id) } else null;
-    const e = bus.get(id) orelse return .{ .id = id, .agent = .none, .agent_present = present, .startup_question = question, .left = null, .resources = resources };
+    // **One place answers whether it is on screen, and it is the bus**
+    // (task 3137): the host's own word, kept by `noteUnhoused`, never
+    // worked out here from `window`/`tab` -- those are null both for a
+    // terminal in no tab and for a host that cannot say, and the two must
+    // not collapse into one answer.
+    const shown = bus.housed(id);
+
+    const e = bus.get(id) orelse return .{ .id = id, .shown = shown, .agent = .none, .agent_present = present, .startup_question = question, .left = null, .resources = resources };
 
     return .{
         .id = id,
+        .shown = shown,
         .role = e.role,
         .duty = e.duty,
         .held = e.held,
@@ -12900,10 +13192,10 @@ fn assignAndTell(
 ///     (`unanswerable`) ⇒ `StartupQuestionOnScreen`, the same refusal as
 ///     before, with no key sent. A question a plugin recognises but does not
 ///     answer is the person's, and that is the answer that says so.
-///   * **one is up and answered** ⇒ the declared key goes through
-///     `Host.sendStartupAnswerKey`, and the reply names the answer rather than
-///     claiming an option was taken (`choice` takes no part here -- see the
-///     arm).
+///   * **one is up and answered** ⇒ the declared keys go through
+///     `Host.sendStartupAnswerKey`, **the whole sequence in this one call**,
+///     and the reply names the answer rather than claiming an option was
+///     taken (`choice` takes no part here -- see the arm).
 ///
 /// **The user's switch is not asked again here.** `authorize` asks it for
 /// `terminal_answer_prompt` on every call, before any of this runs
@@ -12928,30 +13220,66 @@ fn startupAnswerRefusal(
         .key => |a| a,
     };
 
-    _ = host.sendStartupAnswerKey(id, ans.key) catch |err| return switch (err) {
-        error.UnknownTerminal,
-        error.NoSuchTerminal,
-        => failure(error.UnknownTerminal),
-        error.ChildExited => hostFailure(
-            "ChildExited",
-            "that terminal's process has already exited, so there is no question " ++
-                "there to answer. Read it to see what happened.",
-        ),
-        error.Composing => hostFailure("UserPresent", composing_typed),
-        else => hostFailure(
-            "KeyFailed",
-            "the terminal would not take the key this CLI's plugin answers that " ++
-                "question with, so nothing was answered.",
-        ),
-    };
+    // **The whole sequence in this one call, in the order declared** (task
+    // 3088). A key that moves a cursor changes the screen the next look
+    // matches against (`❯ No (recommended)` becomes `❯ Yes`), so a sequence
+    // split across calls could never finish. **And it is not replayed after
+    // a key arrived**: `arrow_up` is not idempotent -- from `❯ Yes` it goes
+    // back to `❯ No` -- so a later key that failed is reported and left to
+    // the person, exactly as `App.pressStartupKeys` does.
+    for (ans.keys, 0..) |pressed, i| {
+        const outcome = host.sendStartupAnswerKey(id, pressed) catch |err| {
+            if (i == 0) return switch (err) {
+                error.UnknownTerminal,
+                error.NoSuchTerminal,
+                => failure(error.UnknownTerminal),
+                error.ChildExited => hostFailure(
+                    "ChildExited",
+                    "that terminal's process has already exited, so there is no question " ++
+                        "there to answer. Read it to see what happened.",
+                ),
+                error.Composing => hostFailure("UserPresent", composing_typed),
+                else => hostFailure(
+                    "KeyFailed",
+                    "the terminal would not take the key this CLI's plugin answers that " ++
+                        "question with, so nothing was answered.",
+                ),
+            };
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "pressed {s} at that terminal's startup question, but {s} then did not " ++
+                    "reach the program ({s}). The box may still be showing, and nothing " ++
+                    "more will be pressed: finish it at that terminal.",
+                .{ ans.keys[0], pressed, @errorName(err) },
+            ) };
+        };
+        // **A key that did not reach the program is not an answer.** Even
+        // the first one: `enter` into nothing is not the answer the reply
+        // would claim it pressed.
+        if (outcome != .written) {
+            if (i == 0) return hostFailure(
+                "KeyFailed",
+                "the terminal would not take the key this CLI's plugin answers that " ++
+                    "question with, so nothing was answered.",
+            );
+            return .{ .text = try std.fmt.allocPrint(
+                alloc,
+                "pressed {s} at that terminal's startup question, but {s} then did not " ++
+                    "reach the program ({s}). The box may still be showing, and nothing " ++
+                    "more will be pressed: finish it at that terminal.",
+                .{ ans.keys[0], pressed, @tagName(outcome) },
+            ) };
+        }
+    }
 
+    const pressed = try std.mem.join(alloc, " then ", ans.keys);
     return .{ .text = try std.fmt.allocPrint(
         alloc,
-        "pressed {s} at that terminal's startup question: {s}. That says the key " ++
+        "pressed {s} at that terminal's startup question: {s}. That says each key " ++
             "reached the program, not that the box is gone -- its screen is read " ++
             "again on the next heartbeat, and terminal_list shows the question " ++
             "clearing a moment after that. Nothing was typed.",
-        .{ ans.key, ans.description },
+        .{ pressed, ans.description },
     ) };
 }
 
@@ -14152,6 +14480,33 @@ fn launchLimits(bus: *Bus, host: Host, caller: Bus.Id, p: LimitsParam, id: ?Bus.
     return "set";
 }
 
+/// Pin `id`'s name, so the terminal says which one it is in the tab strip
+/// and in `terminal_list` (issue #77).
+///
+/// **Both titles, because they are two different strings**: the surface's
+/// is what `terminal_list` and the chat's member names read (`getTitle`),
+/// and the tab's is what the person sees. An agent CLI overwrites neither
+/// once the title is explicit, which is the point.
+///
+/// **A refusal is logged, never returned.** The terminal exists and its
+/// reply is already written; a name is not worth turning an opened
+/// terminal into a failed call. And nothing here takes the pin back: a
+/// later `set_surface_title` from a person or an agent still wins, and an
+/// empty one still unpins.
+/// A terminal that is already gone (closed between opening and naming) is
+/// the ordinary way this fails.
+fn pinTitle(alloc: std.mem.Allocator, host: Host, id: Bus.Id, name: []const u8) void {
+    if (name.len == 0) return;
+    const surface = std.fmt.allocPrint(alloc, "set_surface_title:{s}", .{name}) catch return;
+    const tab = std.fmt.allocPrint(alloc, "set_tab_title:{s}", .{name}) catch return;
+    host.performAction(id, surface, false) catch |err| {
+        log.warn("poltergeist: could not name terminal {x} {s} err={}", .{ id, name, err });
+    };
+    host.performAction(id, tab, false) catch |err| {
+        log.warn("poltergeist: could not name terminal {x}'s tab {s} err={}", .{ id, name, err });
+    };
+}
+
 fn hostFailure(code: []const u8, message: []const u8) wire.Response {
     return .{ .failed = .{ .code = code, .message = message } };
 }
@@ -14277,7 +14632,12 @@ const FakeHost = struct {
         beside: ?Bus.Id = null,
         group: []const u8 = "",
         seat: ?MemberSeat = null,
+        /// The name the host is to pin when the terminal appears (issue #77).
+        title: []const u8 = "",
     } = null,
+    /// What `personaName` answers for any key; null is a host that does
+    /// not know, and the key is used instead.
+    persona_name: ?[]const u8 = null,
     /// What the app would say of the group a launch joins (task 1971).
     role_joins: ?[]const u8 = null,
     role_join_note: ?[]const u8 = null,
@@ -14381,6 +14741,14 @@ const FakeHost = struct {
         action: []const u8,
         confirm_close: bool = true,
     } = null,
+    /// **Every** action asked for, in order. `acted` keeps only the last,
+    /// and naming a terminal is two of them -- the surface's title and the
+    /// tab's (issue #77) -- so a test that read `acted` alone could not
+    /// tell one action from two.
+    actions: [8]struct { id: Bus.Id, action: []const u8 } = undefined,
+    actions_n: usize = 0,
+    actions_mem: [1024]u8 = undefined,
+    actions_mem_n: usize = 0,
     action_error: ?anyerror = null,
 
     /// The last key asked for, and what the fake does with it.
@@ -14404,7 +14772,7 @@ const FakeHost = struct {
 
     /// The last terminal asked for, what the fake hands back, and how it
     /// can be made to refuse.
-    opened: ?struct { cwd: []const u8, by: Bus.Id, place: Placement } = null,
+    opened: ?struct { cwd: []const u8, by: Bus.Id, place: Placement, title: []const u8 = "" } = null,
     open_result: ?Bus.Id = null,
     /// Where the fake says it put the terminal.
     open_placed: Placed = .{ .tab = .asked },
@@ -14689,6 +15057,7 @@ const FakeHost = struct {
             .launchedForGroup = launchedForGroup,
             .launchers = launchers,
             .personaCatalog = personaCatalog,
+            .personaName = personaName,
             .personaPut = personaPut,
             .personaDelete = personaDelete,
             .agentClis = agentClis,
@@ -15581,6 +15950,11 @@ const FakeHost = struct {
         return "{\"loaded\":true,\"error\":null,\"path\":null,\"personas\":[]}";
     }
 
+    fn personaName(ctx: *anyopaque, _: []const u8) ?[]const u8 {
+        const self: *FakeHost = @ptrCast(@alignCast(ctx));
+        return self.persona_name;
+    }
+
     fn personaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
@@ -15617,10 +15991,11 @@ const FakeHost = struct {
         beside: ?Bus.Id,
         group: []const u8,
         seat: ?MemberSeat,
+        title: []const u8,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.role_error) |e| return e;
-        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group, .seat = seat };
+        self.role_launched = .{ .by = by, .key = key, .cli = cli, .cwd = cwd, .place = place, .into = into, .beside = beside, .group = group, .seat = seat, .title = title };
         if (beside != null) return .{ .id = null, .placed = .split };
         if (into) |there| {
             self.takeSeatOn(there, key, seat);
@@ -15759,10 +16134,11 @@ const FakeHost = struct {
         cwd: []const u8,
         by: Bus.Id,
         place: Placement,
+        title: []const u8,
     ) anyerror!Opened {
         const self: *FakeHost = @ptrCast(@alignCast(ctx));
         if (self.open_error) |err| return err;
-        self.opened = .{ .cwd = cwd, .by = by, .place = place };
+        self.opened = .{ .cwd = cwd, .by = by, .place = place, .title = title };
         return .{ .id = self.open_result, .placed = self.open_placed };
     }
 
@@ -15886,6 +16262,15 @@ const FakeHost = struct {
         if (self.action_error) |err| return err;
         for (self.close_refused) |r| if (r == id) return error.CloseRefusedUsersTerminal;
         self.acted = .{ .id = id, .action = action, .confirm_close = confirm_close };
+        // Copied into the fake's own buffer: the string belongs to the
+        // request's arena, which the next dispatch may reuse.
+        if (self.actions_n < self.actions.len and self.actions_mem_n + action.len <= self.actions_mem.len) {
+            const at = self.actions_mem_n;
+            @memcpy(self.actions_mem[at..][0..action.len], action);
+            self.actions[self.actions_n] = .{ .id = id, .action = self.actions_mem[at..][0..action.len] };
+            self.actions_n += 1;
+            self.actions_mem_n += action.len;
+        }
         if (std.mem.eql(u8, action, "close_surface") and self.closed_n < self.closed_ids.len) {
             self.closed_ids[self.closed_n] = id;
             self.closed_n += 1;
@@ -16160,6 +16545,51 @@ test "terminal_list says which terminals are out of reach before anything is ref
 
     try testing.expect((shielded orelse return error.NotListed).shielded);
     try testing.expect(!(stranger orelse return error.NotListed).shielded);
+}
+
+test "3137: terminal_list tells a closed terminal apart from one that is simply there" {
+    // The other half of the report: after such a close the terminal is
+    // still listed, and `window`/`tab` are null for it -- but they are null
+    // twice over, because a terminal is in no tab AND because an apprt may
+    // not answer that question at all (GTK). Null was a question mark, not
+    // a reading. `shown` is the host's own word on the question that
+    // matters, kept on the bus by `noteUnhoused`.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+
+    // The window took this one's view out of every tab (a pane closed and
+    // kept). The others have had nothing said about them.
+    try testing.expect(b.noteUnhoused(worker, true));
+
+    const open = [_]Place{
+        .{ .id = worker },
+        .{ .id = boss },
+        // Never registered with the bus: `describe` takes its early exit,
+        // and a host that has said nothing must still read as on screen.
+        .{ .id = 0x7272 },
+    };
+    var fake: FakeHost = .{ .open = &open };
+
+    const res = try dispatch(testing.allocator, &b, fake.host(), term(boss), .terminal_list);
+    defer testing.allocator.free(res.terminals);
+
+    var closed: ?wire.TerminalInfo = null;
+    var housed: ?wire.TerminalInfo = null;
+    var stranger: ?wire.TerminalInfo = null;
+    for (res.terminals) |info| {
+        if (info.id == worker) closed = info;
+        if (info.id == boss) housed = info;
+        if (info.id == 0x7272) stranger = info;
+    }
+
+    // The seat nobody can see, said as such.
+    try testing.expect(!(closed orelse return error.NotListed).shown);
+    // The floor, and the reason it is two: a bug that answered `false` for
+    // everyone would pass the check above and fail this one.
+    try testing.expect((housed orelse return error.NotListed).shown);
+    // The early exit has to say it too, or a terminal nobody has filed is
+    // the one that disappears from the listing's meaning.
+    try testing.expect((stranger orelse return error.NotListed).shown);
 }
 
 test "terminal_list says each terminal's colour, as shown, and whether workers are kept out (#1699)" {

@@ -60,4 +60,37 @@ enum TerminalPresence {
     static func focus<ID: Equatable>(_ focused: ID?, afterStacking new: ID, onto behind: ID, byPerson: Bool) -> ID? {
         byPerson ? new : focus(focused, afterShowing: new, inPlaceOf: behind)
     }
+
+    /// The focused terminal after its tab's tree changed: **the same one
+    /// when the tree still holds it**, and the first one the tree shows
+    /// when it does not. Nothing focused stays nothing focused -- a tree
+    /// change is not a reason to give somebody the keyboard.
+    ///
+    /// The rule this completes is the file's: **focus is never left on a
+    /// terminal nobody can see.** That was written for one that goes
+    /// behind another; a terminal that is *gone* is the other half, and it
+    /// was missing (task 3141). The controller's `focusedSurface` is a
+    /// strong reference to the last terminal that had focus, and losing
+    /// focus deliberately does not clear it -- `TerminalView` keeps "the
+    /// last non-nil value", so the field only moves when focus lands on
+    /// *another* surface. A pane that was clicked and then closed
+    /// therefore went on being the controller's focused surface, and the
+    /// whole terminal went on being alive with it: its view, its surface,
+    /// its pty, its shell. That is issue #25, whose symptom is a closed
+    /// pane's shell surviving until "the next click in the window" --
+    /// which is the next focus change, and the only thing that ever moved
+    /// the field.
+    ///
+    /// Not inverted: a tree change that leaves the focused terminal in
+    /// place must leave it alone, or closing any pane would drop the
+    /// keyboard.
+    static func focusAfterTreeChange<ID: Equatable>(
+        _ focused: ID?,
+        stillIn tree: (ID) -> Bool,
+        shown: [ID],
+    ) -> ID? {
+        guard let focused else { return nil }
+        if tree(focused) { return focused }
+        return shown.first
+    }
 }

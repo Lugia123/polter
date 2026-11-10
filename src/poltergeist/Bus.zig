@@ -294,6 +294,42 @@ pub const hooks_expected_timeout_ms: u64 = 30 * std.time.ms_per_s;
 /// already lapsed in silence.
 pub const launch_agent_wait_ms: u64 = 60 * std.time.ms_per_s;
 
+/// Most lines of a screen's text that a launch failure carries
+/// (`screenTail`, task 3097). **Lines with text on them**: a blank line, or
+/// one of spaces, says nothing about why a CLI never started, and counting
+/// them would spend the budget on nothing.
+pub const screen_tail_lines = 30;
+
+/// Most bytes of those lines. A line can be hundreds of characters, so the
+/// line count above is not a bound on the size; this is. A tail longer than
+/// this keeps its start, is cut on a character boundary, and carries
+/// `…[cut: N bytes]` -- the same shape `fitTail` cuts in.
+pub const screen_tail_bytes = 2 * 1024;
+
+/// The most the words around a `no_agent` launch failure's screen tail take:
+/// the id, how long it waited, the CLI or the launcher's key (at most
+/// `Small(64)`), and the sentence itself. A host that sizes the buffer a
+/// notice is written into adds `screen_tail_bytes` to this, and the whole
+/// line has to fit -- `App` asserts that where the line is composed, rather
+/// than letting `fitTail` cut the tail's last lines, which are the ones
+/// nearest what is on the screen now.
+pub const launch_failed_words_max = 256;
+
+/// How long a notice line may be: the fixed buffer `apprt.surface.Message`
+/// carries one in, and so the buffer every host writes one into.
+///
+/// **This was 255 bytes, and said so**: notices were "an id and two
+/// durations -- never screen contents". That stopped being true in task
+/// 3097 -- a launch that connected no agent now carries the screen's last
+/// lines, because the guesses that used to stand in for it were wrong --
+/// so it is `launch_failed_words_max + screen_tail_bytes` with room for a
+/// second entry in the same box (`takeSome` puts several on one line).
+///
+/// The cost is `@sizeOf(apprt.surface.Message)` and nothing beyond it: the
+/// union is the app thread's, not a C ABI (see the note on the message in
+/// `src/apprt/surface.zig`).
+pub const notice_bytes = 4 * 1024;
+
 /// How long after an event the screen may still be drawing that event --
 /// the permission box, the last lines of an answer -- and have that count as
 /// the event's own redraw rather than as the screen moving on.
@@ -369,12 +405,16 @@ pub const AgentNotice = enum {
 pub fn Small(comptime n: usize) type {
     return struct {
         buf: [n]u8 = undefined,
-        len: u8 = 0,
+        /// Wide enough for `n`. The usual short ones stay a `u8`; a screen's
+        /// tail (task 3097) is over 255 bytes, and a length that wrapped
+        /// would read as a shorter note.
+        len: Len = 0,
 
         const Self = @This();
+        const Len = if (n <= std.math.maxInt(u8)) u8 else u16;
 
         comptime {
-            assert(n <= std.math.maxInt(u8));
+            assert(n <= std.math.maxInt(u16));
         }
 
         /// Cut on a UTF-8 boundary when it does not fit.
@@ -512,7 +552,12 @@ pub const Agent = struct {
     /// with "custom model" after it. Empty with `launcher`.
     launcher_name: Small(64),
     detail: Small(64),
-    note: Small(160),
+    /// The last thing said with the state: an approval's command, a
+    /// question's text, a failure's details -- and, for a launch that
+    /// connected no agent, the screen's last lines at that moment (task
+    /// 3097). **The large one**, because a screen's tail is up to
+    /// `screen_tail_bytes` where the rest are a line.
+    note: Small(screen_tail_bytes),
     /// How long what `note` is the start of was: the whole command, the
     /// whole question (task 1651). More than `note`'s length means the
     /// note stops short, and the line that quotes it has to say so -- a
@@ -1851,6 +1896,26 @@ pub fn noteUnhoused(self: *Bus, id: Id, unhoused: bool) bool {
     return true;
 }
 
+/// Whether this terminal still has a window or tab that can show it: the
+/// host's last word on `Entry.unhoused` (task 2682), read the way
+/// `terminal_list` reports it (task 3137).
+///
+/// **A terminal nobody has said anything about is housed**, and that is
+/// `Entry.unhoused`'s default too -- the two must not disagree, or the
+/// listing and the standing would be two opinions about one fact. A host
+/// that cannot answer at all (GTK has no such callback) therefore reports
+/// every terminal as shown, which is the state before the field existed
+/// and the only honest one: it has said nothing.
+///
+/// What `false` means, precisely: the host has a terminal whose view it
+/// took out of every window and tab -- on macOS a pane closed and kept for
+/// the undo, which is why the terminal can still be read and can still
+/// have a shell in it. See `wire.TerminalInfo.shown`.
+pub fn housed(self: *const Bus, id: Id) bool {
+    const e = self.entries.get(id) orelse return true;
+    return !e.unhoused;
+}
+
 /// Whether a supervisor is still one *in force*: it has the standing
 /// (`isSupervisor`), its agent has not gone (`agentHasLeft`), and it still
 /// has a window or tab to be seen in (`Entry.unhoused`, task 2682).
@@ -2511,6 +2576,9 @@ pub fn agentEvent(
         e.agent.handed = 0;
         e.agent.detail.set(ev.detail);
         e.agent.note.set(ev.note);
+        // The note is what was given, and the line quotes all of it (the
+        // tail it may carry is cut by `screenTail` and says so there).
+        e.agent.note_bytes = if (ev.note) |n| n.len else 0;
         e.agent.since_ms = now_ms;
         return true;
     }
@@ -3213,6 +3281,7 @@ pub fn tellLaunchFailed(self: *Bus, id: Id, launcher: Id, detail: ?[]const u8, n
     e.agent.handed = 0;
     e.agent.detail.set(detail);
     e.agent.note.set(note);
+    e.agent.note_bytes = if (note) |n| n.len else 0;
     e.agent.since_ms = now_ms;
     return true;
 }
@@ -3327,6 +3396,108 @@ pub fn launchWithNoAgent(
         return kv.key_ptr.*;
     }
     return null;
+}
+
+/// The last lines of `screen` that have text on them, joined by newlines,
+/// in `buf`: at most `screen_tail_lines` of them and `screen_tail_bytes`
+/// bytes (task 3097).
+///
+/// **What this is for, and what it costs.** A launch that connected no
+/// agent used to be reported with a guess at why -- "its command may not
+/// pass the arguments on to the CLI" -- and the day six seats sat on a
+/// CLI's own API-key box for the minute, that guess sent their supervisor
+/// looking in the wrong place. What explains such a minute is the screen,
+/// so the screen travels with the notice. It is typed into the supervisor's
+/// terminal, and from there into whatever record that session keeps, and it
+/// can hold a secret (the API-key line really was `sk-ant-…`). The trade is
+/// deliberate: the alternative was a guess, or a trip to go and look; what
+/// leaves the terminal is capped in both lines and bytes, and a tail that
+/// did not fit whole says so.
+///
+/// A line of nothing, or of spaces and tabs only, is skipped rather than
+/// spent on. Trailing blanks are trimmed; leading ones are the screen's
+/// indentation and are kept.
+///
+/// **An accepted trade, not a defect: `screen` is the visible screen as it
+/// was when the launch was found to have connected no agent**, and nothing
+/// keeps it before or after. A CLI that has already exited, or a screen
+/// that has since scrolled, is read as it is *then* -- the after, not the
+/// moment. Keeping screen history would make every notice dearer for
+/// everybody and is not what this is for; the person's own words (2026-11-09)
+/// were that what cannot be predicted is read after the fact. Do not add a
+/// scrollback for it.
+pub fn screenTail(screen: []const u8, buf: []u8) []const u8 {
+    // The last `screen_tail_lines` text lines, in screen order. A ring, so
+    // a screen longer than that costs nothing to walk: the oldest slot is
+    // where the next write goes.
+    var ring: [screen_tail_lines][]const u8 = undefined;
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, screen, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, " \t\r");
+        if (std.mem.trim(u8, line, " \t").len == 0) continue;
+        ring[count % screen_tail_lines] = line;
+        count += 1;
+    }
+    const kept = @min(count, screen_tail_lines);
+    const start = if (count <= screen_tail_lines) 0 else count % screen_tail_lines;
+
+    var whole: usize = 0;
+    for (0..kept) |i| {
+        if (i != 0) whole += 1; // the newline
+        whole += ring[(start + i) % screen_tail_lines].len;
+    }
+    if (whole <= buf.len) {
+        var out: usize = 0;
+        for (0..kept) |i| {
+            if (i != 0) {
+                buf[out] = '\n';
+                out += 1;
+            }
+            const line = ring[(start + i) % screen_tail_lines];
+            @memcpy(buf[out..][0..line.len], line);
+            out += line.len;
+        }
+        return buf[0..out];
+    }
+
+    // Longer than the budget: keep the start, cut on a character boundary,
+    // and say by how much -- the shape `fitTail` marks a cut in.
+    var more_buf: [48]u8 = undefined;
+    const more = std.fmt.bufPrint(&more_buf, "\u{2026}[cut: {d} bytes]", .{whole}) catch "\u{2026}[cut]";
+    if (buf.len <= more.len) {
+        const room = @min(buf.len, more.len);
+        @memcpy(buf[0..room], more[0..room]);
+        return buf[0..room];
+    }
+    const budget = buf.len - more.len;
+    var out: usize = 0;
+    for (0..kept) |i| {
+        const sep: usize = if (i == 0) 0 else 1;
+        const line = ring[(start + i) % screen_tail_lines];
+        if (out + sep + line.len > budget) {
+            const room = budget -| out -| sep;
+            const part = AgentEvent.cutBytes(line, room);
+            if (part.len > 0) {
+                if (sep != 0) {
+                    buf[out] = '\n';
+                    out += 1;
+                }
+                @memcpy(buf[out..][0..part.len], part);
+                out += part.len;
+            }
+            break;
+        }
+        if (sep != 0) {
+            buf[out] = '\n';
+            out += 1;
+        }
+        @memcpy(buf[out..][0..line.len], line);
+        out += line.len;
+    }
+    @memcpy(buf[out..][0..more.len], more);
+    out += more.len;
+    return buf[0..out];
 }
 
 /// Put a line in the box for every watched terminal whose hooks were
@@ -4309,17 +4480,58 @@ fn writeAgent(
                 .{ sep, id, ago_s, a.note.get() orelse "a failing code" },
             ),
             // Not "at its shell": what is in the terminal is not known,
-            // only that nothing connected from it (task 1712).
-            .no_agent => if (a.launcher.get()) |key| try w.print(
-                // Through a launcher of the person's own (task 2156): the
-                // likeliest reason is its command not handing the CLI the
-                // arguments that connect it.
-                "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent in {d}s via Agent CLI {s}; its command may not pass the arguments on to the CLI",
-                .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s, key },
-            ) else try w.print(
-                "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent connected within {d}s of the launch; terminal_read shows what is there",
-                .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s },
-            ),
+            // only that nothing connected from it (task 1712). **And no
+            // cause** (task 3097): through a launcher of the person's own
+            // this used to end "its command may not pass the arguments on
+            // to the CLI", a guess -- and the day six seats sat on a CLI's
+            // own API-key box for the minute, it was the wrong one. What
+            // the screen said at that moment is carried instead, and the
+            // only facts here are the wait and what it went through.
+            .no_agent => {
+                if (a.launcher.get()) |key| {
+                    try w.print(
+                        "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent connected within {d}s of the launch; it went through Agent CLI {s}",
+                        .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s, key },
+                    );
+                } else {
+                    try w.print(
+                        "{s}0x{x:0>16} launch failed {d}s ago (no_agent): no agent connected within {d}s of the launch",
+                        .{ sep, id, ago_s, launch_agent_wait_ms / std.time.ms_per_s },
+                    );
+                }
+                if (a.note.get()) |tail| {
+                    // **Whole, or said not to fit.** `fitTail` would cut
+                    // the last lines, which are the ones nearest what is on
+                    // the screen now -- the lines that say why. The
+                    // transport is sized for a whole one (`notice_bytes`);
+                    // a buffer smaller than that is a caller's bug, and
+                    // says so instead of dropping the end in silence.
+                    const words = "; the screen at that moment: ";
+                    // **Lines are kept apart by a visible mark, not a bare
+                    // space** (task 3097). A newline would submit the line
+                    // -- it is typed into a terminal -- but flattening all
+                    // thirty to spaces ran them together into one
+                    // sentence, which is the one thing the tail exists to
+                    // prevent. `screenTail` still joins with newlines;
+                    // only this composition turns them into the mark. Five
+                    // bytes where a newline was, so the room needed is
+                    // `tail.len` plus four for each.
+                    const mark = " \u{23ce} ";
+                    const expanded = tail.len + (mark.len - 1) * std.mem.count(u8, tail, "\n");
+                    if (w.buffer.len -| w.end >= words.len + expanded) {
+                        try w.writeAll(words);
+                        for (tail) |c| {
+                            if (c == '\n') {
+                                try w.writeAll(mark);
+                            } else try w.writeByte(if (c < 0x20 or c == 0x7f) ' ' else c);
+                        }
+                    } else {
+                        try w.writeAll("; the screen did not fit this notice (task 3097)");
+                    }
+                } else {
+                    try w.writeAll("; terminal_read shows what is there");
+                }
+            },
         },
     }
 }
@@ -6476,7 +6688,7 @@ test "hooks: a CLI gone at once says its exit code to whoever watches it (task 1
     try testing.expect(code2);
 }
 
-test "2156: a launch through a person's launcher that no agent came from says the command may be why" {
+test "2156/3097: a launch through a person's launcher says what it went through, and not why" {
     var b = try hookedBus();
     defer b.deinit();
     _ = try b.agentEvent(worker, firstTurnExpected(), 0);
@@ -6490,16 +6702,120 @@ test "2156: a launch through a person's launcher that no agent came from says th
     var none = hookEv(.launch_failed);
     none.detail = "no_agent";
     _ = try b.agentEvent(worker, none, launch_agent_wait_ms);
-    var buf: [255]u8 = undefined;
+    var buf: [notice_bytes]u8 = undefined;
     const line = b.drain(boss, launch_agent_wait_ms + 1, &buf, .none) orelse return error.TestUnexpectedResult;
-    const said = std.mem.indexOf(u8, line, "may not pass the arguments on to the CLI") != null;
-    try testing.expect(said);
+    // The facts stay: how long it waited, and what it went through.
+    try testing.expect(std.mem.indexOf(u8, line, "no agent connected within 60s of the launch") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "Agent CLI claude-deepseek-flash") != null);
+    // **And no reason is stated** (task 3097). This used to assert the
+    // sentence that guessed one ("its command may not pass the arguments
+    // on to the CLI"), and the guess was wrong the day a CLI sat on its
+    // own API-key box for the minute. The guard is that no such sentence
+    // comes back -- deleting the old assertion alone would leave the rule
+    // unwatched.
+    try testing.expect(std.mem.indexOf(u8, line, "may not pass the arguments") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "likeliest") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "probably") == null);
+    // Nothing was read: the line points at the screen, it does not go
+    // silent about it.
+    try testing.expect(std.mem.indexOf(u8, line, "terminal_read shows what is there") != null);
     // A failed launch keeps what it went through, name and all.
     try testing.expectEqualStrings("Claude · DeepSeek flash", b.agentOf(worker).launcher_name.get().?);
     // The next launch is not through it.
     _ = try b.agentEvent(worker, firstTurnExpected(), launch_agent_wait_ms + 2);
     try testing.expect(b.agentOf(worker).launcher.get() == null);
     try testing.expect(b.agentOf(worker).launcher_name.get() == null);
+}
+
+test "3097: a launch with no agent carries the screen's last line in the notice's own buffer" {
+    var b = try hookedBus();
+    defer b.deinit();
+    _ = try b.agentEvent(worker, firstTurnExpected(), 0);
+    // Through a launcher, as the six seats were: the one whose command is
+    // the CLI as its plugin starts it.
+    var with = hookEv(.launched_with);
+    with.detail = "claude-bobot-deepseek-flash";
+    with.note = "Claude bobot · DeepSeek v4.1 flash";
+    _ = try b.agentEvent(worker, with, 10);
+
+    // What `App.considerLaunches` reads at the minute: the visible screen
+    // of a CLI asking about an API key -- the morning this is for.
+    const screen =
+        "Detected a custom API key in your environment\n" ++
+        "\n" ++
+        "ANTHROPIC_API_KEY: sk-ant-...50a3c66522b3766a1ccb\n" ++
+        "Do you want to use this API key?\n" ++
+        "  Yes\n" ++
+        "\u{276f} No (recommended)\n";
+    var tail_buf: [screen_tail_bytes]u8 = undefined;
+    const tail = screenTail(screen, &tail_buf);
+    try testing.expect(std.mem.indexOf(u8, tail, "Do you want to use this API key?") != null);
+    try testing.expect(std.mem.endsWith(u8, tail, "\u{276f} No (recommended)"));
+
+    var none = hookEv(.launch_failed);
+    none.detail = "no_agent";
+    none.note = tail;
+    _ = try b.agentEvent(worker, none, launch_agent_wait_ms);
+
+    // **The transport's own size, not one chosen by the test** (task
+    // 3097). A buffer smaller than `notice_bytes` would cut the tail's
+    // last lines -- the ones nearest what is on the screen now -- and the
+    // old 255-byte transport is exactly the failure this guards.
+    var buf: [notice_bytes]u8 = undefined;
+    const line = b.drain(boss, launch_agent_wait_ms + 1, &buf, .none) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, line, "the screen at that moment:") != null);
+    // **The lines are told apart by a mark, not run together by a space**
+    // (task 3097): the tail is one typed line, and a bare space between
+    // thirty screen lines reads as one long sentence. And it is a line --
+    // no newline survives into the notice, which would submit it.
+    try testing.expect(std.mem.indexOf(u8, line, " \u{23ce} ") != null);
+    try testing.expect(std.mem.indexOfScalar(u8, line, '\n') == null);
+    // What it went through stays a fact beside it.
+    try testing.expect(std.mem.indexOf(u8, line, "Agent CLI claude-bobot-deepseek-flash") != null);
+    // Verbatim, in order: the earliest line first, the screen's last line
+    // last.
+    const first = std.mem.indexOf(u8, line, "Detected a custom API key").?;
+    const last = std.mem.indexOf(u8, line, "\u{276f} No (recommended)").?;
+    try testing.expect(first < last);
+    try testing.expect(std.mem.indexOf(u8, line, "may not pass the arguments") == null);
+}
+
+test "3097: screenTail keeps only the lines that have text on them" {
+    var buf: [screen_tail_bytes]u8 = undefined;
+    try testing.expectEqualStrings(
+        "first\nsecond\nthird",
+        screenTail("first\n\n   \n\t\nsecond  \nthird\r\n", &buf),
+    );
+    // A screen with nothing on it is no tail at all, not a blank one.
+    try testing.expectEqualStrings("", screenTail("\n  \n\t\n", &buf));
+}
+
+test "3097: screenTail keeps the last 30 text lines in screen order" {
+    var screen: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&screen);
+    for (1..41) |i| w.print("line {d}\n", .{i}) catch unreachable;
+    var buf: [screen_tail_bytes]u8 = undefined;
+    const tail = screenTail(w.buffered(), &buf);
+    // The last 30 of 40: line 11 first, line 40 last, and 10 is gone.
+    try testing.expect(std.mem.startsWith(u8, tail, "line 11\n"));
+    try testing.expect(std.mem.endsWith(u8, tail, "line 40"));
+    try testing.expect(std.mem.indexOf(u8, tail, "line 10\n") == null);
+    try testing.expectEqual(@as(usize, screen_tail_lines - 1), std.mem.count(u8, tail, "\n"));
+}
+
+test "3097: screenTail cuts a tail over its byte budget, and says so" {
+    var screen: [8 * 1024]u8 = undefined;
+    // One line longer than the whole budget: 5000 characters, which is a
+    // screen line on a wide window, not a contrived one.
+    @memset(screen[0..5000], 'a');
+    screen[5000] = '\n';
+    var buf: [screen_tail_bytes]u8 = undefined;
+    const tail = screenTail(screen[0..5001], &buf);
+    try testing.expect(tail.len <= screen_tail_bytes);
+    try testing.expect(tail[0] == 'a');
+    try testing.expect(std.mem.indexOf(u8, tail, "\u{2026}[cut: 5000 bytes]") != null);
+    // One that fits is not marked.
+    try testing.expectEqualStrings("short\nlines", screenTail("short\nlines\n", &buf));
 }
 
 test "hooks: a launch no agent came from is said to have failed at the minute, once (task 1712)" {

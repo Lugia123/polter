@@ -4,7 +4,7 @@
 //! The per-terminal readings (`ResourceSampler`, `ledger`, `ResourceRecent`)
 //! answer "which terminal is eating the machine". This answers the other two
 //! questions a supervisor asks at 3 a.m.: **what is Polter itself holding**
-//! -- the main process, every embedded group chat, every MCP sidecar -- and
+//! -- the main process, every embedded group chat, every terminal -- and
 //! **is the machine running out** of swap or disk.
 //!
 //! # Nothing here grows
@@ -41,7 +41,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 /// What one of Polter's processes is.
-pub const Kind = enum { main, chat, sidecar, monitor };
+///
+/// **A terminal, not "a sidecar"** (task 3113, second round): since every
+/// worker terminal is a row -- with an MCP sidecar in it or without one --
+/// naming the kind after the `polter +mcp` process inside it would be
+/// naming a row after a part of what it weighs. The wire word is
+/// `terminal`, which is what the row is.
+pub const Kind = enum { main, chat, terminal, monitor };
 
 /// One reading of one thing: 12 bytes, so a row's two rings together are
 /// 29 376 -- 24 hours at a minute, plus 7 days at ten.
@@ -61,15 +67,17 @@ pub const week_cap = 1008;
 pub const hour_ms: i64 = 60_000;
 pub const week_ms: i64 = 10 * hour_ms;
 
-/// The three layers the overall view stacks (handoff §6), in the order they
-/// are drawn: bottom first. What the reader looks at is the shape of the
-/// stack, which no single row has.
+/// Which of the table's category groupings a row belongs to (handoff §6).
+/// **The chart's layers are no longer these** (task 3113, second round):
+/// it stacks two, the main process and the terminals, and a terminal's row
+/// is its own group in the table, named by the terminal instead of by a
+/// category.
 ///
 /// **The monitor is not one of them.** Its row is a couple of MiB inside the
 /// main process's, which the main process's own row already counts -- a
-/// fourth layer would be the same memory twice. The table says where it
-/// lives instead (handoff §6's last row).
-pub const Category = enum(u2) { main, chats, sidecars };
+/// category of its own would be the same memory twice. The table says where
+/// it lives instead (handoff §6's last row).
+pub const Category = enum(u2) { main, chats, terminals };
 pub const categories = 3;
 
 /// Which of the two spans a series is wanted over: the last 24 hours, or the
@@ -81,8 +89,37 @@ pub const Span = enum { hour, week };
 pub const MachineSeries = enum { swap, disk };
 
 /// The most things tracked at once: the main process, the embedded group
-/// chats, the MCP sidecars, and the monitor's own row.
+/// chats, every worker terminal, and the monitor's own row.
 pub const max_tracked = 64;
+
+/// **How many of a terminal's processes a row carries** (task 3113, second
+/// round): the table draws them under the terminal, and a tree with more
+/// than this shows its heaviest ones -- the row's `count` still says how
+/// many there are. Twelve because that is a busy agent terminal's tree
+/// (a shell, the CLI, a few MCP servers and builds) and a fixed buffer is
+/// what lets this file keep its one allocation.
+pub const max_children = 12;
+
+/// One process inside a terminal's tree, as the table's per-terminal group
+/// draws it: what it is called, its pid, and what it holds.
+pub const Child = struct {
+    pid: u32 = 0,
+    mem_mib: u32 = 0,
+    name: [16]u8 = @splat(0),
+    name_len: u8 = 0,
+
+    pub fn nameOf(self: *const Child) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    pub fn init(pid: u32, mem_mib: u32, name: []const u8) Child {
+        var c: Child = .{ .pid = pid, .mem_mib = mem_mib };
+        const n = @min(name.len, c.name.len);
+        @memcpy(c.name[0..n], name[0..n]);
+        c.name_len = @intCast(n);
+        return c;
+    }
+};
 /// Slots in the pid lookup: twice `max_tracked`, so it is never more than
 /// half full and linear probing stays short.
 pub const pid_slots = 128;
@@ -320,14 +357,21 @@ const Tracked = struct {
     /// single process behind it.
     pid: u32 = 0,
     /// When that process started, wall clock milliseconds, so a process
-    /// replaced behind the same pid is another process. Zero when the row
-    /// is several processes (a sidecar) or the platform does not say.
+    /// replaced behind the same pid is another process. Zero when the
+    /// platform does not say.
     start_ms: i64 = 0,
-    /// The terminal whose tree this row is: how a chat and a sidecar are
+    /// The terminal whose tree this row is: how a chat and a terminal are
     /// matched from one reading to the next even when their pid moves.
     pane: u64 = 0,
-    /// How many processes are behind the row -- a sidecar row may be
-    /// several `polter +mcp` processes.
+    /// **The processes in that tree** (task 3113, second round), heaviest
+    /// first: what the table draws under the terminal's own line. Copied
+    /// from the reading, because a reading is thrown away every two
+    /// seconds and this row outlives it.
+    children: [max_children]Child = @splat(.{}),
+    children_len: u8 = 0,
+    /// How many processes are behind the row. A row that is a terminal --
+    /// a chat's or a worker's -- is its whole tree (task 3113), so this is
+    /// every process in that terminal.
     count: u32 = 1,
     group: [64]u8 = @splat(0),
     group_len: u8 = 0,
@@ -367,6 +411,11 @@ const Tracked = struct {
 
     pub fn groupName(self: *const Tracked) []const u8 {
         return self.group[0..self.group_len];
+    }
+
+    /// What the table draws under this terminal's line.
+    pub fn childrenOf(self: *const Tracked) []const Child {
+        return self.children[0..self.children_len];
     }
 
     fn setGroup(self: *Tracked, name: []const u8) void {
@@ -410,7 +459,7 @@ pub const PaneReading = struct {
     /// What this terminal is, as its arguments said (`OverallRead`).
     kind: PaneKind = .worker,
     /// The group name: the one the chat was started with, or the group the
-    /// terminal a sidecar serves is in. Empty when it is in none.
+    /// terminal is in. Empty when it is in none.
     ///
     /// **A buffer, not a slice.** A reading is built and thrown away every
     /// two seconds; a slice here would be one allocation per reading, which
@@ -430,33 +479,31 @@ pub const PaneReading = struct {
     /// Total CPU time of the tree, nanoseconds.
     cpu_ns: u64 = 0,
     /// The `polter +mcp` part of `mem`, `procs` **and `cpu_ns`**, split out
-    /// so that the worker's own row does not count it twice (handoff §1).
+    /// so that the terminal's row can be its whole tree (task 3113) while
+    /// the two halves stay one reading.
     ///
     /// **All three are taken apart in the same loop** (`OverallRead.build`),
-    /// which is the point: a sidecar's row is those processes alone, so
-    /// reading the tree's memory for it *and* the tree's CPU would put a
-    /// worker's CPU on its sidecar and leave the worker's own row carrying
-    /// CPU that is not its own. Memory was split from the start; CPU was
-    /// not, and read as a rate it made a worker look busy for ever (task
-    /// 2149's review, r3 ①).
+    /// which is the point: a row that added back the memory alone would
+    /// leave the sidecar's CPU missing from the terminal it runs in, and
+    /// read as a rate that made a worker look idle for ever (task 2149's
+    /// review, r3 ①). `Overall.touch` adds all three back.
     sidecar_mem: u64 = 0,
     sidecar_procs: u32 = 0,
     /// CPU time of those same processes, nanoseconds.
     sidecar_cpu_ns: u64 = 0,
-    /// The sidecar row's process: the **earliest started** of this pane's
-    /// `polter +mcp` processes.
-    ///
-    /// Not the biggest one. With two sidecars of a similar size the biggest
-    /// changes from one reading to the next, and the row this names would
-    /// then look like a different process every few minutes. The earliest
-    /// started changes only when that sidecar goes. **A sidecar row's
-    /// history is never cleared for it either way** (`Overall.touch`): the
-    /// row is the terminal's sidecars, and which of them the row names is
-    /// not the thing being watched.
-    sidecar_pid: u32 = 0,
+    /// **The processes in this pane's tree** (`OverallRead.build`), heaviest
+    /// first and at most `max_children` of them: what the table draws under
+    /// the terminal's own line. A fixed buffer, like every other thing a
+    /// reading carries, so a reading is not an allocation per pane.
+    children: [max_children]Child = @splat(.{}),
+    children_len: u8 = 0,
 
     pub fn groupName(self: *const PaneReading) []const u8 {
         return self.group[0..self.group_len];
+    }
+
+    pub fn childrenOf(self: *const PaneReading) []const Child {
+        return self.children[0..self.children_len];
     }
 
     /// A reading with a kind and a group name on it, for the callers that
@@ -522,8 +569,8 @@ machine: Machine = .{},
 /// **The whole tree this application is responsible for**, bytes: its own
 /// process and every terminal's tree under it (`In.main` plus `In.panes`).
 ///
-/// `totalMib` is Polter's own rows -- the main process, the chats, the
-/// sidecars, the monitor. This is what macOS charges to Polter: a terminal's
+/// `totalMib` is Polter's own rows -- the main process, the chats, every
+/// terminal, the monitor. This is what macOS charges to Polter: a terminal's
 /// agent CLI, and the builds it starts, are descendants of this process, and
 /// the system's own Force Quit counts them here. The two are not the same
 /// number and neither is wrong (task 3012).
@@ -736,10 +783,11 @@ pub fn swapGrowth(self: *const Overall) Growth {
     return growth(buf[0..n]);
 }
 
-/// Total MiB held by Polter's own rows: the main process, the chats, the
-/// sidecars and the monitor. The monitor's is a couple of MiB inside the
-/// main process's and is counted here like any other row -- the table says
-/// where it lives, rather than subtracting it and leaving a hole.
+/// Total MiB held by Polter's own rows: the main process, the chats, every
+/// worker terminal (each its whole tree, task 3113) and the monitor. The
+/// monitor's is a couple of MiB inside the main process's and
+/// is counted here like any other row -- the table says where it lives,
+/// rather than subtracting it and leaving a hole.
 pub fn totalMib(self: *const Overall) u64 {
     var total: u64 = 0;
     for (self.slots[0..self.tracked]) |t| {
@@ -760,8 +808,13 @@ pub fn totalMib(self: *const Overall) u64 {
 /// reason, and this one number has no claim to a rule of its own.
 ///
 /// **Not `totalMib`.** That is Polter's own rows; this is what a reader
-/// comparing it with Force Quit is looking at. The difference between them is
-/// the terminals: the shells, the agent CLIs and the builds they start.
+/// comparing it with Force Quit is looking at. **The two agree now** (task
+/// 3113, second round): every worker terminal has a row, each one's whole
+/// tree, so the rows add up to this number plus the monitor's own row --
+/// which is inside the main process's and is drawn without being counted.
+/// What is left over is what the sampler never attributed to a pane: a
+/// child of the main process that is not a terminal, and processes it could
+/// not read (they are counted in `untracked`).
 pub fn treeMib(self: *const Overall) ?u64 {
     const b = self.tree_bytes orelse return null;
     return b / mib;
@@ -771,10 +824,11 @@ pub fn treeMib(self: *const Overall) ?u64 {
 /// every terminal's whole tree.
 ///
 /// **Both halves of a terminal are added back.** A worker's `mem` has its
-/// `polter +mcp` sidecars taken out -- they are a row of their own
-/// (`OverallRead.build`) -- so adding `mem` alone would leave every sidecar
-/// missing from the tree it is in. For a chat there is no such split, and
-/// `sidecar_mem` is zero.
+/// `polter +mcp` sidecars taken out (`OverallRead.build`) so that the row
+/// can put them back with the rest of the tree -- the split is one reading
+/// in two pieces, not two rows -- and adding `mem` alone would leave every
+/// sidecar missing from the tree it is in. For a chat there is no such
+/// split, and `sidecar_mem` is zero.
 fn treeBytes(in: In) u64 {
     var total: u64 = in.main.mem;
     for (in.panes) |p| total +|= p.mem +| p.sidecar_mem;
@@ -845,10 +899,14 @@ pub fn sample(self: *Overall, in: In) void {
     for (in.panes) |p| switch (p.kind) {
         // An embedded chat: the pane's whole tree is the group's own.
         .chat => self.touch(.chat, p, in, at_s, p.id),
-        // An ordinary terminal. Its sidecars are split out of its row so
-        // they are not counted twice (handoff §1); one with none is not a
-        // row here at all -- the terminal's own card is the pane feature's.
-        .worker => if (p.sidecar_procs > 0) self.touch(.sidecar, p, in, at_s, p.id),
+        // **Every worker terminal that has processes** (task 3113, second
+        // round): one with an `polter +mcp` in it and one without, a shell
+        // at its prompt and a build running for an hour. The row used to
+        // need a sidecar to exist at all, so the terminals most worth
+        // looking at -- the ones running a build or a test -- had no line
+        // and were in no total. The row is the terminal's whole tree
+        // either way.
+        .worker => if (p.procs +| p.sidecar_procs > 0) self.touch(.terminal, p, in, at_s, p.id),
     };
 
     // The monitor's own row: what this structure holds, which does not move.
@@ -859,21 +917,29 @@ pub fn sample(self: *Overall, in: In) void {
 }
 
 /// Fold one thing's reading into its row, opening one if it is new.
+///
+/// **A terminal's row is its whole tree** (task 3113): the agent CLI, the
+/// builds it started and the `polter +mcp` processes together. That is the
+/// number the group's own performance page shows for the same terminal --
+/// `ledger` counts a pane's whole tree -- and a reader comparing the two
+/// pages must be comparing the same quantity. `OverallRead.build` takes the
+/// pane apart into the tree without its sidecars (`mem`) and the sidecars
+/// alone (`sidecar_mem`), so the two halves are added back here and nowhere
+/// else; read apart, the row was a few MiB where the terminal held GiB.
+///
+/// **And the tree's processes travel with it**, heaviest first, so that the
+/// table can draw a terminal as a group instead of a word for its kind.
 fn touch(self: *Overall, kind: Kind, r: PaneReading, in: In, at_s: u32, pane: u64) void {
-    // A sidecar row is the `polter +mcp` processes alone; the chat's row is
-    // the whole pane. Reading the tree's memory **or its CPU** for a
-    // sidecar would put a worker's cost on its sidecar's row and count it
-    // twice over, which is why a worker's reading loses both before it
-    // arrives (`OverallRead.build`).
-    const mine = if (kind == .sidecar) .{ r.sidecar_mem, @max(1, r.sidecar_procs) } else .{ r.mem, r.procs };
-    const cpu_ns: u64 = if (kind == .sidecar) r.sidecar_cpu_ns else r.cpu_ns;
-    const pid: u32 = if (kind == .sidecar) r.sidecar_pid else r.root_pid;
-    // The moment the process behind the row started -- **zero for a row
-    // with several processes behind it**, a sidecar row being the one, so
-    // that its own pid moving between two similar sidecars does not read
-    // as "another process". It is a fact about one process, and a row that
-    // is not one process does not have it.
-    const started: i64 = if (kind == .sidecar) 0 else r.start_ms;
+    const mine = if (kind == .terminal)
+        .{ r.mem +| r.sidecar_mem, @max(1, r.procs +| r.sidecar_procs) }
+    else
+        .{ r.mem, r.procs };
+    const cpu_ns: u64 = if (kind == .terminal) r.cpu_ns +| r.sidecar_cpu_ns else r.cpu_ns;
+    // The process behind the row: the terminal's own -- the shell the pane
+    // started -- and not one of the sidecars inside it. The row is the
+    // terminal, so its pid and its start moment are the terminal's.
+    const pid: u32 = r.root_pid;
+    const started: i64 = r.start_ms;
     const slot = self.slotFor(kind, r, in, pane, pid) orelse return;
     const t = &self.slots[slot];
     t.alive = true;
@@ -881,18 +947,21 @@ fn touch(self: *Overall, kind: Kind, r: PaneReading, in: In, at_s: u32, pane: u6
     t.died_ms = 0;
     t.mem_mib = @intCast(@min(mine[0] / mib, std.math.maxInt(u32)));
     t.count = mine[1];
+    // **The terminal's processes, copied** (task 3113, second round): the
+    // reading they came in is freed before the next one, and this row
+    // outlives it.
+    t.children = r.children;
+    t.children_len = r.children_len;
 
     // Rule 7 of handoff §4: a process replaced is another process, so its
     // history starts again. The row is the same -- the same terminal, the
     // same group -- but the curve is the new process's.
     //
-    // **A start moment, and only for a row that is one process.** A pid is
-    // reused by the system, and moves between two processes of the same
-    // shape (the two sidecars of a pane); a start moment does not. And a
-    // sidecar row is several processes, which is why `started` is zero for
-    // it (`touch`'s caller above): its history is the terminal's sidecars
-    // together, and clearing it because the row happens to name another
-    // one would leave a row being watched for a leak with no curve at all.
+    // **A start moment, and not a pid.** A pid is reused by the system, and
+    // moves between two processes of the same shape; a start moment does
+    // not. A row is one terminal's tree now (task 3113), so this is its
+    // root's moment: the shell replaced is a new tree, and the sidecars
+    // inside it swapping places is not.
     //
     // **Before the CPU account below, not after.** This clears the old
     // process's `cpu_last_*`, and that has to happen first: clearing them
@@ -1016,14 +1085,15 @@ fn slotFor(self: *Overall, kind: Kind, r: PaneReading, in: In, pane: u64, pid: u
     return self.evict(kind, r, in, pane, pid);
 }
 
-/// The row that is already this thing. A chat and a sidecar are matched by
-/// their pane -- the process behind one may be replaced while the terminal
-/// stays -- and the main process and the monitor are single, so by kind.
+/// The row that is already this thing. A chat and a terminal are matched
+/// by their pane -- the process behind one may be replaced while the
+/// terminal stays -- and the main process and the monitor are single, so by
+/// kind.
 fn lookup(self: *Overall, kind: Kind, pane: u64) ?u8 {
     switch (kind) {
         .main => return self.slotOfKind(.main),
         .monitor => return self.slotOfKind(.monitor),
-        .chat, .sidecar => {},
+        .chat, .terminal => {},
     }
     for (self.slots[0..self.tracked], 0..) |t, i| {
         if (!t.used or t.kind != kind) continue;
@@ -1042,7 +1112,7 @@ fn open(self: *Overall, i: u8, kind: Kind, r: PaneReading, in: In, pane: u64, pi
         // The process behind the row, as the reading said -- not the moment
         // this row opened, which is a different fact and a useless one
         // (see `touch`).
-        .start_ms = if (kind == .sidecar) 0 else r.start_ms,
+        .start_ms = r.start_ms,
         .pane = pane,
         .count = 1,
         .alive = true,
@@ -1055,9 +1125,10 @@ fn open(self: *Overall, i: u8, kind: Kind, r: PaneReading, in: In, pane: u64, pi
 }
 
 /// The least-wanted row when all of them are taken (handoff §3.3): the one
-/// dead longest; with all of them alive, the smallest sidecar. The main
-/// process, a chat or the monitor is never thrown away for a sidecar, and
-/// with nothing evictable the reading is dropped and counted.
+/// dead longest; with all of them alive, the smallest terminal (the
+/// `terminal` kind). The main process, a chat or the monitor is never
+/// thrown away for one, and with nothing evictable the reading is dropped
+/// and counted.
 fn evict(self: *Overall, kind: Kind, r: PaneReading, in: In, pane: u64, pid: u32) ?u8 {
     var chosen: ?usize = null;
     var any_dead = false;
@@ -1069,9 +1140,9 @@ fn evict(self: *Overall, kind: Kind, r: PaneReading, in: In, pane: u64, pid: u32
         }
         chosen = i;
     }
-    if (!any_dead and kind == .sidecar) {
+    if (!any_dead and kind == .terminal) {
         for (self.slots[0..self.tracked], 0..) |t, i| {
-            if (t.kind != .sidecar) continue;
+            if (t.kind != .terminal) continue;
             if (chosen) |c| {
                 if (t.mem_mib >= self.slots[c].mem_mib) continue;
             }
@@ -1149,12 +1220,12 @@ pub fn rowOfPid(self: *const Overall, pid: u32) ?u8 {
     return null;
 }
 
-/// What a row is, in the three layers the overall view stacks.
+/// What a row is, in the categories the process table draws.
 pub fn categoryOf(kind: Kind) Category {
     return switch (kind) {
         .main, .monitor => .main,
         .chat => .chats,
-        .sidecar => .sidecars,
+        .terminal => .terminals,
     };
 }
 
@@ -1399,7 +1470,6 @@ test "2149: a hundred thousand readings hold the same bytes, so the monitor does
                 .cpu_ns = 1_000_000 * seed,
                 .sidecar_mem = if (seed % 2 == 0) 20 * mib else 0,
                 .sidecar_procs = if (seed % 2 == 0) 1 else 0,
-                .sidecar_pid = 5000 + seed,
             };
             if ((i / 11 + k) % 3 == 0) {
                 const n = @min("web-app".len, p.group.len);
@@ -1524,7 +1594,18 @@ test "2149: the main process, its chats and its sidecars all add up" {
 
     const start_ms: i64 = 1_700_000_000_000;
     const chat = PaneReading.named(0xab, .chat, "web-app", 20 << 30, 3);
-    const worker = PaneReading{ .id = 0xcd, .kind = .worker, .mem = 3 << 30, .procs = 30, .sidecar_mem = 200 * mib, .sidecar_procs = 2, .sidecar_pid = 77 };
+    // A worker pane as `OverallRead.build` leaves it: its tree without the
+    // sidecars, and the sidecars alone. The row is the two together
+    // (task 3113), so 3000 + 200 MiB and 30 + 2 processes.
+    const worker = PaneReading{
+        .id = 0xcd,
+        .kind = .worker,
+        .root_pid = 99,
+        .mem = 3000 * mib,
+        .procs = 30,
+        .sidecar_mem = 200 * mib,
+        .sidecar_procs = 2,
+    };
     o.sample(.{
         .now_ms = start_ms,
         .start_ms = start_ms,
@@ -1532,14 +1613,16 @@ test "2149: the main process, its chats and its sidecars all add up" {
         .panes = &.{ chat, worker },
     });
     try testing.expectEqual(@as(?u8, 0), o.slotOfKind(.main));
-    const sidecar = o.slotOfKind(.sidecar).?;
-    try testing.expectEqual(@as(u32, 2), o.slotAt(sidecar).count);
-    try testing.expectEqual(@as(u32, 77), o.slotAt(sidecar).pid);
-    try testing.expectEqualStrings("", o.groupOf(sidecar));
+    const terminal = o.slotOfKind(.terminal).?;
+    // The terminal's whole tree: every process in it, and the terminal's
+    // own process behind the row.
+    try testing.expectEqual(@as(u32, 32), o.slotAt(terminal).count);
+    try testing.expectEqual(@as(u32, 99), o.slotAt(terminal).pid);
+    try testing.expectEqualStrings("", o.groupOf(terminal));
     try testing.expectEqualStrings("web-app", o.groupOf(o.slotOfKind(.chat).?));
     // Everything tracked adds up, the monitor's own row included.
     const monitor_mib: u64 = @max(1, o.monitorBytes() / mib);
-    try testing.expectEqual(@as(u64, 500 + (20 << 10) + 200), o.totalMib() - monitor_mib);
+    try testing.expectEqual(@as(u64, 500 + (20 << 10) + 3000 + 200), o.totalMib() - monitor_mib);
 }
 
 test "3012: the tree is the main process and every terminal's whole tree, sidecars included" {
@@ -1561,7 +1644,6 @@ test "3012: the tree is the main process and every terminal's whole tree, sideca
         .procs = 30,
         .sidecar_mem = 200 * mib,
         .sidecar_procs = 2,
-        .sidecar_pid = 77,
     };
     o.sample(.{
         .now_ms = start_ms,
@@ -1571,15 +1653,19 @@ test "3012: the tree is the main process and every terminal's whole tree, sideca
     });
 
     try testing.expectEqual(@as(?u64, 500 + 20480 + 3000 + 200), o.treeMib());
-    // The rows are not the tree: the worker's 3000 MiB has no row of its own
-    // (a worker with no sidecars is not a row here at all), and it is in the
-    // tree. The monitor's row is inside the main process's and is left out of
-    // the subtraction for that reason.
+    // **The rows are the tree now** (task 3113): the worker's whole tree is
+    // the row of the terminal that has the sidecar in it, so the two halves
+    // of that number meet. What is left over is the monitor's own row, which
+    // lives inside the main process's and is drawn without being counted.
     const monitor_mib: u64 = @max(1, o.monitorBytes() / mib);
-    try testing.expectEqual(@as(u64, 3000), o.treeMib().? + monitor_mib - o.totalMib());
+    try testing.expectEqual(o.treeMib().?, o.totalMib() - monitor_mib);
 }
 
-test "3012: a terminal's child growing moves the tree and leaves every row where it was" {
+test "3113: a terminal's child growing moves the tree and the terminal's row" {
+    // **The row follows the tree** (task 3113, second round). The old rule
+    // was the other one -- a terminal's child grew the tree and no row moved,
+    // because a worker terminal with no `polter +mcp` in it had no row -- and
+    // that is what made the table's numbers and the figure's disagree.
     var o = try Overall.create(testing.allocator);
     defer o.destroy();
     const start_ms: i64 = 1_700_000_000_000;
@@ -1593,8 +1679,15 @@ test "3012: a terminal's child growing moves the tree and leaves every row where
     });
     const before_tree = o.treeMib().?;
     const before_rows = o.totalMib();
+    // The terminal has a row of its own even with nothing but a shell in it
+    // -- that is the rule this test stands on.
+    const maybe = o.slotOfKind(.terminal);
+    try testing.expect(maybe != null);
+    const row = maybe orelse return error.NoTerminalRow;
+    try testing.expectEqual(@as(u32, 3000), o.slotAt(row).mem_mib);
 
-    // The same tree with a 300 MiB child started in that terminal.
+    // The same tree with a 300 MiB child started in that terminal -- a
+    // build, which is the case the user asked for.
     const busy = PaneReading{ .id = 0xcd, .kind = .worker, .mem = 3300 * mib, .procs = 31 };
     o.sample(.{
         .now_ms = start_ms + 2000,
@@ -1604,10 +1697,10 @@ test "3012: a terminal's child growing moves the tree and leaves every row where
     });
 
     try testing.expectEqual(before_tree + 300, o.treeMib().?);
-    // **The rows did not move**, which is the whole point of task 3012: the
-    // number a reader compares with Force Quit was climbing while the figure
-    // the app called its own cost did not.
-    try testing.expectEqual(before_rows, o.totalMib());
+    // The row moved with it, by the same 300 MiB: the table and the figure
+    // are one reading now.
+    try testing.expectEqual(before_rows + 300, o.totalMib());
+    try testing.expectEqual(@as(u32, 3300), o.slotAt(row).mem_mib);
 }
 
 test "3012: the tree is converted the same way every other MiB on the page is" {
@@ -1956,13 +2049,11 @@ test "2149: a group deleted takes its rows with it, now and not in a day" {
     try testing.expect(o.slotOfKind(.main) != null);
 }
 
-test "2149: a sidecar row keeps its history when the sidecar it names changes" {
-    // A pane with two `polter +mcp` processes: which of them the row names
-    // is whichever started first, and if that one goes the next is named.
-    // **The row is the terminal's sidecars**, so its curve is theirs
-    // together and is not thrown away when the name moves -- a row being
-    // watched for a leak that lost its history every few minutes would
-    // never have enough points to be judged at all.
+test "3113: a terminal's row keeps its history while the sidecar inside it changes" {
+    // **The row is the terminal**, not one `polter +mcp` process (task
+    // 3113): a sidecar replaced inside the tree is the same row with the
+    // same curve. Only the terminal's own process being replaced starts its
+    // history again -- the rule every row follows.
     var o = try Overall.create(testing.allocator);
     defer o.destroy();
     const start_ms: i64 = 1_700_000_000_000;
@@ -1970,26 +2061,35 @@ test "2149: a sidecar row keeps its history when the sidecar it names changes" {
     const first = PaneReading{
         .id = 0xcd,
         .kind = .worker,
+        .root_pid = 42,
+        .start_ms = start_ms - 60_000,
         .mem = 3 << 30,
         .procs = 30,
         .sidecar_mem = 200 * mib,
         .sidecar_procs = 2,
-        .sidecar_pid = 77,
     };
     o.sample(.{ .now_ms = start_ms, .start_ms = start_ms, .main = .{ .id = 0, .root_pid = 1, .mem = 100 * mib }, .panes = &.{first} });
-    const row = o.slotOfKind(.sidecar).?;
-    try testing.expectEqual(@as(u32, 77), o.slotAt(row).pid);
+    const row = o.slotOfKind(.terminal).?;
+    try testing.expectEqual(@as(u32, 42), o.slotAt(row).pid);
 
-    // The other sidecar is named now (the first went): the same row, the
-    // same curve.
+    // One of the two sidecars went and another came: the terminal's own
+    // process is still there, so the row and its curve stay.
     var second = first;
-    second.sidecar_pid = 91;
+    second.sidecar_mem = 100 * mib;
+    second.sidecar_procs = 1;
     o.sample(.{ .now_ms = start_ms + 60_000, .start_ms = start_ms, .main = .{ .id = 0, .root_pid = 1, .mem = 100 * mib }, .panes = &.{second} });
-    try testing.expectEqual(row, o.slotOfKind(.sidecar).?);
-    try testing.expectEqual(@as(u32, 91), o.slotAt(row).pid);
+    try testing.expectEqual(row, o.slotOfKind(.terminal).?);
+    try testing.expectEqual(@as(u32, 42), o.slotAt(row).pid);
     try testing.expectEqual(@as(u16, 2), o.slotAt(row).hour_ring.len);
-    try testing.expectEqual(@as(?u8, row), o.rowOfPid(91));
-    try testing.expectEqual(@as(?u8, null), o.rowOfPid(77));
+    try testing.expectEqual(@as(?u8, row), o.rowOfPid(42));
+
+    // The terminal's own process replaced: another tree, so its history
+    // starts again.
+    var replaced = second;
+    replaced.start_ms = start_ms;
+    o.sample(.{ .now_ms = start_ms + 120_000, .start_ms = start_ms, .main = .{ .id = 0, .root_pid = 1, .mem = 100 * mib }, .panes = &.{replaced} });
+    try testing.expectEqual(row, o.slotOfKind(.terminal).?);
+    try testing.expectEqual(@as(u16, 1), o.slotAt(row).hour_ring.len);
 }
 
 test "2149: the answer says which rows are dead, and when they went" {

@@ -8,12 +8,16 @@
 //! it is a later slice, and nothing in this file starts, schedules or
 //! retries anything.
 //!
-//! **One export, one call.** `group_read` and the three bounded history
-//! calls are dispatched by the core behind that one symbol. A reply is
-//! asked for once, into a buffer of `BODY_LIMIT + 1` bytes (`cap` is the
-//! whole allocation; the last byte is the core's NUL). The call is never
-//! made twice: a `0` answer is "nothing yet", and asking again to learn a
-//! size would be a second chance for a poll's state to move between them.
+//! **One export, one call at the core's own budget, and a second only for a
+//! live reply above it.** `group_read` and the three bounded history calls
+//! are dispatched by the core behind that one symbol. The first call goes
+//! into `BODY_LIMIT + 1` bytes (`cap` is the whole allocation; the last byte
+//! is the core's NUL). `BODY_LIMIT` is also the core's own page budget, and
+//! the smallest capacity that keeps its restricted branch from refusing
+//! `chat_search_*`, `chat_metadata` and the around/context/reference history
+//! modes -- **a zero-length probe must never be used**. A longer answer can
+//! only be the live `group_read`; the buffer is grown to that length and the
+//! same request is asked again, bounded by `MAX_BODY_LIMIT`.
 //!
 //! **Transport is not the core's answer.** `TransportError` is about the
 //! call itself (the export is missing, the reply did not fit, its bytes are
@@ -27,9 +31,19 @@ use serde_json::{Map, Value};
 
 use crate::ffi::Api;
 
-/// The largest reply body this host accepts, not counting the NUL the core
-/// may write after it.
+/// The core's own reply budget (and the first buffer this host allocates),
+/// not counting the NUL the core may write after it. History and search
+/// pages are capped here by the core; only the live read can exceed it.
 pub const BODY_LIMIT: usize = 96 * 1024;
+
+/// The largest live reply this host will grow a buffer for. A single live
+/// page past this is a pathological message, not a page to keep, so it is
+/// refused rather than allocated.
+pub const MAX_BODY_LIMIT: usize = 4 * 1024 * 1024;
+
+/// How many times a reply that grew between two calls is asked again. A
+/// live read can gain a message; three retries is far past that.
+pub const GROW_ATTEMPTS: usize = 3;
 
 /// The ABI as the host calls it. Kept a named type so a test can hand in
 /// the same shape without a loaded `Api`.
@@ -56,30 +70,44 @@ pub enum TransportError {
     /// This core has no `ghostty_app_chat_read`: a core from before task
     /// 2802. Not a socket fallback and not a surface door.
     Unsupported,
-    /// The reply is longer than the buffer this host allocated. The buffer
-    /// is not read and the call is not made again.
+    /// The reply is longer than `MAX_BODY_LIMIT`, or it kept growing past
+    /// `GROW_ATTEMPTS`. Nothing past the measured length is read.
     TooLarge,
     /// The reply's bytes are not UTF-8. Never replaced with U+FFFD.
     MalformedUtf8,
 }
 
-/// One call, one buffer. `call` is handed the request's bytes and the
-/// output buffer, and answers how many bytes of body it wrote.
+/// Ask, growing the buffer if the reply is a live page above the core's own
+/// budget. `call` is handed the request's bytes and the output buffer, and
+/// answers how many bytes of body it wrote.
 pub fn read_once(
     request: &str,
-    call: impl FnOnce(&[u8], &mut [u8]) -> usize,
+    mut call: impl FnMut(&[u8], &mut [u8]) -> usize,
 ) -> Result<Transport, TransportError> {
-    let mut out = vec![0u8; BODY_LIMIT + 1];
-    let n = call(request.as_bytes(), &mut out);
-    if n == 0 {
-        return Ok(Transport::NotReady);
-    }
-    if n > BODY_LIMIT {
-        return Err(TransportError::TooLarge);
-    }
-    match std::str::from_utf8(&out[..n]) {
-        Ok(text) => Ok(Transport::Body(text.to_owned())),
-        Err(_) => Err(TransportError::MalformedUtf8),
+    let mut needed = BODY_LIMIT;
+    let mut grows = 0usize;
+    loop {
+        let mut out = vec![0u8; needed + 1];
+        let n = call(request.as_bytes(), &mut out);
+        if n == 0 {
+            return Ok(Transport::NotReady);
+        }
+        if n > MAX_BODY_LIMIT {
+            return Err(TransportError::TooLarge);
+        }
+        if n <= needed {
+            return match std::str::from_utf8(&out[..n]) {
+                Ok(text) => Ok(Transport::Body(text.to_owned())),
+                Err(_) => Err(TransportError::MalformedUtf8),
+            };
+        }
+        // The reply grew between the calls (a live read can gain a message
+        // while the buffer is being measured). Ask again at the new length.
+        grows += 1;
+        if grows > GROW_ATTEMPTS {
+            return Err(TransportError::TooLarge);
+        }
+        needed = n;
     }
 }
 
@@ -1427,20 +1455,68 @@ mod tests {
     }
 
     #[test]
-    fn transport_caps_at_96k_whole_and_refuses_more_without_reading() {
+    fn transport_reads_a_reply_whole_when_it_fits_the_core_budget() {
         let body = vec![b'{'; BODY_LIMIT];
+        let mut calls = 0;
         let t = read_once("{}", |_, out| {
+            calls += 1;
             out[..BODY_LIMIT].copy_from_slice(&body);
             BODY_LIMIT
         })
         .unwrap();
+        assert_eq!(calls, 1);
         match t {
             Transport::Body(text) => assert_eq!(text.len(), BODY_LIMIT),
             other => panic!("expected the whole body, got {other:?}"),
         }
+    }
 
-        let too_large = read_once("{}", |_, _| BODY_LIMIT + 1).unwrap_err();
-        assert_eq!(too_large, TransportError::TooLarge);
+    #[test]
+    fn a_reply_over_the_budget_is_asked_again_at_its_own_size() {
+        // The user's own reading, kept as the shape this exists for:
+        // `chat read needs 104317 bytes; the buffer holds 98304`.
+        let needed = 104_317;
+        let mut calls = 0;
+        let t = read_once("{}", |_, out| {
+            calls += 1;
+            if out.len() < needed + 1 {
+                return needed; // does not fit: nothing written
+            }
+            for b in &mut out[..needed] {
+                *b = b'a';
+            }
+            needed
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        match t {
+            Transport::Body(text) => assert_eq!(text.len(), needed),
+            other => panic!("expected the whole body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transport_refuses_a_reply_over_the_live_ceiling() {
+        let mut calls = 0;
+        let err = read_once("{}", |_, _| {
+            calls += 1;
+            MAX_BODY_LIMIT + 1
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(err, TransportError::TooLarge);
+    }
+
+    #[test]
+    fn a_reply_that_keeps_growing_is_stopped() {
+        let mut calls = 0;
+        let err = read_once("{}", |_, out| {
+            calls += 1;
+            out.len() // always one byte more than this buffer
+        })
+        .unwrap_err();
+        assert_eq!(calls, GROW_ATTEMPTS + 1);
+        assert_eq!(err, TransportError::TooLarge);
     }
 
     #[test]

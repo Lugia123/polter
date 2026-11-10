@@ -15,7 +15,9 @@ struct ControlRoomView: View {
         let edge = CGFloat(Look.Space.windowEdge)
         let bar = ControlRoomList.detailBar(
             row: model.selectedRow, selection: model.selection,
-            holdsTerminal: model.detail.terminal != nil && !model.overallInFront, title: model.supervisorTitle)
+            holdsTerminal: model.detail.terminal != nil && !model.overallInFront,
+            title: model.supervisorTitle,
+            overallTitle: model.overallInFront ? ControlRoomOverall.pageTitle : nil)
         HStack(spacing: CGFloat(Look.Space.betweenFrames)) {
             if let list = model.list {
                 ControlRoomListView(

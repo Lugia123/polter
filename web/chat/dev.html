@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polter 群聊 · dev（无宿主）</title>
+<link rel="stylesheet" href="chat.css">
+<style>
+  /* Dev chrome only. The real page has no toolbar: head, search, input and
+     sidebar stay native in both hosts. */
+  #devbar {
+    position: fixed; inset: 0 0 auto 0; z-index: 20;
+    display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center;
+    padding: 5px 10px;
+    background: var(--bg-code); border-bottom: 1px solid var(--rule);
+    color: var(--muted);
+    font: 11.5px/1.5 var(--font-mono);
+  }
+  #devbar b { color: var(--fg); }
+  #devbar button {
+    padding: 2px 8px; border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--bg); color: var(--fg); cursor: pointer;
+    font: inherit;
+  }
+  #devbar button:hover { border-color: var(--muted); }
+  #devbar .note { color: var(--muted); }
+  #devbar .sent { color: var(--hit); }
+  #scroll { padding-top: 54px; }
+  /* keep the sticky status pill below the fixed dev toolbar */
+  .top { top: 58px; }
+  #devfoot {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    padding: 3px 10px; pointer-events: none;
+    background: linear-gradient(transparent, var(--bg) 60%);
+    color: var(--muted); font: 10.5px/1.4 var(--font-mono);
+  }
+</style>
+</head>
+<body>
+<div id="devbar">
+  <b>dev shell</b>
+  <button id="d-append" type="button">＋1 条新消息</button>
+  <button id="d-append5" type="button">＋5 条</button>
+  <button id="d-theme" type="button">明/暗</button>
+  <button id="d-search" type="button">搜索（字面）</button>
+  <button id="d-searchrange" type="button">搜索（ranges）</button>
+  <button id="d-clear" type="button">清搜索</button>
+  <button id="d-locate" type="button">定位到 m120</button>
+  <span class="note" id="d-count"></span>
+  <span class="sent" id="d-sent"></span>
+</div>
+
+<main id="scroll" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
+  <div id="top" class="top" role="status" aria-live="polite" hidden><span id="top-text"></span></div>
+</main>
+
+<button id="jump" type="button" hidden>
+  <span id="jump-label"></span><span id="jump-count"></span>
+</button>
+
+<div id="devfoot">
+  页面右侧没有滚动条（scrollbar-width:none / ::-webkit-scrollbar{display:none}）：
+  用滚轮或触控板上滚，到顶会加载更早的 20 条；停在中间时「＋1 条新消息」不会把你拽回底部。
+</div>
+
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="chat.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TOTAL = 140;         // all messages the fake archive holds
+  var FIRST = 60;          // first page = the newest 60
+  var PAGE = 20;           // every chat.loadOlder brings 20 older ones
+  var DELAY_PAGE = 300;    // §dev: 300ms simulated paging delay
+  var DELAY_RESET = 120;
+
+  var oldest = TOTAL - FIRST;
+
+  function svgURI(w, h, label) {
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">' +
+      '<rect width="100%" height="100%" fill="#243040"/>' +
+      '<text x="12" y="' + (h / 2 + 5) + '" fill="#8ab4f8" font-family="monospace" ' +
+      'font-size="14">' + label + '</text></svg>';
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  }
+
+  var AUTHORS = [
+    { author: '◐ Claude Code', role: 'polter-supervisor' },
+    { author: '✳ Claude Code', role: 'dev-worker' },
+    { author: '✧ Claude Code', role: 'test-worker' },
+    { author: '用户', role: 'user' }
+  ];
+
+  function bodyOf(i) {
+    switch (i % 10) {
+      case 0:
+        return '## 进度 ' + i + '\n\n' +
+          '第 ' + i + ' 条消息，正文里有 **加粗**、*斜体* 和 `行内代码`。\n\n' +
+          '- 列表项 A\n- 列表项 B\n- 列表项 C\n\n' +
+          '| 项 | 关键读数 |\n|---|---|\n' +
+          '| rows | ' + (100 + i) + ' |\n| scrollTop | ' + (2000 + i * 7) + ' |\n';
+      case 1:
+        return '### 代码块 ' + i + '\n\n' +
+          '```zig\nconst Place = struct {\n    id: []const u8,\n    y: f32,\n};\n\n' +
+          'pub fn main() void {\n    std.debug.print("message ' + i + '\\n", .{});\n}\n```\n';
+      case 2:
+        return '一条很长的命令（横向滚动时整页不能跟着动）：\n\n' +
+          '```bash\n' +
+          'printf "%s\\n" "' + new Array(9).join('segment-' + i + '-') + 'end-of-a-very-long-line"\n' +
+          '```\n\n' +
+          '```bash\necho "short ' + i + '"\n```\n';
+      case 3:
+        return '- [x] 已完成 ' + i + '\n- [ ] 未完成 ' + i + '\n- 普通项目\n' +
+          '  - 嵌套一\n  - 嵌套二\n' +
+          '    1. 再深一层 a\n    2. 再深一层 b\n\n' +
+          '~~旧结论 ' + i + '~~\n\n> 引用：插入更早的内容时视口一个像素不动。\n\n' +
+          '1. 第一\n2. 第二\n3. 第三\n';
+      case 4:
+        return '链接与内联：见 [示例 ' + i + '](https://example.com/item/' + i + ')，' +
+          '以及 `chat.loadOlder` 的调用。\n\n' +
+          '```js\nfunction ask(' + 'before) {\n  return { type: "chat.loadOlder", before };\n}\n```\n';
+      case 5:
+        return '### 宽表格 ' + i + '\n\n' +
+          '| id | seq | at | author | role | text | state |\n' +
+          '|---|---|---|---|---|---|---|\n' +
+          '| m' + i + ' | ' + i + ' | 1794' + i + ' | ◐ | supervisor | 一条很长的文字 | ok |\n' +
+          '| m' + (i + 1) + ' | ' + (i + 1) + ' | 1794' + (i + 1) + ' | ✳ | worker | 另一条很长的文字 | ok |\n' +
+          '| m' + (i + 2) + ' | ' + (i + 2) + ' | 1794' + (i + 2) + ' | ✧ | tester | 第三条文字 | ok |\n';
+      case 6:
+        return '带尺寸的图片（width/height 占位，迟加载不跳）：';
+      case 7:
+        return '没有尺寸属性的图片（load 时补一次 scrollTop）：';
+      case 8:
+        return '长段落 ' + i + '：群聊是连续对话流，没有右侧索引条，也不跟随新的内容' +
+          '把你拽回底部。停在中间时右下角浮出「↓ 跳到最新 (n)」。' +
+          '这一段故意写得长一些，用来制造好几行折行，方便量元素锚点。'.repeat(2) + '\n\n' +
+          '一个不断行的长 token：' + 'x'.repeat(120) + '\n\n' +
+          '![md 图片（data URI）](' + svgURI(180, 60, 'markdown image') + ')\n\n' +
+          '![md 本地路径](/tmp/md-local.png)\n';
+      default:
+        return '# 标题 ' + i + '\n\n---\n\n> 引用块\n\n普通收尾段落 ' + i + '。\n';
+    }
+  }
+
+  function makeMessage(i) {
+    var a = AUTHORS[i % AUTHORS.length];
+    if (i % 37 === 0) a = AUTHORS[0];
+    var m = {
+      id: 'm' + i,
+      seq: i,
+      at: new Date(2026, 10, 9, 2, 0, 0).getTime() + i * 90000,
+      author: a.author,
+      role: a.role,
+      text: bodyOf(i),
+      dayBreak: i % 20 === 0,
+      speakerRule: a.role.indexOf('supervisor') >= 0
+    };
+    if (i % 10 === 6) {
+      m.images = [{ src: svgURI(320, 120, 'sized image ' + i), width: 320, height: 120, alt: '样张 ' + i }];
+    } else if (i % 10 === 7) {
+      // No width/height: the page has to compensate when load arrives.
+      m.images = [{ src: svgURI(220, 90, 'late image ' + i), alt: '无尺寸 ' + i }];
+    }
+    if (i === 118) {
+      // A path the page cannot read: the fake host answers page.image.
+      m.text = '本地路径图片：页面先发 chat.imageTicket，宿主用 page.image 回 ticket URL。';
+      m.images = [{ src: '/tmp/polter-demo.png', alt: '本地路径图片 ' + i }];
+    }
+    return m;
+  }
+
+  var ALL = [];
+  for (var i = 0; i < TOTAL; i++) ALL.push(makeMessage(i));
+  var nextAppend = TOTAL;
+
+  // -- the fake host ------------------------------------------------------
+
+  function deliver(obj) {
+    if (window.polterChat && window.polterChat.receive) window.polterChat.receive(obj);
+  }
+
+  function sent(msg) {
+    var el = document.getElementById('d-sent');
+    if (el) el.textContent = '→ ' + msg.type + (msg.pending != null ? ' pending=' + msg.pending : '');
+  }
+
+  window.polter = {
+    postMessage: function (msg) {
+      // The record the manual/debug console can read back.
+      (window.__sent = window.__sent || []).push(msg);
+      sent(msg);
+      handle(msg);
+    }
+  };
+
+  function handle(msg) {
+    switch (msg.type) {
+      case 'chat.ready':
+        setTimeout(function () {
+          deliver({
+            type: 'page.reset',
+            messages: ALL.slice(oldest),
+            theme: { mode: 'dark' },
+            locale: 'zh',
+            hasEarlier: oldest > 0
+          });
+          updateCount();
+        }, DELAY_RESET);
+        break;
+      case 'chat.loadOlder':
+        setTimeout(function () {
+          var from = Math.max(0, oldest - PAGE);
+          var msgs = ALL.slice(from, oldest);
+          oldest = from;
+          deliver({ type: 'page.prepend', messages: msgs, hasEarlier: oldest > 0 });
+          updateCount();
+        }, DELAY_PAGE);
+        break;
+      case 'chat.openLink':
+        flash('openLink ' + msg.href);
+        break;
+      case 'chat.openImage':
+        // No host to open a picture here; showing the message is the point
+        // (the browser probe reads it back from window.__sent).
+        flash('openImage ' + msg.src);
+        break;
+      case 'chat.menu':
+        flash('menu id=' + msg.id + ' @ ' + msg.x + ',' + msg.y);
+        break;
+      case 'chat.copy':
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(msg.text).catch(function () {});
+        }
+        flash('copy ' + String(msg.text || '').length + ' chars');
+        break;
+      case 'chat.imageTicket':
+        // The fake archive's images are data: URIs; this one path gets a
+        // ticket answer after the same 300ms, like a real host.
+        if (msg.src === '/tmp/polter-demo.png') {
+          setTimeout(function () {
+            deliver({
+              type: 'page.image',
+              src: msg.src,
+              url: svgURI(240, 90, 'ticketed image'),
+              width: 240,
+              height: 90
+            });
+          }, DELAY_PAGE);
+        }
+        break;
+      case 'chat.error':
+        flash('ERROR ' + msg.message);
+        break;
+      default:
+        break;
+    }
+  }
+
+  var flashTimer = 0;
+  function flash(text) {
+    var el = document.getElementById('d-sent');
+    if (!el) return;
+    el.textContent = text;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { el.textContent = ''; }, 2500);
+  }
+
+  function updateCount() {
+    var el = document.getElementById('d-count');
+    if (!el) return;
+    var loaded = TOTAL - oldest;
+    el.textContent = 'messages ' + loaded + '/' + TOTAL +
+      ' · scrollbar: none (right edge)';
+  }
+
+  window.__dev = {
+    all: ALL,
+    deliver: deliver,
+    oldest: function () { return oldest; },
+    append: appendOne,
+    appendMany: appendMany
+  };
+
+  function appendOne() {
+    var m = makeMessage(nextAppend++);
+    m.dayBreak = false;
+    m.speakerRule = false;
+    m.text = '**新消息 ' + m.seq + '**：如果你停在中间，这一条不会把你拽回底部。';
+    m.images = [];
+    deliver({ type: 'page.append', message: m, pending: 1 });
+    updateCount();
+    return m;
+  }
+
+  function appendMany() {
+    for (var k = 0; k < 5; k++) appendOne();
+  }
+
+  // -- dev toolbar --------------------------------------------------------
+
+  var mode = 'dark';
+
+  document.getElementById('d-append').addEventListener('click', appendOne);
+  document.getElementById('d-append5').addEventListener('click', appendMany);
+
+  document.getElementById('d-theme').addEventListener('click', function () {
+    mode = mode === 'dark' ? 'light' : 'dark';
+    deliver({ type: 'page.theme', mode: mode });
+  });
+
+  document.getElementById('d-search').addEventListener('click', function () {
+    var hits = [];
+    var all = window.polterChat.state.rowList;
+    for (var i = 0; i < all.length && hits.length < 3; i++) {
+      var id = all[i].dataset.id;
+      var raw = window.polterChat.state.raw[id];
+      if (raw && String(raw.text || '').indexOf('代码') >= 0) hits.push({ id: id });
+    }
+    deliver({ type: 'page.search', query: '代码', hits: hits });
+  });
+
+  document.getElementById('d-searchrange').addEventListener('click', function () {
+    var rows = window.polterChat.state.rowList;
+    if (!rows.length) return;
+    var el = rows[rows.length - 1];
+    var id = el.dataset.id;
+    var body = el.querySelector('.body');
+    var text = body ? body.textContent : '';
+    var at = text.indexOf('进度');
+    if (at < 0) at = 0;
+    deliver({
+      type: 'page.search',
+      query: text.slice(at, at + 2),
+      hits: [{ id: id, ranges: [[at, at + 2]] }]
+    });
+  });
+
+  document.getElementById('d-clear').addEventListener('click', function () {
+    deliver({ type: 'page.search', query: '', hits: [] });
+  });
+
+  document.getElementById('d-locate').addEventListener('click', function () {
+    var id = 'm120';
+    deliver({ type: 'page.locate', id: id, ranges: [[0, 4]] });
+  });
+
+  updateCount();
+})();
+</script>
+</body>
+</html>

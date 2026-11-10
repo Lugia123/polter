@@ -491,6 +491,18 @@ to look is not an interruption, so call it when you finish something.
 **Reading clears the box**: what you are shown once is not shown again.
 Nothing arriving means everyone is working, not that the mechanism stopped.
 
+**A launch that connected no agent is told with the screen it left.**
+`launch failed (no_agent)` gives the wait and the CLI or launcher it went
+through, then `the screen at that moment:` and the last lines of that
+screen that had text on them, separated by `⏎` — the notice is one typed
+line, so a real newline cannot be used. **Read those lines before
+deciding anything.** `no_agent` is arithmetic — nothing connected in that minute —
+not a cause: the cause is usually a box the CLI itself is showing, and
+it is carried to you precisely so you do not have to guess or go and
+look. The tail is the visible screen read at that moment, capped at 30
+text lines and 2 KB, and it is the screen *then* — a CLI that has since
+exited is seen afterwards, which is accepted, not a fault to fix.
+
 Two durations. *Screen unchanged* means nothing visible moved; *pty silent*
 means nothing was written at all. A program redrawing the same frame is
 unchanged but not silent, and is alive. One that has stopped is both.

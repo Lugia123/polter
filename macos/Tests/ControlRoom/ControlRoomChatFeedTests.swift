@@ -1650,6 +1650,23 @@ struct ControlRoomChatFeedTests {
         #expect(rig.feed.readingWasReported)
     }
 
+    /// **A reader at the bottom has no place to come back to** (task 3096
+    /// #4). The anchor still moves -- `trim` reads it -- but
+    /// `readingWasReported` goes false, and the container stores only places
+    /// a reader made. Without this a group left at the newest would reopen
+    /// on an arbitrary row, and "I left it at the bottom" would be recorded
+    /// as a line nobody chose.
+    @Test func testFollowingIsNotAPlace() {
+        let rig = Rig()
+        rig.feed.reading(anchor: "p:10", offset: 4)
+        #expect(rig.feed.readingWasReported)
+        #expect(rig.feed.savedReading == .init(id: "p:10", offset: 4))
+
+        rig.feed.reading(anchor: "p:11", offset: 0, following: true)
+        #expect(rig.feed.savedReading == .init(id: "p:11", offset: 0))
+        #expect(!rig.feed.readingWasReported)
+    }
+
     /// **An anchor nobody has is rebuilt, not left stuck** (review M, Q2).
     ///
     /// `goToLatest()` returns early when the newer apron is empty -- the

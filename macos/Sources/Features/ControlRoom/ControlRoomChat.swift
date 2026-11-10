@@ -613,12 +613,24 @@ struct ControlRoomChatPage: View {
                     )
                     .frame(width: split.sidebarWidth, height: geometry.size.height,
                            alignment: .topLeading)
-                    .offset(x: split.sidebarX)
                     // Where ⌘⌥→ puts the keyboard: a view with nothing in it
                     // that the chat stops receiving keys into. Everything it
                     // does not use goes on up the responder chain
                     // (`SidebarFocusSink`), so nothing is swallowed.
+                    //
+                    // ⚠️ **The background is applied BEFORE the offset, and it
+                    // must stay that way.** A `background`'s SwiftUI children
+                    // that are `NSViewRepresentable`s are laid out at the
+                    // *layout* frame; `.offset` moves only what is drawn. With
+                    // the background after the offset, the sink's `NSView` sat
+                    // at x=0 while the slot was drawn at the right edge -- and
+                    // an `NSView` hit-tests where its frame is, so it covered
+                    // the left 330 pt of the transcript page and swallowed the
+                    // wheel there (measured: sink frame (0,0,330,h) and every
+                    // point in x=0...330 hit the sink; with this order it is
+                    // (w-330,0,330,h) and the same points reach the page).
                     .background(SidebarFocusSink(wanted: side == .preview))
+                    .offset(x: split.sidebarX)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height,

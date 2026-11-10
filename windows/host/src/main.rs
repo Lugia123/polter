@@ -143,6 +143,7 @@ mod plugins_ui;
 mod plugin_page;
 mod webview_host;
 mod preview_page;
+mod chat_page;
 mod polterclose;
 mod project;
 mod project_picker;

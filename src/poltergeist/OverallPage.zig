@@ -56,6 +56,16 @@ pub const In = struct {
     /// terminal it is in, and that is the group it belongs to.
     groupOfPane: *const fn (ctx: ?*const anyopaque, pane: u64) []const u8 = noGroup,
     ctx: ?*const anyopaque = null,
+    /// **What a terminal is called**, by its pane id: the title the person
+    /// gave it, or the one its agent sets (task 3113). Empty when there is
+    /// no terminal behind that id, or nothing has named it -- which is a
+    /// row the host names by its id alone.
+    ///
+    /// A callback and not a field on `PaneReading`: the title is the
+    /// apprt's, changes while the reading stays the same, and nothing in
+    /// the reading needs to hold a copy of it.
+    titleOfPane: *const fn (ctx: ?*const anyopaque, pane: u64) []const u8 = noTitle,
+    title_ctx: ?*const anyopaque = null,
     /// `{ "group": … }`: only that group's processes. Empty is all.
     only_group: []const u8 = "",
     /// `{ "pid": … }`: only that process, and its 24 hours of points.
@@ -67,9 +77,36 @@ fn noGroup(_: ?*const anyopaque, _: u64) []const u8 {
     return "";
 }
 
+fn noTitle(_: ?*const anyopaque, _: u64) []const u8 {
+    return "";
+}
+
+/// A terminal's title, or null when nothing named it: an empty title is the
+/// caller having none, not a name that happens to be blank.
+fn titleOrNull(in: In, pane: u64) ?[]const u8 {
+    const title = in.titleOfPane(in.title_ctx, pane);
+    return if (title.len > 0) title else null;
+}
+
+/// The processes a terminal's row carries, in the reading's order (heaviest
+/// first) and copied into `arena`, which is what the reply is written out
+/// of.
+fn childrenOut(arena: Allocator, children: []const Overall.Child) Allocator.Error![]const Child {
+    const out = try arena.alloc(Child, children.len);
+    for (children, out) |c, *o| {
+        // **The name is copied, not referenced.** `c` is a by-value loop
+        // capture: `c.nameOf()` would be a slice into that copy, which is
+        // gone by the time the reply is written -- and an invalid string is
+        // not a compile error, it is a JSON array of numbers (Zig writes a
+        // non-UTF-8 slice as an array), which the host then cannot read.
+        o.* = .{ .pid = c.pid, .name = try arena.dupe(u8, c.nameOf()), .mem_mib = c.mem_mib };
+    }
+    return out;
+}
+
 const mib: u64 = 1 << 20;
 
-/// The overall view's three stacked layers are read at a cell each: 288
+/// The overall view's stacked layers are read at a cell each: 288
 /// cells over the 24-hour span (five minutes), 336 over the week (half an
 /// hour).
 ///
@@ -136,10 +173,10 @@ const Rise = struct {
     category: []const u8,
     /// The row's group, null for the main process and the monitor.
     group: ?[]const u8,
-    /// **Which process it is**, so that a row can be pointed at. Two sidecars
-    /// of one group are two rows with one category and one group between
-    /// them, and without this a reader who wanted to say which of them is
-    /// climbing would have nothing to say it with.
+    /// **Which process it is**, so that a row can be pointed at. Two
+    /// terminals of one group are two rows with one category and one group
+    /// between them, and without this a reader who wanted to say which of
+    /// them is climbing would have nothing to say it with.
     pid: u32,
     /// When it began climbing, on the same clock as `series.now_s`.
     since_s: u32,
@@ -151,8 +188,13 @@ const Rise = struct {
     slope_mib_per_h: i32,
 };
 
-/// **One of the process table's three groups, counted and added up by the
-/// core** (task 2149, slice 2, review r2 ①).
+/// **One of the process table's category headings, counted and added up by
+/// the core** (task 2149, slice 2, review r2 ①). There is one of them left:
+/// the main process (task 3119). A terminal is its own group inside a group
+/// of the table (`TableGroup`, task 3113, second round), and the embedded
+/// chats stand under the group they belong to rather than under a heading of
+/// their own -- one group was otherwise drawn in two places, and a reader
+/// had to add the two together to know what it costs.
 ///
 /// The host draws a heading line per group: its name, how many processes are
 /// in it, and what they add up to. Both numbers are the core's, because both
@@ -180,13 +222,35 @@ const Section = struct {
     /// the table is not drawing (`polter-artifacts/2149/v2/src/perf5.py`'s
     /// `table`).
     ///
-    /// **Not the processes behind them**: a chat row's own `count` is the
-    /// whole pane's process tree, and a sidecar row's is how many
-    /// `polter +mcp` it stands for, so "5 个" over five chats would have to
-    /// be thirty.
+    /// **Not the processes behind them**: a chat row's and a sidecar row's
+    /// own `count` are the terminal's whole process tree (task 3113), so
+    /// "5 个" over five chats would have to be thirty.
     count: u32,
     /// What those rows' memory adds up to, MiB; the monitor's own row is
     /// not in it.
+    total_mib: u64,
+};
+
+/// **One of the process table's group headings, counted and added up here**
+/// (task 3119): the table's first layer under the main process. The rows are
+/// the terminal and chat rows carrying that group's name (`Row.group`), and
+/// both numbers are the core's for the reason `Section`'s are
+/// (`tools/control-room-hosts-do-not-decide.py`, rule 2: a host counts no
+/// rows and adds nothing up).
+///
+/// **`group: ""` is the rows in no group, and it is a layer rather than a
+/// missing fact** -- a terminal nobody has put in a group would otherwise be
+/// invisible. It is drawn last.
+///
+/// **The order is `In.groups`'** (the control room's own rows), with any
+/// group a row names and that list does not carry after those -- so a row is
+/// never lost to a stale group list.
+const TableGroup = struct {
+    /// The group's name; empty for the rows in no group.
+    group: []const u8,
+    /// How many rows stand under this heading: terminals and chats.
+    count: u32,
+    /// What those rows' memory adds up to, MiB.
     total_mib: u64,
 };
 
@@ -208,9 +272,15 @@ const Polter = struct {
     cpu_cores: []const u8,
     monitor_bytes: u64,
     processes: []const Row,
-    /// **The process table's three groups**, in the order they are drawn,
-    /// each with its own count and total, worked out here (`Section`).
+    /// **The process table's category headings**, in the order they are
+    /// drawn, each with its own count and total, worked out here (`Section`).
+    /// The main process is the one left (task 3119).
     sections: []const Section,
+    /// **The process table's group layer under the main process** (task
+    /// 3119): one heading per group, in the order the reading knows them,
+    /// then the rows in no group. Each carries its own count and total so
+    /// that a host draws the first layer without counting anything.
+    table_groups: []const TableGroup,
     /// **The one row the overall view's chart is about** (task 2149, slice
     /// 2), as the core chose it; null when nothing is rising.
     ///
@@ -227,10 +297,11 @@ const Polter = struct {
     /// When Polter started, on the reader's clock: `since_s` counts from
     /// here and the chart's x-axis begins here.
     run_started: []const u8,
-    /// The three stacked layers, a series each, for the 24-hour span and
-    /// the week. This is what the overall view's chart draws, and neither
-    /// the week ring nor the category totals had any way out of the core
-    /// before it (task 2149's review, #9).
+    /// The stacked layers, a series each, for the 24-hour span and the
+    /// week: **two of them** -- the main process and the terminals (task
+    /// 3113, second round). This is what the overall view's chart draws,
+    /// and neither the week ring nor the category totals had any way out of
+    /// the core before it (task 2149's review, #9).
     series: struct {
         hour: []const Layer,
         week: []const Layer,
@@ -269,8 +340,8 @@ const Layer = struct {
 
 const Row = struct {
     kind: []const u8,
-    /// **Which of the three groups the process table draws this row in**
-    /// (`Overall.Category`: `main`, `chats`, `sidecars`), worked out here
+    /// **Which grouping the table draws this row in**
+    /// (`Overall.Category`: `main`, `chats`, `terminals`), worked out here
     /// and not by the host (task 2149, slice 2).
     ///
     /// The host has `kind` beside it and **must not read it**: which kind
@@ -283,8 +354,9 @@ const Row = struct {
     pid: u32,
     /// Null for the main process and the monitor, which are in no group.
     group: ?[]const u8,
-    /// How many processes are behind this row: one, except a sidecar row,
-    /// which may be several `polter +mcp` processes.
+    /// How many processes are behind this row. A chat's row and a
+    /// terminal's row are a terminal's whole tree (task 3113), so this is
+    /// every process in that terminal.
     count: u32,
     mem_mib: u32,
     /// Tenths of a core, over the last interval that could be measured.
@@ -299,11 +371,29 @@ const Row = struct {
     /// When it stopped being named, on the reader's clock; null while it is
     /// alive.
     died_at: ?[]const u8,
-    /// When the process behind the row started; null for a row that is
-    /// several processes (a sidecar) or a platform that does not say.
+    /// When the process behind the row started; null when the platform does
+    /// not say.
     started: ?[]const u8,
-    /// The terminal this row is, for a sidecar whose row is a terminal's.
+    /// The terminal this row is, for a sidecar or a chat: its id, written
+    /// the way every other terminal id in the control room is
+    /// (`0x00000000000000ab`).
     terminal: ?[]const u8,
+    /// **What that terminal is called** (task 3113): the title the person
+    /// gave it or the one its agent sets, so that a row of the table reads
+    /// as the terminal it is rather than as the process kind it has. Null
+    /// when nothing has named it, and then the host names the row by its
+    /// id alone.
+    terminal_title: ?[]const u8,
+    /// **The processes in that terminal's tree**, heaviest first (task
+    /// 3113, second round): the table draws a terminal as a group, its own
+    /// line over these. Empty for a row that is not a terminal, and for
+    /// one the core has not read the tree of.
+    children: []const Child,
+    /// **How many of the tree's processes are not in `children`**: the row
+    /// carries a fixed number of them, and a list that stopped at twelve of
+    /// thirty-one is a shortened list, which the table says in words rather
+    /// than showing as the whole. Zero when every process is listed.
+    children_more: u32,
     /// **This row is inside the main process's, already counted there.**
     /// True for the monitor's row alone: it is a couple of MiB living in
     /// `main`, so a reader who adds the rows up must not count it twice.
@@ -330,6 +420,16 @@ const Summary = struct {
     /// How many of the last 24 hours it was rising in, by the same rules
     /// every other verdict uses.
     rising_hours: u32,
+};
+
+/// **One process inside a terminal's tree** (task 3113, second round), as
+/// the table's per-terminal group draws it: what it is called, its pid and
+/// what it holds. The core chooses which ones and in what order (the
+/// heaviest `Overall.max_children`); a host draws the list it was handed.
+const Child = struct {
+    pid: u32,
+    name: []const u8,
+    mem_mib: u32,
 };
 
 const Group = struct {
@@ -403,6 +503,7 @@ pub fn render(arena: Allocator, overall: *const Overall, in: In) Allocator.Error
             .monitor_bytes = overall.monitorBytes(),
             .processes = rows,
             .sections = try sectionsOf(arena, rows),
+            .table_groups = try tableGroupsOf(arena, in, rows),
             .rise = riseOf(rows),
             .untracked = overall.untracked,
             .run_started = try isoOf(arena, overall.run_start_ms, in.offset_ms),
@@ -466,14 +567,30 @@ fn riseOf(rows: []const Row) ?Rise {
     };
 }
 
-/// The three layers, in the order the stack is drawn.
+/// **The two layers, in the order the stack is drawn** (task 3113, second
+/// round): the main process, and the terminals.
+///
+/// The chart used to stack three -- the main process, the embedded chats,
+/// and what was then the sidecar category. The last two are the same thing
+/// to a reader (terminals), and naming the third one after the terminals
+/// one by one is not a legend: it is a list. So the two are one band,
+/// summed here, and the legend has the two words the table has.
 fn layers(arena: Allocator, overall: *const Overall, span: Overall.Span, cells: usize, step_s: u32) Allocator.Error![]const Layer {
-    const cats = [_]Overall.Category{ .main, .chats, .sidecars };
-    const out = try arena.alloc(Layer, cats.len);
-    for (cats, out) |cat, *l| {
+    const names = [_][]const u8{ "main", "terminals" };
+    const out = try arena.alloc(Layer, names.len);
+    for (names, out) |name, *l| {
         const buf = try arena.alloc(u32, cells);
-        overall.categorySeries(cat, span, step_s, buf);
-        l.* = .{ .category = @tagName(cat), .cells = buf };
+        if (std.mem.eql(u8, name, "main")) {
+            overall.categorySeries(.main, span, step_s, buf);
+        } else {
+            // The two terminal categories, cell by cell: chats and worker
+            // terminals are one band.
+            overall.categorySeries(.chats, span, step_s, buf);
+            const rest = try arena.alloc(u32, cells);
+            overall.categorySeries(.terminals, span, step_s, rest);
+            for (buf, rest) |*c, v| c.* +|= v;
+        }
+        l.* = .{ .category = name, .cells = buf };
     }
     return out;
 }
@@ -522,7 +639,7 @@ fn rowsOf(arena: Allocator, overall: *const Overall, in: In) Allocator.Error![]c
         const group: ?[]const u8 = switch (t.kind) {
             .main, .monitor => null,
             .chat => t.groupName(),
-            .sidecar => in.groupOfPane(in.ctx, t.pane),
+            .terminal => in.groupOfPane(in.ctx, t.pane),
         };
         // A group was named and this is not it. The main process and the
         // monitor belong to no group, so naming a group leaves them out.
@@ -557,11 +674,22 @@ fn rowsOf(arena: Allocator, overall: *const Overall, in: In) Allocator.Error![]c
             // is when it went, not when the reader looked (handoff §5's
             // "died at").
             .died_at = if (t.alive or t.died_ms == 0) null else try isoOf(arena, t.died_ms, in.offset_ms),
-            // Zero for a row that is several processes (a sidecar) or a
-            // platform that does not say, which is "not known" and not the
-            // epoch.
+            // Zero for a row whose platform does not say, which is "not
+            // known" and not the epoch.
             .started = if (t.start_ms == 0) null else try isoOf(arena, t.start_ms, in.offset_ms),
-            .terminal = if (t.kind == .sidecar or t.kind == .chat) try hexOf(arena, t.pane) else null,
+            .terminal = if (t.kind == .terminal or t.kind == .chat) try hexOf(arena, t.pane) else null,
+            // **The terminal's name, for the rows that are terminals**
+            // (task 3113): the host writes "title id" instead of one word
+            // for every row of the kind. Empty is nothing named it.
+            .terminal_title = if (t.kind == .terminal or t.kind == .chat) titleOrNull(in, t.pane) else null,
+            // **And the processes inside it**, for the same two kinds.
+            .children = try childrenOut(arena, t.childrenOf()),
+            // The rest of the tree, counted by the core: the row has room
+            // for `Overall.max_children` of them.
+            .children_more = if (t.kind == .terminal or t.kind == .chat)
+                t.count -| @as(u32, t.children_len)
+            else
+                0,
             .inside_main = t.kind == .monitor,
             .points = points,
         });
@@ -569,10 +697,16 @@ fn rowsOf(arena: Allocator, overall: *const Overall, in: In) Allocator.Error![]c
     return out.toOwnedSlice(arena);
 }
 
-/// **The process table's three groups, in the order the table draws them**
-/// (task 2149, slice 2, review r2 ①): each one's name, how many processes
+/// **The process table's category headings, in the order the table draws
+/// them** (task 2149, slice 2, review r2 ①): each one's name, how many rows
 /// are behind it, and what they add up to -- all of it worked out here
 /// (`Section`).
+///
+/// **One heading is left** (task 3119): the main process. A terminal is its
+/// own group under a group of the table (`TableGroup`), and the embedded
+/// chats stand under the group they belong to -- a chat is the group's own
+/// process (`Row.group`), and drawing it under a heading of its own put one
+/// group in two places.
 ///
 /// **Both numbers are the core's to give.** A host that added the rows it
 /// was handed up, or that read `processes.count`, would be counting rows
@@ -584,16 +718,12 @@ fn rowsOf(arena: Allocator, overall: *const Overall, in: In) Allocator.Error![]c
 /// still drawn under this group's line, which is what the words beside it
 /// are for.
 ///
-/// **The order is `layers`' own** (`.main`, `.chats`, `.sidecars`, the
-/// order the stack is drawn in): the table's three groups and the chart's
-/// three layers are the same three, and read in the same order.
-///
 /// **A group with no rows in this answer is not a line of the table.** An
 /// answer about one group (`only_group`) or about one process (`only_pid`)
 /// carries only the groups it has rows for, so the table that draws them
 /// has no headings over nothing.
 fn sectionsOf(arena: Allocator, rows: []const Row) Allocator.Error![]const Section {
-    const cats = [_]Overall.Category{ .main, .chats, .sidecars };
+    const cats = [_]Overall.Category{.main};
     var out: std.ArrayListUnmanaged(Section) = .empty;
     for (cats) |cat| {
         var any = false;
@@ -618,9 +748,80 @@ fn sectionsOf(arena: Allocator, rows: []const Row) Allocator.Error![]const Secti
     return out.toOwnedSlice(arena);
 }
 
-/// A terminal id as the rest of the control room writes one.
+/// **The table's group layer** (task 3119): one heading per group, in the
+/// order the reading knows the groups (`In.groups`, the control room's own
+/// rows), then any group a row names and that list does not, then the rows
+/// in no group last.
+///
+/// **Both numbers are worked out here** (`TableGroup`): the rows under a
+/// heading are the terminal and chat rows whose `Row.group` is that name,
+/// and a host that grouped them itself would be counting rows and adding
+/// them up -- the second answer, and the one on screen
+/// (`tools/control-room-hosts-do-not-decide.py`, rule 2).
+///
+/// **A row is never lost to a stale group list.** A group the reading did
+/// not list but a row still names gets its own heading after the known ones;
+/// rows naming no group (`Row.group` null or empty) get the empty-name
+/// heading, which the host draws as "no group".
+///
+/// **A heading with no rows is not drawn**, as `sectionsOf`' own rule: an
+/// answer about one group or one process carries only the groups it has
+/// rows for.
+fn tableGroupsOf(arena: Allocator, in: In, rows: []const Row) Allocator.Error![]const TableGroup {
+    var out: std.ArrayListUnmanaged(TableGroup) = .empty;
+    for (in.groups) |g| {
+        // A name the list repeats is one heading, not two.
+        if (hasTableGroup(out.items, g.group)) continue;
+        try appendTableGroup(arena, &out, rows, g.group);
+    }
+    // A group a row names and the reading did not list, in the order the
+    // rows first name it -- kept rather than silently dropped.
+    for (rows) |row| {
+        const name = rowTableGroup(row) orelse continue;
+        if (name.len == 0) continue;
+        if (hasTableGroup(out.items, name)) continue;
+        try appendTableGroup(arena, &out, rows, name);
+    }
+    // **The rows in no group, last** -- a terminal nobody has put in a
+    // group is still a terminal the person has to be able to see.
+    try appendTableGroup(arena, &out, rows, "");
+    return out.toOwnedSlice(arena);
+}
+
+/// Add one heading's count and total, or nothing when no row stands under it.
+fn appendTableGroup(arena: Allocator, out: *std.ArrayListUnmanaged(TableGroup), rows: []const Row, name: []const u8) Allocator.Error!void {
+    var count: u32 = 0;
+    var total: u64 = 0;
+    for (rows) |row| {
+        const g = rowTableGroup(row) orelse continue;
+        if (!std.mem.eql(u8, g, name)) continue;
+        count += 1;
+        total += row.mem_mib;
+    }
+    if (count == 0) return;
+    try out.append(arena, .{ .group = try arena.dupe(u8, name), .count = count, .total_mib = total });
+}
+
+fn hasTableGroup(groups: []const TableGroup, name: []const u8) bool {
+    for (groups) |g| if (std.mem.eql(u8, g.group, name)) return true;
+    return false;
+}
+
+/// The group a row stands under in the table's group layer: **null for the
+/// main process and the monitor**, which stand under the main heading and
+/// are in no group; the group's name (empty for none) for a terminal or a
+/// chat. Decided by the core's own `category`, not by reading the row's
+/// `kind`.
+fn rowTableGroup(row: Row) ?[]const u8 {
+    if (std.mem.eql(u8, row.category, @tagName(Overall.Category.main))) return null;
+    return row.group orelse "";
+}
+
+/// A terminal id as the rest of the control room writes one
+/// (`ControlRoom.Hex`): sixteen digits, so that the overall view's rows and
+/// the control room's own list spell one terminal one way (task 3113).
 fn hexOf(arena: Allocator, id: u64) Allocator.Error![]const u8 {
-    return std.fmt.allocPrint(arena, "0x{x}", .{id});
+    return std.fmt.allocPrint(arena, "0x{x:0>16}", .{id});
 }
 
 /// Tenths of a core as "2.6", the way the card writes it.
@@ -874,6 +1075,9 @@ fn riser(category: []const u8, group: ?[]const u8, since_s: ?u32, rose_mib: u32)
         .died_at = null,
         .started = null,
         .terminal = null,
+        .terminal_title = null,
+        .children = &.{},
+        .children_more = 0,
     };
 }
 
@@ -958,16 +1162,17 @@ test "3012: the answer carries the whole tree as well as Polter's own rows" {
     try testing.expect((try num(p, "total_mib")) > (try num(p, "tree_mib")));
 }
 
-// **Which group of the process table each kind is drawn in** (task 2149,
+// **Which grouping of the process table each kind is drawn in** (task 2149,
 // slice 2): the answer names it (`Row.category`), so that the two hosts
-// draw the core's own three groups without either of them owning a copy
-// of the rule.
+// draw the core's own groups without either of them owning a copy of the
+// rule.
 //
 // All four kinds in one reading, because the point of the field is that
-// **no two of them fall in the same group by accident**: `main` and
+// **no two of them fall in the same grouping by accident**: `main` and
 // `monitor` are `.main` (the monitor is inside the main process), `chat`
-// is `.chats` and `sidecar` is `.sidecars`.
-test "2149: the four kinds are named into their three groups" {
+// is `.chats` and `terminal` is `.terminals` (task 3113, second round: the
+// kind is a terminal, not the sidecar process inside it).
+test "2149: the four kinds are named into their groupings" {
     var o = try Overall.create(testing.allocator);
     defer o.destroy();
     const start_ms: i64 = 1_700_000_000_000;
@@ -981,7 +1186,6 @@ test "2149: the four kinds are named into their three groups" {
         .procs = 30,
         .sidecar_mem = 200 * mib,
         .sidecar_procs = 2,
-        .sidecar_pid = 77,
     };
     o.sample(.{
         .now_ms = start_ms,
@@ -1004,7 +1208,7 @@ test "2149: the four kinds are named into their three groups" {
         .{ .kind = "main", .category = "main" },
         .{ .kind = "monitor", .category = "main" },
         .{ .kind = "chat", .category = "chats" },
-        .{ .kind = "sidecar", .category = "sidecars" },
+        .{ .kind = "terminal", .category = "terminals" },
     };
     for (want) |w| {
         const row = for (procs) |item| {
@@ -1017,11 +1221,12 @@ test "2149: the four kinds are named into their three groups" {
     try testing.expectEqual(@as(usize, 4), procs.len);
 }
 
-// **The process table's three headings, with their two numbers worked out
-// here** (slice 2, review r2 ①). The monitor's row is drawn under `main`'s
-// heading and is **not** in either of its numbers: it is a couple of MiB
-// inside the main process, whose own row already holds them, so counting it
-// in said "2" over one process and added its memory a second time.
+// **The process table's category headings, with their two numbers worked
+// out here** (slice 2, review r2 ①; trimmed to one by task 3119). The
+// monitor's row is drawn under `main`'s heading and is **not** in either of
+// its numbers: it is a couple of MiB inside the main process, whose own row
+// already holds them, so counting it in said "2" over one process and added
+// its memory a second time.
 test "2149: the table's headings leave the monitor's row out of both numbers" {
     var o = try Overall.create(testing.allocator);
     defer o.destroy();
@@ -1034,7 +1239,6 @@ test "2149: the table's headings leave the monitor's row out of both numbers" {
         .procs = 30,
         .sidecar_mem = 200 * mib,
         .sidecar_procs = 2,
-        .sidecar_pid = 77,
     };
     o.sample(.{
         .now_ms = start_ms,
@@ -1050,13 +1254,11 @@ test "2149: the table's headings leave the monitor's row out of both numbers" {
     const polter = try obj(root, "polter");
     const sections = try arr(polter, "sections");
 
-    // Three headings, in the order the table draws them -- the same order
-    // the chart's three layers come in.
-    try testing.expectEqual(@as(usize, 3), sections.len);
-    const want = [_][]const u8{ "main", "chats", "sidecars" };
-    for (sections, want) |item, name| {
-        try testing.expectEqualStrings(name, try str(item.object, "category"));
-    }
+    // **One heading** -- the main process (task 3119). A terminal is its own
+    // group inside a group of the table, and a chat stands under the group
+    // it belongs to, so there is no `chats` heading any more.
+    try testing.expectEqual(@as(usize, 1), sections.len);
+    try testing.expectEqualStrings("main", try str(sections[0].object, "category"));
 
     // The main process's own: **one process and 500 MiB**, though two rows
     // are drawn under this heading. The monitor's row is the second of the
@@ -1084,11 +1286,379 @@ test "2149: the table's headings leave the monitor's row out of both numbers" {
     // monitor reading 0 MiB would make the two spellings the same number.
     try testing.expect(try num(mon.?, "mem_mib") > 0);
 
-    // The other two, counted and added up the same way.
-    try testing.expectEqual(@as(i64, 1), try num(sections[1].object, "count"));
-    try testing.expectEqual(@as(i64, 20 * 1024), try num(sections[1].object, "total_mib"));
-    try testing.expectEqual(@as(i64, 1), try num(sections[2].object, "count"));
-    try testing.expectEqual(@as(i64, 200), try num(sections[2].object, "total_mib"));
+    // **The chat is under its group now** (task 3119), counted and added up
+    // by the core: the web-app group has the one chat row, and the worker
+    // names no group, so it is the empty-name heading.
+    const groups = try arr(polter, "table_groups");
+    try testing.expectEqual(@as(usize, 2), groups.len);
+    try testing.expectEqualStrings("web-app", try str(groups[0].object, "group"));
+    try testing.expectEqual(@as(i64, 1), try num(groups[0].object, "count"));
+    try testing.expectEqual(@as(i64, 20 * 1024), try num(groups[0].object, "total_mib"));
+    try testing.expectEqualStrings("", try str(groups[1].object, "group"));
+    try testing.expectEqual(@as(i64, 1), try num(groups[1].object, "count"));
+
+    // **The terminal has no heading and is still a row** (task 3113,
+    // second round): its whole tree -- the worker's 3 GiB plus the 200 MiB
+    // of its sidecars -- and its own name.
+    const term = for (procs) |item| {
+        if (std.mem.eql(u8, try str(item.object, "kind"), "terminal")) break item.object;
+    } else return error.NoTerminalRow;
+    try testing.expectEqual(@as(i64, (3 << 10) + 200), try num(term, "mem_mib"));
+}
+
+// **A terminal's row is the terminal** (task 3113): its whole process tree
+// -- the agent CLI, the builds it started, the `polter +mcp` sidecars -- and
+// not the sidecars alone, which is what the row used to weigh. That is the
+// number the group's own performance page shows for the same terminal, and
+// the row is named by the terminal's title and id rather than by one word
+// for every row of its kind.
+test "3113: a terminal's row is its whole tree, and is named by its title and id" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+    // 3000 MiB of tree without its sidecars, 200 MiB of sidecars, thirty
+    // processes and two, and the terminal's own process is 4242.
+    var worker = Overall.PaneReading{
+        .id = 0xcd,
+        .kind = .worker,
+        .root_pid = 4242,
+        .start_ms = start_ms - 60_000,
+        .mem = 3000 * mib,
+        .procs = 30,
+        .sidecar_mem = 200 * mib,
+        .sidecar_procs = 2,
+    };
+    // **The processes under the terminal's line** (task 3113, second
+    // round), as `OverallRead.build` fills them: heaviest first.
+    worker.children[0] = Overall.Child.init(4242, 2600, "claude");
+    worker.children[1] = Overall.Child.init(4243, 90, "polter +mcp");
+    worker.children_len = 2;
+    // The title the person sees on the terminal's tab, by its pane id. A
+    // pane nothing named is a row with no title, not one with an empty one.
+    const Titles = struct {
+        fn of(_: ?*const anyopaque, pane: u64) []const u8 {
+            return if (pane == 0xcd) "开发" else "";
+        }
+    };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{worker},
+    });
+
+    var scratch = Scratch.init();
+    defer scratch.deinit();
+    const json = try scratch.reply(o, .{
+        .now_ms = start_ms + 2000,
+        .offset_ms = 0,
+        .titleOfPane = Titles.of,
+    });
+    const root = try scratch.parse(json);
+    const procs = try arr(try obj(root, "polter"), "processes");
+    const row = for (procs) |item| {
+        if (std.mem.eql(u8, try str(item.object, "kind"), "terminal")) break item.object;
+    } else return error.NoTerminalRow;
+
+    // The whole tree, not the sidecars alone.
+    try testing.expectEqual(@as(i64, 3000 + 200), try num(row, "mem_mib"));
+    try testing.expectEqual(@as(i64, 30 + 2), try num(row, "count"));
+    // The terminal's own process is behind the row, not one of the sidecars.
+    try testing.expectEqual(@as(i64, 4242), try num(row, "pid"));
+    // Named as every other terminal id in the control room is, and with
+    // the title the apprt has for it.
+    try testing.expectEqualStrings("0x00000000000000cd", try str(row, "terminal"));
+    try testing.expectEqualStrings("开发", try str(row, "terminal_title"));
+    // **And the processes the table draws under it**, in the order the core
+    // chose: the terminal's own line is drawn over these (task 3113,
+    // second round).
+    const kids = try arr(row, "children");
+    try testing.expectEqual(@as(usize, 2), kids.len);
+    try testing.expectEqual(@as(i64, 4242), try num(kids[0].object, "pid"));
+    try testing.expectEqualStrings("claude", try str(kids[0].object, "name"));
+    try testing.expectEqual(@as(i64, 2600), try num(kids[0].object, "mem_mib"));
+    try testing.expectEqual(@as(i64, 4243), try num(kids[1].object, "pid"));
+    try testing.expectEqualStrings("polter +mcp", try str(kids[1].object, "name"));
+    // **And how many of the tree's processes did not fit**: thirty-two
+    // processes, two carried -- the table says "and thirty more" rather
+    // than showing two as if they were all.
+    try testing.expectEqual(@as(i64, 30), try num(row, "children_more"));
+    // A row that is not a terminal has none of the three.
+    const main_row = for (procs) |item| {
+        if (std.mem.eql(u8, try str(item.object, "kind"), "main")) break item.object;
+    } else return error.NoMainRow;
+    try testing.expectEqual(@as(i64, 0), try num(main_row, "children_more"));
+}
+
+// **Every worker terminal has a row, with an MCP sidecar in it or not**
+// (task 3113, second round) -- the half of the user's complaint the first
+// round left open: the terminal running a build and nothing else used to
+// have no line at all.
+//
+// **And the rows add up to the whole tree the first figure draws**, which
+// is the equation a reader compares by eye: the rows used to be a subset of
+// the tree, and a subset the size of whatever happened to have a sidecar.
+test "3113: every terminal is a row, and the rows add up to the whole tree" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+    const chat = Overall.PaneReading.named(0xab, .chat, "web-app", 2048 * mib, 3);
+    const with_sidecar = Overall.PaneReading{
+        .id = 0xcd,
+        .kind = .worker,
+        .root_pid = 99,
+        .mem = 3000 * mib,
+        .procs = 20,
+        .sidecar_mem = 200 * mib,
+        .sidecar_procs = 2,
+    };
+    // **The build**: a terminal with no `polter +mcp` in it at all. Before
+    // this round it was in no row and in no total.
+    const building = Overall.PaneReading{
+        .id = 0xce,
+        .kind = .worker,
+        .root_pid = 98,
+        .mem = 1500 * mib,
+        .procs = 12,
+    };
+    // A terminal at its prompt: a shell and nothing else, and still a tree
+    // with a process in it.
+    const quiet = Overall.PaneReading{
+        .id = 0xcf,
+        .kind = .worker,
+        .root_pid = 97,
+        .mem = 40 * mib,
+        .procs = 1,
+    };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{ chat, with_sidecar, building, quiet },
+    });
+    // A terminal that goes away: its row is kept for the morning, and it is
+    // **drawn and in no tree** -- one of the two things that are in the
+    // table and not in the figure.
+    o.sample(.{
+        .now_ms = start_ms + 60_000,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{ chat, with_sidecar, building, quiet, .{
+            .id = 0xdf,
+            .kind = .worker,
+            .root_pid = 96,
+            .mem = 700 * mib,
+            .procs = 5,
+        } },
+    });
+    // And now it has gone: the reading after it names the four that are
+    // left, so its row is dead and its memory is out of the tree.
+    o.sample(.{
+        .now_ms = start_ms + 120_000,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{ chat, with_sidecar, building, quiet },
+    });
+
+    var scratch = Scratch.init();
+    defer scratch.deinit();
+    const json = try scratch.reply(o, .{ .now_ms = start_ms + 180_000, .offset_ms = 0 });
+    const root = try scratch.parse(json);
+    const polter = try obj(root, "polter");
+    const procs = try arr(polter, "processes");
+
+    var terminals: usize = 0;
+    var live_mib: u64 = 0;
+    var monitor_mib: u64 = 0;
+    var dead_mib: u64 = 0;
+    var building_mib: ?i64 = null;
+    for (procs) |item| {
+        const r = item.object;
+        const kind = try str(r, "kind");
+        const mem: u64 = @intCast(try num(r, "mem_mib"));
+        if (try flag(r, "alive")) {
+            live_mib += mem;
+        } else {
+            dead_mib += mem;
+        }
+        if (std.mem.eql(u8, kind, "monitor")) monitor_mib = mem;
+        if (!std.mem.eql(u8, kind, "terminal")) continue;
+        terminals += 1;
+        if (std.mem.eql(u8, try str(r, "terminal"), "0x00000000000000ce")) {
+            building_mib = try num(r, "mem_mib");
+        }
+    }
+    // Four worker terminals -- the one with no sidecar, the quiet one, the
+    // one that just went, and the one with the sidecar.
+    try testing.expectEqual(@as(usize, 4), terminals);
+    try testing.expectEqual(@as(?i64, 1500), building_mib);
+    // The one that went is still drawn, with what it held, and is the only
+    // row outside the tree.
+    try testing.expectEqual(@as(u64, 700), dead_mib);
+
+    // **The equation**: every *live* row is the whole tree. What the table
+    // draws and the figure does not are exactly these two things:
+    //   * the monitor's own row, whose memory is already inside the main
+    //     process's (`inside_main` -- the table says "of which" beside it);
+    //   * rows nothing names any more, kept for the morning at what they
+    //     held when they went (`alive: false`).
+    // What is in neither is what the sampler never attributed to a
+    // terminal: a child of the main process that is not a terminal, and the
+    // processes it could not read (they are counted in `untracked`).
+    //
+    // The reader's bound is five percent. On a real machine the two differ
+    // by less: each row is floored to whole MiB and the tree is floored
+    // once, so the rows can be under by at most a MiB per row -- nowhere
+    // near five percent of a tree this size.
+    const tree: u64 = @intCast(try num(polter, "tree_mib"));
+    const rows = live_mib - monitor_mib;
+    try testing.expectEqual(tree, rows);
+    const diff = if (rows > tree) rows - tree else tree - rows;
+    try testing.expect(diff * 100 <= tree * 5);
+}
+
+/// A terminal's group, by pane id, for task 3119's tests: the core does not
+/// read this itself -- the app hands it in (`In.groupOfPane`) -- and these
+/// are the names the table's first layer is drawn from.
+const GroupOf = struct {
+    fn of(ctx: ?*const anyopaque, pane: u64) []const u8 {
+        _ = ctx;
+        return switch (pane) {
+            0xab, 0xcd => "web-app",
+            0xce => "billing",
+            0xdd => "late",
+            else => "",
+        };
+    }
+};
+
+// **The table's three layers, counted by the core** (task 3119): the main
+// heading, one heading per group in the reading's own order, and the rows
+// in no group last.
+//
+// **The equation is proved across the layers**: the main heading plus every
+// group's total is the tree the figure counts. The monitor's row is inside
+// the main process and is in neither, and a dead row kept for the morning
+// is in the table but not in the tree -- the two things the last round
+// named, and this test leaves both out of the reading so that the sum is
+// exact rather than close.
+test "3119: the table's groups are the core's own headings, and nothing named is lost" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+    const chat = Overall.PaneReading.named(0xab, .chat, "web-app", 2048 * mib, 3);
+    const worker = Overall.PaneReading{
+        .id = 0xcd,
+        .kind = .worker,
+        .root_pid = 99,
+        .mem = 3000 * mib,
+        .procs = 20,
+        .sidecar_mem = 200 * mib,
+        .sidecar_procs = 2,
+    };
+    const builder = Overall.PaneReading{
+        .id = 0xce,
+        .kind = .worker,
+        .root_pid = 98,
+        .mem = 1500 * mib,
+        .procs = 12,
+    };
+    // A lone prompt: a shell in no group at all.
+    const lone = Overall.PaneReading{
+        .id = 0xcf,
+        .kind = .worker,
+        .root_pid = 97,
+        .mem = 40 * mib,
+        .procs = 1,
+    };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{ chat, worker, builder, lone },
+    });
+
+    var scratch = Scratch.init();
+    defer scratch.deinit();
+    // **billing is listed before web-app**, though the rows name it second:
+    // the order is the reading's own (`In.groups`), not the rows'.
+    const facts = [_]GroupFacts{ .{ .group = "billing" }, .{ .group = "web-app" } };
+    const json = try scratch.reply(o, .{
+        .now_ms = start_ms + 2000,
+        .offset_ms = 0,
+        .groups = &facts,
+        .groupOfPane = GroupOf.of,
+    });
+    const root = try scratch.parse(json);
+    const polter = try obj(root, "polter");
+
+    // The one category heading left: the main process.
+    const sections = try arr(polter, "sections");
+    try testing.expectEqual(@as(usize, 1), sections.len);
+    try testing.expectEqualStrings("main", try str(sections[0].object, "category"));
+
+    // The three group headings: the two the reading knows, in its order,
+    // then the rows in no group -- not dropped, and not before the named
+    // groups.
+    const groups = try arr(polter, "table_groups");
+    const want = [_]struct { group: []const u8, count: i64, total: i64 }{
+        .{ .group = "billing", .count = 1, .total = 1500 },
+        // The chat and the worker with its sidecar: 2048 + (3000 + 200).
+        .{ .group = "web-app", .count = 2, .total = 2048 + 3200 },
+        .{ .group = "", .count = 1, .total = 40 },
+    };
+    try testing.expectEqual(@as(usize, 3), groups.len);
+    for (groups, want) |item, w| {
+        try testing.expectEqualStrings(w.group, try str(item.object, "group"));
+        try testing.expectEqual(w.count, try num(item.object, "count"));
+        try testing.expectEqual(w.total, try num(item.object, "total_mib"));
+    }
+
+    // **And the layers add up to the whole tree**: the main heading plus
+    // every group's total, with the monitor's row in neither.
+    const tree: u64 = @intCast(try num(polter, "tree_mib"));
+    var sum: u64 = @intCast(try num(sections[0].object, "total_mib"));
+    for (groups) |item| sum += @intCast(try num(item.object, "total_mib"));
+    try testing.expectEqual(tree, sum);
+    try testing.expectEqual(@as(u64, 7288), sum);
+}
+
+// **A group a row names and the reading did not list is still a heading**,
+// rather than a row that disappears because a list was stale (task 3119).
+test "3119: a group the reading did not list is still a heading" {
+    var o = try Overall.create(testing.allocator);
+    defer o.destroy();
+    const start_ms: i64 = 1_700_000_000_000;
+    const late = Overall.PaneReading{
+        .id = 0xdd,
+        .kind = .worker,
+        .root_pid = 95,
+        .mem = 70 * mib,
+        .procs = 2,
+    };
+    o.sample(.{
+        .now_ms = start_ms,
+        .start_ms = start_ms,
+        .main = .{ .id = 0, .root_pid = 1, .mem = 500 * mib, .procs = 12 },
+        .panes = &.{late},
+    });
+    var scratch = Scratch.init();
+    defer scratch.deinit();
+    // The reading knows one group and has no row for it; the row names
+    // another. The stale one is not drawn over nothing, the row's own is.
+    const facts = [_]GroupFacts{.{ .group = "web-app" }};
+    const json = try scratch.reply(o, .{
+        .now_ms = start_ms + 2000,
+        .offset_ms = 0,
+        .groups = &facts,
+        .groupOfPane = GroupOf.of,
+    });
+    const root = try scratch.parse(json);
+    const groups = try arr(try obj(root, "polter"), "table_groups");
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    try testing.expectEqualStrings("late", try str(groups[0].object, "group"));
+    try testing.expectEqual(@as(i64, 1), try num(groups[0].object, "count"));
+    try testing.expectEqual(@as(i64, 70), try num(groups[0].object, "total_mib"));
 }
 
 test "2149: asking for one process gives its points; asking for all gives none" {
@@ -1194,8 +1764,9 @@ test "2149: a live row and a dead one are told apart, and a row says when it sta
     try testing.expect(went.len == "2026-10-23T16:10:02+08:00".len);
     // And when the process it was started.
     try testing.expect(std.mem.endsWith(u8, try str(dead, "started"), "+08:00"));
-    // A chat's row names the terminal it is.
-    try testing.expectEqualStrings("0xab", try str(dead, "terminal"));
+    // A chat's row names the terminal it is, as the control room writes an
+    // id: sixteen digits (task 3113).
+    try testing.expectEqualStrings("0x00000000000000ab", try str(dead, "terminal"));
 
     // The main process is alive, has no group, is in no terminal, and its
     // `started` is not known here (the reading said nothing).
@@ -1250,27 +1821,29 @@ test "2149: what the overall view is drawn from comes out whole" {
     });
     const root = try scratch.parse(json);
 
-    // The chart: three layers, both spans, with the step the core chose.
+    // **The chart: two layers** (task 3113, second round) -- the main
+    // process and the terminals, chats and workers in one band -- for both
+    // spans, with the step the core chose.
     const polter = try obj(root, "polter");
     const series = try obj(polter, "series");
     try testing.expectEqual(@as(i64, 300), try num(series, "hour_step_s"));
     try testing.expectEqual(@as(i64, 1800), try num(series, "week_step_s"));
     for ([_][]const u8{ "hour", "week" }) |span| {
         const ls = try arr(series, span);
-        try testing.expectEqual(@as(usize, 3), ls.len);
-        const kinds = [_][]const u8{ "main", "chats", "sidecars" };
-        for (ls, kinds) |item, want| {
+        try testing.expectEqual(@as(usize, 2), ls.len);
+        const names = [_][]const u8{ "main", "terminals" };
+        for (ls, names) |item, want| {
             try testing.expectEqualStrings(want, try str(item.object, "category"));
             try testing.expect((try arr(item.object, "cells")).len > 0);
         }
     }
     // **The week is the ring that had no way out at all before.** 336 cells
-    // half an hour apart is the seven days, and the chats' layer has this
-    // group's own chat in it.
+    // half an hour apart is the seven days, and the terminals' layer has
+    // this group's own chat in it.
     const week = try arr(series, "week");
     try testing.expectEqual(@as(usize, 336), (try arr(week[1].object, "cells")).len);
-    const chat_cells = try arr(week[1].object, "cells");
-    try testing.expect(chat_cells[chat_cells.len - 1].integer > 0);
+    const term_cells = try arr(week[1].object, "cells");
+    try testing.expect(term_cells[term_cells.len - 1].integer > 0);
 
     // The two small curves, and the disk one is *free* space -- what the
     // 15 GB line is drawn against.
@@ -1335,7 +1908,7 @@ test "2149: the chart's one rise line is the row that began rising earliest" {
     const rows = [_]Row{
         riser("main", null, 600, 9_000),
         riser("chats", "web-app", 120, 700),
-        riser("sidecars", "billing", 300, 1_500),
+        riser("terminals", "billing", 300, 1_500),
     };
     const got = (riseOf(&rows)) orelse return error.NoRise;
     try testing.expectEqualStrings("chats", got.category);
@@ -1368,28 +1941,28 @@ test "2149: two rows that began rising at the same moment are settled by how muc
     // is about.
     const tie = [_]Row{
         riser("chats", "web-app", 300, 400),
-        riser("sidecars", "billing", 300, 900),
+        riser("terminals", "billing", 300, 900),
     };
     const got = (riseOf(&tie)) orelse return error.NoRise;
-    try testing.expectEqualStrings("sidecars", got.category);
+    try testing.expectEqualStrings("terminals", got.category);
     try testing.expectEqual(@as(u32, 900), got.rose_mib);
 
     // ...and the other way round in the reading, which is the half a "take
     // the first one" rule gets wrong. The order of the rows is the reading's
     // and says nothing about which is the bigger rise.
     const again = [_]Row{
-        riser("sidecars", "billing", 300, 900),
+        riser("terminals", "billing", 300, 900),
         riser("chats", "web-app", 300, 400),
     };
     const same = (riseOf(&again)) orelse return error.NoRise;
-    try testing.expectEqualStrings("sidecars", same.category);
+    try testing.expectEqualStrings("terminals", same.category);
     try testing.expectEqual(@as(u32, 900), same.rose_mib);
 
     // An equal gain as well: whichever is taken, the moment and the amount
     // are the same, so the line and the sentence cannot differ.
     const equal = [_]Row{
         riser("chats", "web-app", 300, 500),
-        riser("sidecars", "billing", 300, 500),
+        riser("terminals", "billing", 300, 500),
     };
     const either = (riseOf(&equal)) orelse return error.NoRise;
     try testing.expectEqual(@as(u32, 300), either.since_s);
@@ -1399,7 +1972,7 @@ test "2149: two rows that began rising at the same moment are settled by how muc
     // only consulted among rows that began together.
     const mixed = [_]Row{
         riser("chats", "web-app", 100, 300),
-        riser("sidecars", "billing", 100, 800),
+        riser("terminals", "billing", 100, 800),
         riser("main", null, 50, 200),
     };
     try testing.expectEqualStrings("main", (riseOf(&mixed)).?.category);

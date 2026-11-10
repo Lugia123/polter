@@ -14,6 +14,7 @@
 		819324642F24FF2100A9ED8F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5B30538299BEAAB0047F10C /* Assets.xcassets */; };
 		8F3A9B4C2FA6B88000A18D13 /* Polter.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4B2FA6B88000A18D13 /* Polter.sdef */; };
 		9351BE8E3D22937F003B3499 /* nvim in Resources */ = {isa = PBXBuildFile; fileRef = 9351BE8E2D22937F003B3499 /* nvim */; };
+		A3C4E5F70D1B2C3D4E5F6002 /* polter-chat in Resources */ = {isa = PBXBuildFile; fileRef = A3C4E5F60D1B2C3D4E5F6001 /* polter-chat */; };
 		A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A51BFC262B30F1B800E92F16 /* Sparkle */; };
 		A546F1142D7B68D7003B11A0 /* locale in Resources */ = {isa = PBXBuildFile; fileRef = A546F1132D7B68D7003B11A0 /* locale */; };
 		A553F4142E06EB1600257779 /* Polter.icon in Resources */ = {isa = PBXBuildFile; fileRef = A553F4122E06EB1600257779 /* Polter.icon */; };
@@ -74,6 +75,7 @@
 		8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DockTilePlugin.plugin; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F3A9B4B2FA6B88000A18D13 /* Polter.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = Polter.sdef; sourceTree = "<group>"; };
 		9351BE8E2D22937F003B3499 /* nvim */ = {isa = PBXFileReference; lastKnownFileType = folder; name = nvim; path = "../zig-out/share/nvim"; sourceTree = "<group>"; };
+		A3C4E5F60D1B2C3D4E5F6001 /* polter-chat */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "polter-chat"; path = "../zig-out/share/polter-chat"; sourceTree = "<group>"; };
 		A51BFC282B30F26D00E92F16 /* GhosttyDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhosttyDebug.entitlements; sourceTree = "<group>"; };
 		A546F1132D7B68D7003B11A0 /* locale */ = {isa = PBXFileReference; lastKnownFileType = folder; name = locale; path = "../zig-out/share/locale"; sourceTree = "<group>"; };
 		A54F45F32E1F047A0046BD5C /* GhosttyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GhosttyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -168,6 +170,7 @@
 				A546F1132D7B68D7003B11A0 /* locale */,
 				A5985CE52C33060F00C57AD3 /* man */,
 				9351BE8E2D22937F003B3499 /* nvim */,
+				A3C4E5F60D1B2C3D4E5F6001 /* polter-chat */,
 				A5A1F8842A489D6800D1E8BC /* terminfo */,
 				552964E52B34A9B400030505 /* vim */,
 				FC5218F92D10FFC7004C93E0 /* zsh */,
@@ -396,6 +399,7 @@
 				A546F1142D7B68D7003B11A0 /* locale in Resources */,
 				A5985CE62C33060F00C57AD3 /* man in Resources */,
 				9351BE8E3D22937F003B3499 /* nvim in Resources */,
+				A3C4E5F70D1B2C3D4E5F6002 /* polter-chat in Resources */,
 				A5A1F8852A489D6800D1E8BC /* terminfo in Resources */,
 				552964E62B34A9B400030505 /* vim in Resources */,
 				FC5218FA2D10FFCE004C93E0 /* zsh in Resources */,

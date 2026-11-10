@@ -10,6 +10,21 @@
       ]
     }
   },
+  "startup_says": {
+    "blocks": [
+      "Do you want to use this API key?"
+    ],
+    "answers": [
+      {
+        "contains": "❯ No (recommended)",
+        "keys": [
+          "arrow_up",
+          "enter"
+        ],
+        "description": "use the API key the launcher set (cursor starts on No)"
+      }
+    ]
+  },
   "declined_says": {
     "contains": [
       "Interrupted · What should Claude do instead?",

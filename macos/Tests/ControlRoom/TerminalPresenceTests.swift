@@ -43,4 +43,25 @@ struct TerminalPresenceTests {
         // The person's own "new" takes it there, as it always has.
         #expect(Presence.focus("s", afterStacking: "n", onto: "w", byPerson: true) == "n")
     }
+
+    @Test func aClosedPaneDoesNotKeepTheFocus() {
+        // Task 3141, issue #25: the focused terminal that is no longer in
+        // the tree hands the focus to the first one the tree shows -- which
+        // is what lets the controller's strong reference to it go.
+        #expect(Presence.focusAfterTreeChange("b", stillIn: { $0 == "a" }, shown: ["a", "c"]) == "a")
+        // The pane that went was the last one: nobody is focused.
+        #expect(Presence.focusAfterTreeChange("b", stillIn: { _ in false }, shown: []) == nil)
+        // Nothing was focused, and a tree change does not invent one.
+        #expect(Presence.focusAfterTreeChange(String?.none, stillIn: { _ in false }, shown: ["a"]) == nil)
+    }
+
+    @Test func aTreeChangeLeavesTheFocusAloneWhoseTerminalIsStillThere() {
+        // **The negative control.** Closing any pane is this same event, so
+        // a rule that always handed the focus on would take the keyboard
+        // away every time somebody closed a split -- a worse bug than the
+        // one this fixes, and one this line is here to fail on.
+        #expect(Presence.focusAfterTreeChange("b", stillIn: { $0 == "b" }, shown: ["a", "b"]) == "b")
+        // Including when it is not the first one the tree shows.
+        #expect(Presence.focusAfterTreeChange("b", stillIn: { $0 != "x" }, shown: ["b", "c"]) == "b")
+    }
 }

@@ -159,8 +159,17 @@ struct ControlRoomList: Equatable {
     /// follows its name is that terminal's own word -- "Worker", or nothing
     /// for an ordinary agent -- because its title says so (`says`), not
     /// because anything here looked at what it is.
+    ///
+    /// **The whole of Polter is not a row's** (task 3113): while the overall
+    /// view is in front the bar says that page's own name and not the
+    /// selected row's -- with a group called `polter` selected, the page's
+    /// title read `polter`. The name arrives as `overallTitle` rather than
+    /// being read from `ControlRoomOverall` here: this file is built into
+    /// `tools/control-room-hosts-agree.py`'s package, which holds the list
+    /// and the look and not the overall view's reading.
     static func detailBar(row: Row?, selection: String?, holdsTerminal: Bool,
-                          title: SupervisorTitle?) -> (title: SupervisorTitle?, caption: String?) {
+                          title: SupervisorTitle?, overallTitle: String? = nil) -> (title: SupervisorTitle?, caption: String?) {
+        if let overallTitle { return (nil, overallTitle) }
         guard holdsTerminal else { return (nil, row?.name ?? selection) }
         return (title, nil)
     }

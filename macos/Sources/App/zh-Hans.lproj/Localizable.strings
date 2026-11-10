@@ -853,7 +853,14 @@
 /* 总控台：整体视图的进程表（task 2149，设计 v2 的 02）：每一行叫什么 */
 "of which: performance monitoring" = "其中：性能监控";
 "Chat %@" = "群聊 %@";
-"Sidecar for %@" = "边车 · %@";
+
+/* 总控台：整体视图（task 3113）：这一页自己的标题栏、进程表第三组（每一行是一个终端）、折叠按钮读屏念的值 */
+"Polter performance monitoring" = "Polter性能监控";
+"Terminals" = "终端";
+"Terminal" = "终端";
+"and %d more processes" = "还有 %d 个进程";
+"collapsed" = "已收起";
+"expanded" = "已展开";
 
 /* 总控台：整体视图（task 2149，设计 v2 的 02）：四块数字、面积图、两条小曲线、进程表 */
 "Polter and its children" = "Polter 及其子进程";
@@ -864,7 +871,7 @@
 "→ steady" = "→ 平稳";
 "not read" = "读不到";
 "Memory Polter is using" = "Polter 用的内存";
-"GB, three layers stacked, the top edge is the total" = "单位 GB，三层叠在一起，最上沿是合计";
+"GB, two layers stacked, the top edge is the total" = "单位 GB，两层叠在一起，最上沿是合计";
 "the machine, last 24 hours" = "整机，最近 24 小时";
 "startup disk, dashed line = 15 GB" = "启动盘，虚线 = 15 GB";
 "below %@, the system starts closing apps" = "低于 %1$@ 系统会开始关应用";
@@ -873,7 +880,6 @@
 "ended %@" = "%@ 时结束";
 "The main process" = "主进程";
 "Embedded chats" = "内嵌群聊";
-"MCP sidecars" = "MCP 边车";
 "Process" = "进程";
 "Group" = "属于哪个群";
 "Memory" = "内存";

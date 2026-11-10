@@ -3,23 +3,41 @@ import Foundation
 /// The one way a chat request reaches the core (task 2800, S2c-1 contract
 /// §2), and the request bodies that go through it (§3).
 ///
-/// **One call, in a buffer whose size is known before it.** The core's
-/// `ghostty_app_chat_read` follows the `copyJsonOut` rule: it answers the
-/// number of bytes the reply needs, writes the body only when that many
-/// bytes plus a NUL fit the caller's buffer, and always reports the need on
-/// a second call. Asking the size first and then calling again is therefore
-/// unnecessary, and the second call is a second chance for the answer to
-/// disagree with the size that was measured. Every request here gets the
-/// same 96 KiB + 1 buffer, one call, and no retry.
+/// **One call at the core's own budget, and a second only for a live reply
+/// that does not fit.** `ghostty_app_chat_read` follows the `copyJsonOut`
+/// rule: it answers the number of bytes the reply needs, writes the body only
+/// when that many bytes plus a NUL fit the caller's buffer, and reports the
+/// need either way. So the first call goes into `bodyLimit + 1` -- the core's
+/// own page budget, and also the smallest capacity that makes it serve every
+/// named method (⚠️ a **smaller** one, `cap = 0` included, trips
+/// `App.chatReadAnswerForBuffer`'s restricted branch and turns `chat_search_*`,
+/// `chat_metadata` and the around/context/reference history modes into
+/// `BadParams`; the size probe must never be zero-length). A length above
+/// that budget can only be the live `group_read` (history and search pages
+/// are capped in the core), so the buffer is grown to the reported length and
+/// the **same request** is asked again, bounded by `maxBodyLimit`.
 ///
 /// **Nothing in this file names `GhosttyKit`**: the call is handed in, so the
 /// length rules and the strict UTF-8 reading are testable without an app,
 /// and `ControlRoomChatCoreAdapter` is the only caller that supplies the
 /// real function.
 enum ControlRoomChatTransport {
-    /// How many bytes of reply body this host will ever accept, not counting
-    /// the NUL the buffer keeps after them.
+    /// The core's own reply budget: history and search pages are capped here
+    /// by the core, and a buffer one byte longer is what makes the door serve
+    /// the methods a smaller capacity refuses.
     static let bodyLimit = 96 * 1024
+
+    /// **The largest live reply this host will grow a buffer for.** Only
+    /// `group_read` can exceed `bodyLimit`, and a single live page past this
+    /// is a pathological message rather than a page to keep: refusing it, with
+    /// both lengths named, is the honest answer (the same rule the page's
+    /// image inlining uses for a file that is too large).
+    static let maxBodyLimit = 4 * 1024 * 1024
+
+    /// How many times a reply that grew between two calls is asked again. A
+    /// live read can gain a message between the two calls; three retries is
+    /// far past "a message arrived", and a fourth growth is a caller to stop.
+    static let growAttempts = 3
 
     /// What one request came to.
     enum Outcome: Equatable {
@@ -32,41 +50,55 @@ enum ControlRoomChatTransport {
     }
 
     /// The core, as this file can call it: the request's bytes, a buffer
-    /// that is exactly `bodyLimit + 1` long, and the reply's length.
+    /// whose capacity this file chooses, and the reply's length.
     typealias Call = (
         _ request: UnsafeBufferPointer<CChar>,
         _ out: UnsafeMutableBufferPointer<CChar>
     ) -> Int
 
-    /// Ask once.
+    /// Ask, growing the buffer if the reply is a live page above the core's
+    /// own budget.
     ///
-    /// `n == 0` is "nothing yet"; a negative reading, or one longer than the
-    /// buffer, is a refusal and the buffer is **not** parsed; 1...`bodyLimit`
-    /// is the body, read to exactly `n` bytes and refused unless it is
-    /// UTF-8. Never retried, and never asked a second time.
+    /// `n == 0` is "nothing yet"; a negative reading is a transport failure;
+    /// a reading above `maxBodyLimit` is refused with both the length and the
+    /// cap named and is **not** parsed; otherwise the body is read to exactly
+    /// `n` bytes and refused unless it is UTF-8.
     static func read(_ request: String, call: Call) -> Outcome {
         var bytes = Array(request.utf8CString)
         bytes.removeLast()
         // The last byte stays 0 for the core's NUL, as `copyJsonOut` writes
-        // it. The buffer is allocated before the call, at the one size this
-        // host uses.
-        var buffer = [CChar](repeating: 0, count: bodyLimit + 1)
-        let n = bytes.withUnsafeBufferPointer { req in
-            buffer.withUnsafeMutableBufferPointer { out in
-                call(req, out)
+        // it. The first size is the core's own page budget + 1, which is the
+        // only probe that does not trip the door's restricted branch.
+        var needed = bodyLimit
+        var grows = 0
+        while true {
+            var buffer = [CChar](repeating: 0, count: needed + 1)
+            let n = bytes.withUnsafeBufferPointer { req in
+                buffer.withUnsafeMutableBufferPointer { out in
+                    call(req, out)
+                }
             }
-        }
 
-        if n == 0 { return .notReady }
-        if n < 0 { return .refused("chat read answered \(n) bytes") }
-        if n > bodyLimit {
-            return .refused("chat read needs \(n) bytes; the buffer holds \(bodyLimit)")
+            if n == 0 { return .notReady }
+            if n < 0 { return .refused("chat read answered \(n) bytes") }
+            if n > maxBodyLimit {
+                return .refused("chat read needs \(n) bytes; the cap is \(maxBodyLimit)")
+            }
+            if n <= needed {
+                let body = buffer.prefix(n).map { UInt8(bitPattern: $0) }
+                guard let text = String(bytes: body, encoding: .utf8) else {
+                    return .refused("chat read answered bytes that are not UTF-8")
+                }
+                return .answer(text)
+            }
+            // The reply grew between the calls (a live read can gain a message
+            // while the buffer is being measured). Ask again at the new length.
+            grows += 1
+            if grows > growAttempts {
+                return .refused("chat read kept growing; the last reading was \(n) bytes")
+            }
+            needed = n
         }
-        let body = buffer.prefix(n).map { UInt8(bitPattern: $0) }
-        guard let text = String(bytes: body, encoding: .utf8) else {
-            return .refused("chat read answered bytes that are not UTF-8")
-        }
-        return .answer(text)
     }
 }
 

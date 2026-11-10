@@ -91,8 +91,6 @@ pub fn build(
         var is_chat = false;
         var sidecar_mem: u64 = 0;
         var sidecar_procs: u32 = 0;
-        var sidecar_pid: u32 = 0;
-        var sidecar_start: i64 = 0;
         var sidecar_cpu_ns: u64 = 0;
         for (mine) |k| {
             const p = procs[k];
@@ -109,26 +107,12 @@ pub fn build(
                 .sidecar => {
                     sidecar_mem += p.footprint;
                     sidecar_procs += 1;
-                    // **The CPU comes off the tree the same way the memory
-                    // does.** `usage[i].cpu_ns` is the pane's whole tree,
-                    // `polter +mcp` among it; a sidecar's row is those
-                    // processes alone, so reading the tree's total for it
-                    // would put every worker's CPU on its sidecar and leave
-                    // the worker's own row with CPU that is not its own
-                    // (task 2149's review, r3 ①). Both halves are taken
-                    // apart here, in this one loop, so they cannot drift.
+                    // **The sidecar's own CPU is kept apart as well**, so
+                    // that the terminal's row can count the two halves back
+                    // together and the split costs nothing (task 3113: the
+                    // row is the whole tree). Taken apart in this one loop,
+                    // so the two cannot drift.
                     sidecar_cpu_ns += p.cpu_ns;
-                    // **The earliest started, not the biggest.** The
-                    // biggest of two similar sidecars changes from one
-                    // reading to the next, and the row this names would
-                    // then look like a different process every few minutes
-                    // -- clearing a history that is being watched for a
-                    // leak. The earliest started changes only when that
-                    // sidecar goes.
-                    if (sidecar_pid == 0 or (p.start_ms != 0 and (sidecar_start == 0 or p.start_ms < sidecar_start))) {
-                        sidecar_pid = p.pid;
-                        sidecar_start = p.start_ms;
-                    }
                 },
                 .other => {},
             }
@@ -143,14 +127,51 @@ pub fn build(
         if (!is_chat) {
             r.sidecar_mem = sidecar_mem;
             r.sidecar_procs = sidecar_procs;
-            r.sidecar_pid = sidecar_pid;
             r.sidecar_cpu_ns = sidecar_cpu_ns;
             r.mem -|= sidecar_mem;
             r.procs -|= sidecar_procs;
             r.cpu_ns -|= sidecar_cpu_ns;
         }
+
+        // **The terminal's processes, heaviest first** (task 3113, second
+        // round): the table draws them under the terminal's own line, so
+        // that a row says what a terminal is *for* rather than what shape
+        // of process the core split out of it. The heaviest
+        // `Overall.max_children` are kept -- a busy tree can hold dozens --
+        // and the row's tree total is summed over all of them, so a short
+        // list is a list that left the tail out, never a total that did.
+        var kept: [Overall.max_children]Overall.Child = @splat(.{});
+        var kept_n: usize = 0;
+        for (mine) |k| {
+            const p = procs[k];
+            const mem_mib: u32 = @intCast(@min(p.footprint >> 20, std.math.maxInt(u32)));
+            kept_n = keepHeaviest(&kept, kept_n, Overall.Child.init(p.pid, mem_mib, p.name()));
+        }
+        r.children = kept;
+        r.children_len = @intCast(kept_n);
     }
     return out;
+}
+
+/// Put `c` into `buf[0..n]`, which is ordered heaviest first, and answer how
+/// many are kept: at most `buf.len`, so a tree with more processes than the
+/// row has room for keeps its heaviest ones. Ties go to the older process
+/// (the smaller pid), so the order is the same on every reading.
+fn keepHeaviest(buf: []Overall.Child, n: usize, c: Overall.Child) usize {
+    var at: usize = 0;
+    while (at < n) : (at += 1) {
+        const held = buf[at];
+        if (held.mem_mib > c.mem_mib) continue;
+        if (held.mem_mib == c.mem_mib and held.pid <= c.pid) continue;
+        break;
+    }
+    const len = @min(n + 1, buf.len);
+    // Smaller than everything kept, and the row is full: not carried.
+    if (at >= len) return n;
+    var k = len - 1;
+    while (k > at) : (k -= 1) buf[k] = buf[k - 1];
+    buf[at] = c;
+    return len;
 }
 
 // ------------------------------------------------------------------ tests
@@ -222,11 +243,11 @@ test "2149: a chat's pane is the group's own, and a worker's tree loses its side
     try testing.expectEqualStrings("", out[0].groupName());
     try testing.expectEqual(@as(u32, 1), out[0].sidecar_procs);
     try testing.expectEqual(@as(u64, 200 << 20), out[0].sidecar_mem);
-    try testing.expectEqual(@as(u32, 13), out[0].sidecar_pid);
     try testing.expectEqual(@as(u64, (4 + 300 + 1000) << 20), out[0].mem);
     try testing.expectEqual(@as(u32, 3), out[0].procs);
-    // The sidecar (pid 13, 1300 ns) is its own row's CPU; the worker's row
-    // keeps the rest of the tree (1100 + 1200 + 1400).
+    // The sidecar (pid 13, 1300 ns) is taken out of the tree's CPU here, so
+    // that the terminal's row can add it back (task 3113); what is left is
+    // the rest of the tree (1100 + 1200 + 1400).
     try testing.expectEqual(@as(u64, 1300), out[0].sidecar_cpu_ns);
     try testing.expectEqual(@as(u64, 3700), out[0].cpu_ns);
 
@@ -272,4 +293,71 @@ test "2149: a sidecar with no pane of its own is not taken off the wrong tree" {
     try testing.expectEqualStrings("docs", out[0].groupName());
     try testing.expectEqual(@as(u64, (4 + 20000 + 200) << 20), out[0].mem);
     try testing.expectEqual(@as(u32, 3), out[0].procs);
+}
+
+// **The processes under a terminal's line** (task 3113, second round): the
+// table draws a terminal as a group with these under it, heaviest first, so
+// that a row says what the terminal is *for* -- the agent, the MCP servers
+// it started, the build -- rather than one word for a shape of process.
+test "3113: a terminal's row carries its processes, heaviest first" {
+    // 11 zsh -> 12 claude -> {13 polter +mcp, 14 python3.13}
+    const procs = [_]procscan.Proc{
+        P(11, 10, 4, "zsh"),
+        P(12, 11, 300, "claude"),
+        P(13, 12, 200, "polter"),
+        P(14, 12, 1000, "python3.13"),
+    };
+    const panes = [_]ledger.Pane{.{ .id = 0xa, .root = 11, .tty = null }};
+    const None = struct {
+        fn of(_: ?*anyopaque, _: u32, _: []const u8) Seen {
+            return .{ .kind = .other };
+        }
+    };
+    const out = try build(testing.allocator, &procs, &panes, None.of, null);
+    defer testing.allocator.free(out);
+
+    const kids = out[0].childrenOf();
+    try testing.expectEqual(@as(usize, 4), kids.len);
+    // Heaviest first, and the names are the process table's own.
+    try testing.expectEqual(@as(u32, 14), kids[0].pid);
+    try testing.expectEqualStrings("python3.13", kids[0].nameOf());
+    try testing.expectEqual(@as(u32, 1000), kids[0].mem_mib);
+    try testing.expectEqual(@as(u32, 12), kids[1].pid);
+    try testing.expectEqualStrings("claude", kids[1].nameOf());
+    try testing.expectEqual(@as(u32, 13), kids[2].pid);
+    try testing.expectEqual(@as(u32, 11), kids[3].pid);
+    // The tree's own numbers are still whole: the list is what is drawn
+    // under the row, not what the row adds up.
+    try testing.expectEqual(@as(u32, 4), out[0].procs);
+    try testing.expectEqual(@as(u64, (4 + 300 + 200 + 1000) << 20), out[0].mem);
+}
+
+test "3113: a tree with more processes than the row holds keeps its heaviest" {
+    // Sixteen processes of 1 MiB to 16 MiB: the twelve heaviest are kept,
+    // and the row's own count still says sixteen. A list that silently kept
+    // the first twelve would keep the *lightest* ones here, so the two are
+    // told apart by which pids came out.
+    var procs: [16]procscan.Proc = undefined;
+    for (&procs, 0..) |*p, i| p.* = P(@intCast(100 + i), 99, @intCast(i + 1), "proc");
+    const panes: [1]ledger.Pane = .{.{ .id = 0xa, .root = 99, .tty = null }};
+    // The pane's root is a process too, and the lightest of the seventeen.
+    var all: [17]procscan.Proc = undefined;
+    all[0] = P(99, 1, 0, "zsh");
+    @memcpy(all[1..], &procs);
+    const None = struct {
+        fn of(_: ?*anyopaque, _: u32, _: []const u8) Seen {
+            return .{ .kind = .other };
+        }
+    };
+    const out = try build(testing.allocator, &all, &panes, None.of, null);
+    defer testing.allocator.free(out);
+
+    const kids = out[0].childrenOf();
+    try testing.expectEqual(Overall.max_children, kids.len);
+    // The heaviest is pid 115 (16 MiB) and the twelfth is pid 104 (5 MiB);
+    // the four lightest -- pids 100..103 -- did not fit.
+    try testing.expectEqual(@as(u32, 115), kids[0].pid);
+    try testing.expectEqual(@as(u32, 104), kids[kids.len - 1].pid);
+    // The row's count is the tree's own, not the list's length.
+    try testing.expectEqual(@as(u32, 17), out[0].procs);
 }

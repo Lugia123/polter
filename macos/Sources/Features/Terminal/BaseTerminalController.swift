@@ -371,9 +371,31 @@ class BaseTerminalController: NSWindowController,
             cancelPendingClipboardConfirmation(for: surfaceView)
         }
 
-        // If our surface tree becomes empty then we have no focused surface.
-        if to.isEmpty {
-            focusedSurface = nil
+        // **A terminal that is gone cannot go on being the focused one**
+        // (task 3141). This used to clear the focus only when the whole
+        // tree emptied, and `focusedSurface` is a strong reference to the
+        // last terminal that had focus -- losing focus deliberately leaves
+        // it alone (`TerminalView` keeps the last non-nil). So a pane that
+        // had been clicked and was then closed stayed this controller's
+        // focused surface, and its view, surface, pty and shell stayed
+        // alive with it until some later focus change: issue #25's
+        // "released by the next click in the window". The rule is the
+        // file-wide one, for the other half of it -- **focus is never left
+        // on a terminal nobody can see** (`TerminalPresence`).
+        //
+        // Handed on rather than cleared: a pane in a split tab must not
+        // take the keyboard with it. `syncFocusToSurfaceTree` in the
+        // `didSet` then marks what is left unfocused, and the successor
+        // the caller asked for takes the keyboard by itself.
+        if let focused = focusedSurface, !to.contains(focused) {
+            focusedSurface = TerminalPresence.focusAfterTreeChange(
+                focused,
+                stillIn: { to.contains($0) },
+                shown: to.shownLeaves())
+            // The subscriptions beside it are keyed to the same terminal:
+            // dropping the reference and keeping them would keep it half
+            // alive, which is the failure this is here to end.
+            releaseFocusSubscriptions()
         }
         syncSurfaceTreeOcclusionState()
         // A terminal the control room has borrowed may just have lost its
@@ -390,6 +412,18 @@ class BaseTerminalController: NSWindowController,
         for surfaceView in from.members() + to.members() {
             Self.tellCoreHousing(surfaceView)
         }
+    }
+
+    /// Drop everything that was subscribed to the terminal that has just
+    /// left the tree (task 3141). Those subscriptions are keyed to the
+    /// focused terminal and are otherwise replaced only by the next focus
+    /// change, so a closed pane would keep them -- and whatever they hold
+    /// -- for as long as nothing else took the focus.
+    ///
+    /// Subclasses add their own: `TerminalController` has the window's
+    /// appearance to keep in step, and calls super first.
+    func releaseFocusSubscriptions() {
+        focusedSurfaceCancellables = []
     }
 
     /// Tell the core whether `view` is in a window or tab that can show it

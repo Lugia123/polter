@@ -1844,6 +1844,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     // MARK: - TerminalViewDelegate
 
+    /// The focused terminal left the tree (task 3141): the window's
+    /// appearance was subscribed to it, and what it was showing must not
+    /// outlive it either.
+    override func releaseFocusSubscriptions() {
+        super.releaseFocusSubscriptions()
+        surfaceAppearanceCancellables.removeAll()
+    }
+
     override func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
         super.focusedSurfaceDidChange(to: to)
 

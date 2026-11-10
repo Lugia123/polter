@@ -1233,6 +1233,29 @@ pub const TerminalInfo = struct {
     /// on Linux every terminal reports null and a caller that reads null as
     /// "separate windows" would be inventing an arrangement.
     window: ?u64 = null,
+
+    /// Whether the terminal is in a window or tab that can show it
+    /// (task 3137), said by the host through
+    /// `ghostty_surface_poltergeist_housed` and kept as `Bus.Entry.unhoused`.
+    ///
+    /// **This is the field `window`/`tab` cannot be.** Those are null twice
+    /// over -- because a terminal is in no tab, and because the apprt does
+    /// not answer that question at all (GTK) -- so a reader who takes null
+    /// for "closed" invents an arrangement, and one who takes it for "not
+    /// known" cannot see a closed terminal. `shown` answers the first
+    /// question on its own: `false` is the host saying it took this
+    /// terminal's view out of every window and tab.
+    ///
+    /// **What `false` does not mean.** Not "gone": on macOS a closed pane's
+    /// terminal is kept (for the undo, and for longer -- see issue #25), so
+    /// `terminal_read` still reads it, `terminal_send` still reaches its
+    /// shell, and its processes are still counted. It is a seat nobody can
+    /// see, which is exactly what a closing worker's pane leaves behind.
+    ///
+    /// **No default**, on `agent_present`'s terms: a site that forgot it
+    /// would report every terminal as on screen, and the empty seat this
+    /// field exists to make visible would be invisible again.
+    shown: bool,
     tab: ?u64 = null,
 
     /// Where that tab stands in its window's strip, from 0, and what the
@@ -2445,6 +2468,12 @@ fn writeTerminal(s: *std.json.Stringify, info: TerminalInfo) std.Io.Writer.Error
     try writeAgent(s, info.agent);
     try s.objectField("agent_present");
     try s.write(info.agent_present);
+    // Always written, as `agent_present` is (task 3137): a reader that finds
+    // it absent is reading a Polter from before a closed terminal was told
+    // apart from one nobody can see, and defaulting it either way would be
+    // that reader inventing the answer this field exists to give.
+    try s.objectField("shown");
+    try s.write(info.shown);
     // Always written, as `agent_present` is: a reader that finds it absent
     // is reading a Polter from before it was said (task 1746).
     try s.objectField("startup_question");
@@ -2920,6 +2949,7 @@ test "a response carries ids as the same text the host exports" {
 
     try writeResponse(&w, .{ .me = .{
         .id = 0x2222,
+        .shown = true,
         .agent = .none,
         .agent_present = false,
         .startup_question = false,
@@ -2958,8 +2988,8 @@ test "a response is one line" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
-        .{ .id = 2, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
+        .{ .id = 1, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .supervisor, .duty = .on, .held = false, .quiet_ms = 0, .watching = false, .rounds = 0 },
+        .{ .id = 2, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .duty = .off, .held = true, .quiet_ms = 90_000, .watching = true, .rounds = 2 },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -2977,8 +3007,8 @@ test "a listing says which terminals are out of reach, and which are not" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .shielded = true },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .watching = true },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .shielded = true },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .role = .watched, .watching = true },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -3002,8 +3032,8 @@ test "a listing says each terminal's colour and whether workers are kept out of 
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .color = .orange, .workers = .refused },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .color = .orange, .workers = .refused },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
 
@@ -3047,6 +3077,7 @@ test "an unwatched terminal is placed, but not measured" {
     const list = [_]TerminalInfo{
         .{
             .id = 0x11,
+            .shown = true,
             .agent = .none,
             .agent_present = false,
             .startup_question = false,
@@ -3057,6 +3088,7 @@ test "an unwatched terminal is placed, but not measured" {
         },
         .{
             .id = 0x22,
+            .shown = true,
             .agent = .none,
             .agent_present = false,
             .startup_question = false,
@@ -3089,8 +3121,8 @@ test "a terminal that has never called a tool sends no call_silent_ms, not zero"
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .call_silent_ms = 1_320_000 },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .call_silent_ms = 1_320_000 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3110,8 +3142,8 @@ test "grouping reaches the wire, not just the in-memory Response (task 650)" {
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3 },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null }, // nobody grouped this one: absent, not zero
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3 },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null }, // nobody grouped this one: absent, not zero
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3127,8 +3159,8 @@ test "a tab's place and title reach the wire, and are left out when nobody said 
     var w: std.Io.Writer = .fixed(&buf);
 
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 4 },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 3, .tab_index = 2, .tab_title = "build" },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .window = 1, .tab = 4 },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -3137,6 +3169,28 @@ test "a tab's place and title reach the wire, and are left out when nobody said 
     try testing.expect(std.mem.indexOf(u8, out, "\"tab_index\":2") != null);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"tab_title\""));
     try testing.expect(std.mem.indexOf(u8, out, "\"tab_title\":\"build\"") != null);
+}
+
+test "3137: whether a terminal is on screen reaches the wire, false and all" {
+    // The third link in the chain, and the one that used to be silently
+    // missing (task 650): `describe` putting the bit in the struct and
+    // `terminal_list` handing the struct on are two files, and neither is
+    // enough -- a field can be right in memory and never reach the bytes an
+    // agent reads. Both values are checked, so a writer that always said
+    // `true` would fail here rather than pass on the half that agrees.
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    const list = [_]TerminalInfo{
+        .{ .id = 0x11, .shown = false, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+    };
+    try writeResponse(&w, .{ .terminals = &list });
+    const out = w.buffered();
+
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "\"shown\""));
+    try testing.expect(std.mem.indexOf(u8, out, "\"shown\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"shown\":true") != null);
 }
 
 test "group_history parses its cursor and its limit" {
@@ -3808,7 +3862,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Started for a group: all three, named.
     var w: std.Io.Writer = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
         .groups = &.{ "web-app", "billing" },
         .supervisor_of = &.{"web-app"},
         .started_for = "web-app",
@@ -3833,7 +3887,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // In nothing and started for nothing: said, as empty lists and a null.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
+    try writeResponse(&w, .{ .me = .{ .id = 1, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null, .membership = .{
         .groups = &.{},
         .supervisor_of = &.{},
         .started_for = null,
@@ -3847,7 +3901,7 @@ test "ControlRoom resume: me says the groups, the ones it is the supervisor of a
 
     // Not `me`, or a host that could not say: none of the three keys.
     w = .fixed(&buf);
-    try writeResponse(&w, .{ .me = .{ .id = 1, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null } });
+    try writeResponse(&w, .{ .me = .{ .id = 1, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null } });
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "started_for") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "supervisor_of") == null);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\"groups\"") == null);
@@ -4056,8 +4110,8 @@ test "1746: a terminal says whether its CLI is asking the person a question befo
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = true, .left = null, .resources = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = true, .left = null, .resources = null },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -4071,8 +4125,8 @@ test "#63: a terminal says whether an agent is connected from it, true or false"
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();
@@ -4084,9 +4138,9 @@ test "1802: a terminal says whether its agent has left, and why, null included" 
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     const list = [_]TerminalInfo{
-        .{ .id = 0x11, .agent = .none, .agent_present = false, .startup_question = false, .left = .unknown, .resources = null },
-        .{ .id = 0x22, .agent = .none, .agent_present = false, .startup_question = false, .left = .failed, .resources = null },
-        .{ .id = 0x33, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
+        .{ .id = 0x11, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = .unknown, .resources = null },
+        .{ .id = 0x22, .shown = true, .agent = .none, .agent_present = false, .startup_question = false, .left = .failed, .resources = null },
+        .{ .id = 0x33, .shown = true, .agent = .none, .agent_present = true, .startup_question = false, .left = null, .resources = null },
     };
     try writeResponse(&w, .{ .terminals = &list });
     const out = w.buffered();

@@ -113,7 +113,14 @@ struct ControlRoomOverallRow: View {
     var body: some View {
         let e = ControlRoomOverall.entry(answer)
         let at = ControlRoomOverall.entryLayout(width: width)
-        let curve = ControlRoomOverall.curve(answer.machine, nowS: answer.polter.series.nowS, rect: at.curve)
+        // **The curve is scaled into a box at its own origin and the box is
+        // placed once** (task 3113): `ControlRoomOverall.curve` maps its
+        // points into the rect it is handed, and the path below is then
+        // moved by `at.curve`'s own origin -- so a rect that already
+        // carried that origin put it in twice, and the row's line drew a
+        // little right and low of its box.
+        let curve = ControlRoomOverall.curve(answer.machine, nowS: answer.polter.series.nowS,
+                                             rect: CGRect(origin: .zero, size: at.curve.size))
         ZStack(alignment: .topLeading) {
             // The chip's ground while this row is the one in front: the
             // design's selected row.

@@ -19,6 +19,10 @@ struct ControlRoomOverallPane: View {
     /// Which span the chart draws. **The host's own**, so it lives here and
     /// not in the answer.
     @State private var span: U.Span = .day
+    /// Which of the table's headings the reader has closed (task 3113).
+    /// The host's own for the same reason `span` is: what a reader has
+    /// folded away is not a fact about the machine.
+    @State private var folded: Set<String> = []
 
     @Environment(\.colorScheme) private var scheme
 
@@ -31,7 +35,7 @@ struct ControlRoomOverallPane: View {
         GeometryReader { proxy in
             ScrollView(.vertical) {
                 if let answer = feed.answer {
-                    ControlRoomOverallPage(answer: answer, span: $span)
+                    ControlRoomOverallPage(answer: answer, span: $span, folded: $folded)
                         .frame(width: proxy.size.width, alignment: .topLeading)
                 } else {
                     Color.clear.frame(width: proxy.size.width, height: proxy.size.height)
@@ -62,7 +66,7 @@ struct ControlRoomOverallPane: View {
 /// the supervisor's terminal was.
 ///
 /// **The core decides, this draws.** Every number here arrives as a field
-/// (`OverallPage.render`): the four figures, the three stacked layers, the
+/// (`OverallPage.render`): the four figures, the stacked layers, the
 /// moment the chart's right edge is, the row that is rising and by how much,
 /// the machine's two curves, and the process table with each row's group
 /// already named. Nothing here compares two rows, sorts them or weighs a
@@ -89,6 +93,9 @@ struct ControlRoomOverallPage: View {
     /// performance page's: which of two windows a reader is looking at is
     /// not a fact about the machine.
     @Binding var span: U.Span
+    /// The table's headings the reader has closed (task 3113), by the
+    /// core's own category. The host's own for the reason `span` is.
+    @Binding var folded: Set<String>
 
     @Environment(\.colorScheme) private var scheme
 
@@ -101,7 +108,9 @@ struct ControlRoomOverallPage: View {
             // table's own height and how tall the page is: two readings of
             // the same list would be two answers about how many lines there
             // are, and the page would end above or below its own table.
-            let lines = U.tableLines(answer.polter)
+            // The folded headings are the reader's, so the same list moves
+            // with them (task 3113).
+            let lines = U.tableLines(answer.polter, folded: folded)
             ZStack(alignment: .topLeading) {
                 figures(at)
                 chart(at)
@@ -243,27 +252,41 @@ struct ControlRoomOverallPage: View {
         let gutter = at.plotGutter.offsetBy(dx: -inside.minX, dy: -inside.minY)
         let head = at.chartHead.offsetBy(dx: -inside.minX, dy: -inside.minY)
         let note = at.riseNote.offsetBy(dx: -inside.minX, dy: -inside.minY)
+        // **The card is `at.chart`, and the contents are placed against the
+        // card's own inside** (task 3090). The two must be one reading of
+        // where the card is: the parts above are in card-inside coordinates,
+        // so the stack is offset by the card's padding and the whole card by
+        // the page's `at.chart` -- once, and never by `at.chartInner.min`
+        // as well. That double offset was what put every part a card's own
+        // height below its card: the title in the card's middle, the plot's
+        // labels under it on the next card.
         ZStack(alignment: .topLeading) {
-            chartHead(stack: stack, layers: layers)
-                .offset(x: head.minX, y: head.minY)
-            if let rise = answer.polter.rise {
-                Text(words.riseSentence(rise))
-                    .foregroundStyle(theme.levelWarn2Text.color)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: note.width, height: note.height, alignment: .leading)
-                    .offset(x: note.minX, y: note.minY)
+            // The card's ground, at the card's rect -- not at the inside's,
+            // which is two paddings smaller and would leave the plot's right
+            // end and its hour labels outside the card.
+            card(radius: CGFloat(Page.cardRadius))
+            ZStack(alignment: .topLeading) {
+                chartHead(stack: stack, layers: layers)
+                    .offset(x: head.minX, y: head.minY)
+                if let rise = answer.polter.rise {
+                    Text(words.riseSentence(rise))
+                        .foregroundStyle(theme.levelWarn2Text.color)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: note.width, height: note.height, alignment: .leading)
+                        .offset(x: note.minX, y: note.minY)
+                }
+                plotCanvas(stack: stack, step: step, rect: plot, gutter: gutter,
+                           rise: answer.polter.rise)
             }
-            plotCanvas(stack: stack, step: step, rect: plot, gutter: gutter,
-                       rise: answer.polter.rise)
+            .frame(width: inside.width, height: inside.height, alignment: .topLeading)
+            .offset(x: CGFloat(Page.cardPadX), y: CGFloat(Page.cardPadY))
         }
-        .frame(width: inside.width, height: inside.height, alignment: .topLeading)
-        .offset(x: inside.minX, y: inside.minY)
-        .background(card(radius: CGFloat(Page.cardRadius)))
+        .frame(width: at.chart.width, height: at.chart.height, alignment: .topLeading)
         .offset(x: at.chart.minX, y: at.chart.minY)
     }
 
-    /// The chart's title row: what it is, the three layers named, and the
+    /// The chart's title row: what it is, the layers named, and the
     /// switch between the two spans.
     @ViewBuilder
     private func chartHead(stack: U.Stack, layers: [U.Layer]) -> some View {
@@ -280,9 +303,10 @@ struct ControlRoomOverallPage: View {
         .frame(height: CGFloat(Page.chartHeadHeight), alignment: .leading)
     }
 
-    /// The three legend entries, **named from the core's own layers and in
-    /// its order**: the host draws the stack it was handed and does not work
-    /// out which layer is which (`Layer.name`).
+    /// The legend's entries, **named from the core's own layers and in its
+    /// order**: the host draws the stack it was handed and does not work out
+    /// which layer is which (`Layer.name`). Two of them now: the main
+    /// process, and the terminals (task 3113, second round).
     @ViewBuilder
     private func legend(_ layers: [U.Layer]) -> some View {
         HStack(spacing: CGFloat(Page.chartLegendGap)) {
@@ -299,11 +323,11 @@ struct ControlRoomOverallPage: View {
         }
     }
 
-    /// The three layers' inks, in the order the core stacks them: the design
-    /// reads from the bottom up, so the deepest band is the faintest. **The
-    /// band that is rising is the warning one** while the core says
-    /// something is rising -- that is what makes a leak visible in the
-    /// picture (`02-overall-leak`).
+    /// The two layers' inks, in the order the core stacks them (task 3113,
+    /// second round: the main process and the terminals). **The band that
+    /// is rising is the warning one** while the core says something is
+    /// rising -- that is what makes a leak visible in the picture
+    /// (`02-overall-leak`).
     private func layerInk(_ i: Int) -> Look.RGBA {
         switch i {
         case 0: theme.segSupervisor
@@ -456,11 +480,14 @@ struct ControlRoomOverallPage: View {
     private func mini(title: String, subtitle: String, right: String, tone: Tone,
                       points: [(UInt64, UInt64)], lineAt: UInt64?, rect: CGRect) -> some View {
         // Inside the card: the head, then the curve, both from the card's own
-        // padding.
+        // padding. **The curve is scaled into a box at its own origin and
+        // the box is placed once** (`U.miniCurve`): the rect handed to
+        // `ControlRoomResources.curve` used to already carry the card's
+        // origin, which the view then added again -- the line drew a
+        // padding right and a head's height low, its newest points outside
+        // the card's bottom right (task 3113).
         let headH = CGFloat(Page.miniHeadHeight)
-        let curve = CGRect(x: CGFloat(Page.cardPadX), y: headH + CGFloat(Page.miniTop),
-                           width: max(0, rect.width - 2 * CGFloat(Page.cardPadX)),
-                           height: CGFloat(Page.miniHeight))
+        let (box, place) = U.miniCurve(in: rect)
         // **The right-hand edge is the core's `now_s`**, the same moment the
         // chart above ends at, so that the two curves and the stacked chart
         // are read against one clock and not three (task 2149, slice 2, the
@@ -469,7 +496,7 @@ struct ControlRoomOverallPage: View {
         // rather than drawing nothing: a curve that vanished because a
         // neighbouring block was missing would read as "no reading".
         let nowS = answer.polter.series.nowS
-        let drawn = ControlRoomResources.curve(points, lineAt: lineAt, rect: curve,
+        let drawn = ControlRoomResources.curve(points, lineAt: lineAt, rect: box,
                                                now: nowS > 0 ? nowS : (points.map(\.0).max() ?? 0),
                                                span: UInt64(24 * 60 * 60))
         ZStack(alignment: .topLeading) {
@@ -486,16 +513,16 @@ struct ControlRoomOverallPage: View {
             // says it is (`disk_low_line_mib`): a line and not a rise.
             if let killY = drawn.killY {
                 theme.levelKilled.color
-                    .frame(width: curve.width, height: CGFloat(Look.Line.hairline))
-                    .offset(x: curve.minX, y: CGFloat(Page.cardPadY) + curve.minY + killY)
+                    .frame(width: box.width, height: CGFloat(Look.Line.hairline))
+                    .offset(x: place.x, y: place.y + killY)
             }
             if drawn.line.count >= 2 {
                 Path { p in p.addLines(drawn.line) }
                     .stroke(tone == .normal ? theme.perfCurve.color : tone.ink(theme).color,
                             style: StrokeStyle(lineWidth: CGFloat(Look.Line.stroke),
                                                lineCap: .round, lineJoin: .round))
-                    .frame(width: curve.width, height: curve.height)
-                    .offset(x: curve.minX, y: CGFloat(Page.cardPadY) + curve.minY)
+                    .frame(width: box.width, height: box.height)
+                    .offset(x: place.x, y: place.y)
             }
         }
         .frame(width: rect.width, height: rect.height, alignment: .topLeading)
@@ -532,8 +559,165 @@ struct ControlRoomOverallPage: View {
     private func lineView(_ line: U.TableLine) -> some View {
         switch line {
         case let .section(s): groupRow(s)
-        case let .process(p): processRow(p)
+        case let .grouping(g): groupingRow(g)
+        // **A row with a group is under a group's heading** (a chat, task
+        // 3119), one layer in from the main process's own rows -- which
+        // carry no group.
+        case let .process(p): processRow(p, indent: p.group == nil ? 0 : CGFloat(Page.tableNameIndent))
+        case let .terminal(p): terminalRow(p)
+        case let .child(c): childRow(c)
+        case let .more(n): moreRow(n)
         }
+    }
+
+    /// **A group of the table** (task 3119): the first layer under the main
+    /// process. Its line is the core's name for the group and the core's own
+    /// count and total; the terminals and the chat that carry that name stand
+    /// under it. The whole line takes a press, as the category headings' do.
+    ///
+    /// **The empty name is the rows in no group**, and it is drawn with the
+    /// host's words for that -- a fact the core sent (`group: ""`), not a
+    /// group the host invented.
+    private func groupingRow(_ g: U.TableGroup) -> some View {
+        let key = U.groupKey(g.group)
+        let closed = folded.contains(key)
+        let name = g.group.isEmpty ? words.noGroup : g.group
+        return Button {
+            if closed { folded.remove(key) } else { folded.insert(key) }
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: CGFloat(Page.tableTwistGap)) {
+                    Image(systemName: closed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: CGFloat(Look.Font.body)))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .frame(width: CGFloat(Page.tableTwist))
+                    Text(name)
+                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                        .foregroundStyle(theme.text.color)
+                        .lineLimit(1)
+                    Text("\(g.count)").foregroundStyle(theme.textTertiary.color)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(U.size(g.totalMib))
+                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                    .foregroundStyle(theme.text.color)
+                    .frame(width: CGFloat(Page.colMemory), alignment: .trailing)
+                Spacer(minLength: CGFloat(Page.colHistory))
+            }
+            .padding(.leading, CGFloat(Page.tablePadX))
+            .padding(.trailing, CGFloat(Page.tablePadX))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name) \(g.count) \(U.size(g.totalMib))")
+        .accessibilityValue(closed ? words.collapsed : words.expanded)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// **A terminal, as its own group** (task 3113, second round): the
+    /// table's third category heading used to stand over these rows, and it
+    /// was a word for a shape of process -- one that named the row after a
+    /// part of what it weighs. The heading is the terminal now: its title
+    /// and id, the number of processes in its tree, and what the tree
+    /// holds, and the processes it started stand under it.
+    ///
+    /// The whole line takes a press, as the category headings' do: a reader
+    /// aiming at a 14-point triangle is aiming at nothing.
+    private func terminalRow(_ p: U.Process) -> some View {
+        let key = U.foldKey(p)
+        let closed = folded.contains(key)
+        return Button {
+            if closed { folded.remove(key) } else { folded.insert(key) }
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: CGFloat(Page.tableTwistGap)) {
+                    Image(systemName: closed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: CGFloat(Look.Font.body)))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .frame(width: CGFloat(Page.tableTwist))
+                    Text(U.rowName(p))
+                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                        .foregroundStyle(theme.text.color)
+                        .lineLimit(1)
+                        // The name is a title and then the id that says which
+                        // terminal it is: a tail cut would eat the id.
+                        .truncationMode(.middle)
+                    Text("\(p.count)").foregroundStyle(theme.textTertiary.color)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(U.size(p.memMib))
+                    .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                    .foregroundStyle((p.rising ? theme.levelWarn2Text : theme.text).color)
+                    .frame(width: CGFloat(Page.colMemory), alignment: .trailing)
+                Spacer(minLength: CGFloat(Page.colHistory))
+            }
+            // **The second layer under its group's heading** (task 3119):
+            // its triangle one indent in, so that a terminal is not read as
+            // a heading of the same rank as the group over it.
+            .padding(.leading, CGFloat(Page.tablePadX) + CGFloat(Page.tableNameIndent))
+            .padding(.trailing, CGFloat(Page.tablePadX))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(U.rowName(p)) \(p.count) \(U.size(p.memMib))")
+        .accessibilityValue(closed ? words.collapsed : words.expanded)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// **"and N more processes"** under a terminal's list: the row carries
+    /// the tree's heaviest `Overall.max_children` processes, and this says
+    /// how many are not drawn rather than letting the list read as the
+    /// whole tree (task 3113, second round).
+    private func moreRow(_ n: UInt64) -> some View {
+        HStack(spacing: 0) {
+            Text(words.moreProcesses(n))
+                .foregroundStyle(theme.textTertiary.color)
+                .lineLimit(1)
+                .padding(.leading, CGFloat(Page.tableNameIndent) * 2 + CGFloat(Page.tableTwist)
+                            + CGFloat(Page.tableTwistGap))
+                .frame(width: CGFloat(Page.colName), alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .padding(.trailing, CGFloat(Page.tablePadX))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(words.moreProcesses(n))
+    }
+
+    /// **One process inside the terminal above it** (task 3113, second
+    /// round): its name, what it holds, and its pid. It is what the
+    /// terminal's total came apart into, so the two are read one under the
+    /// other.
+    private func childRow(_ c: U.Process.Child) -> some View {
+        HStack(spacing: 0) {
+            Text(c.name)
+                .foregroundStyle(theme.textSecondary.color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, CGFloat(Page.tableNameIndent) * 2 + CGFloat(Page.tableTwist)
+                            + CGFloat(Page.tableTwistGap))
+                .frame(width: CGFloat(Page.colName), alignment: .leading)
+            cell("", width: CGFloat(Page.colGroup), align: .leading)
+            cell(U.size(c.memMib), width: CGFloat(Page.colMemory), align: .trailing)
+            cell("", width: CGFloat(Page.colHistory), align: .leading)
+            cell("", width: CGFloat(Page.colCpu), align: .trailing)
+            cell("\(c.pid)", width: CGFloat(Page.colPid), align: .trailing)
+            Spacer(minLength: 0)
+        }
+        .padding(.trailing, CGFloat(Page.tablePadX))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(c.name) \(U.size(c.memMib))")
     }
 
     private func tableHead() -> some View {
@@ -555,40 +739,67 @@ struct ControlRoomOverallPage: View {
     /// (`words.sectionName`), the category and both numbers are the core's
     /// (`U.Section`): how many rows are under this heading and what they add
     /// up to were counted there.
+    ///
+    /// **The line is the button that closes the heading** (task 3113): the
+    /// triangle was a picture and a press did nothing. The heading keeps
+    /// its count and its total while it is closed, so a reader who folded a
+    /// group away still sees what it costs.
     private func groupRow(_ s: U.Section) -> some View {
-        HStack(spacing: 0) {
-            HStack(spacing: CGFloat(Page.tableTwistGap)) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: CGFloat(Look.Font.body)))
-                    .foregroundStyle(theme.textSecondary.color)
-                    .frame(width: CGFloat(Page.tableTwist))
-                Text(words.sectionName(s.category))
+        let key = U.sectionKey(s.category)
+        let closed = folded.contains(key)
+        return Button {
+            if closed { folded.remove(key) } else { folded.insert(key) }
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: CGFloat(Page.tableTwistGap)) {
+                    Image(systemName: closed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: CGFloat(Look.Font.body)))
+                        .foregroundStyle(theme.textSecondary.color)
+                        .frame(width: CGFloat(Page.tableTwist))
+                    Text(words.sectionName(s.category))
+                        .fontWeight(Look.weight(Look.Font.weightEmphasis))
+                        .foregroundStyle(theme.textSecondary.color)
+                    Text("\(s.count)").foregroundStyle(theme.textTertiary.color)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(U.size(s.totalMib))
                     .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                    .foregroundStyle(theme.textSecondary.color)
-                Text("\(s.count)").foregroundStyle(theme.textTertiary.color)
-                Spacer(minLength: 0)
+                    .foregroundStyle(theme.text.color)
+                    .frame(width: CGFloat(Page.colMemory), alignment: .trailing)
+                Spacer(minLength: CGFloat(Page.colHistory))
             }
+            .padding(.leading, CGFloat(Page.tablePadX))
+            .padding(.trailing, CGFloat(Page.tablePadX))
+            // **One row is `tableRowHeight` tall and no more** (task 3090). It
+            // used to take the whole table's height and centre its line in it:
+            // every row then overlapped the one under it, and the table's lines
+            // piled up in the middle with a blank where they should have been.
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(U.size(s.totalMib))
-                .fontWeight(Look.weight(Look.Font.weightEmphasis))
-                .foregroundStyle(theme.text.color)
-                .frame(width: CGFloat(Page.colMemory), alignment: .trailing)
-            Spacer(minLength: CGFloat(Page.colHistory))
+            .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
+            // The whole line takes a press, not just the triangle: a reader
+            // aiming at a 14-point chevron is aiming at nothing.
+            .contentShape(Rectangle())
         }
-        .padding(.leading, CGFloat(Page.tablePadX))
-        .padding(.trailing, CGFloat(Page.tablePadX))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(words.sectionName(s.category)) \(s.count)")
+        .accessibilityValue(closed ? words.collapsed : words.expanded)
+        .accessibilityAddTraits(.isButton)
     }
 
     /// One process. **The orange mark at the left is the core's `rising`**,
     /// and only where it says so.
-    private func processRow(_ p: U.Process) -> some View {
+    private func processRow(_ p: U.Process, indent: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text(U.rowName(p))
                 .foregroundStyle(theme.text.color)
                 .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.leading, CGFloat(Page.tableNameIndent))
+                // **The middle, not the tail**: a row's name is the
+                // terminal's title and then its id, and a tail cut would
+                // eat the id -- the half that says which terminal it is
+                // (task 3113).
+                .truncationMode(.middle)
+                .padding(.leading, CGFloat(Page.tableNameIndent) + indent)
                 .frame(width: CGFloat(Page.colName), alignment: .leading)
             cell(p.group ?? "—", width: CGFloat(Page.colGroup), align: .leading)
             Text(U.size(p.memMib))
@@ -601,7 +812,11 @@ struct ControlRoomOverallPage: View {
             Spacer(minLength: 0)
         }
         .padding(.trailing, CGFloat(Page.tablePadX))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        // The row's own height, as `groupRow` above (task 3090): a row that
+        // takes the whole table's height draws its line in the middle of the
+        // table and over every row under it.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: CGFloat(Page.tableRowHeight), alignment: .leading)
         // The orange mark at the left edge of a row that is rising, over the
         // whole row: the design's `tr.leak`.
         .overlay(alignment: .leading) {
@@ -651,7 +866,7 @@ struct ControlRoomOverallPage: View {
         let steady = String(localized: "→ steady", comment: "总控台：整体视图某一项没有在涨时，数字下面那一行")
         let notRead = String(localized: "not read", comment: "总控台：整体视图某一项读不到时的代替字")
         let chartTitle = String(localized: "Memory Polter is using", comment: "总控台：整体视图面积图的标题")
-        let chartSubtitle = String(localized: "GB, three layers stacked, the top edge is the total",
+        let chartSubtitle = String(localized: "GB, two layers stacked, the top edge is the total",
                                    comment: "总控台：整体视图面积图标题右边的小字")
         let swapTitle = String(localized: "Swap", comment: "总控台：整体视图第一条小曲线的标题")
         let swapSubtitle = String(localized: "the machine, last 24 hours",
@@ -665,25 +880,55 @@ struct ControlRoomOverallPage: View {
         let colHistory = String(localized: "Last 24 hours", comment: "总控台：整体视图进程表表头第四列")
         let colCpu = String(localized: "CPU", comment: "总控台：整体视图进程表表头第五列")
         let colPid = String(localized: "Process ID", comment: "总控台：整体视图进程表表头第六列")
+        /// **The heading for the rows in no group** (task 3119): a terminal
+        /// nobody has put in one is still a terminal, and the layer says so
+        /// rather than being dropped. The fact (the core's `group: ""`) is
+        /// the core's; these are the host's words for it, and the same
+        /// string the control room already calls a thing in no group.
+        let noGroup = String(localized: "No group", comment: "总控台：整体视图进程表，不属于任何群的终端那一层的标题")
 
-        /// The three groups' names, **from the core's own category**: the
-        /// words are the host's, and which category is which is not.
+        /// The two category headings' names, **from the core's own
+        /// category**: the words are the host's, and which category is
+        /// which is not.
+        ///
+        /// **There is no heading over the terminals** (task 3113, second
+        /// round): each terminal is its own group, named by the terminal
+        /// itself (`U.rowName`). The case for a `terminals` heading is kept
+        /// for an answer that still carries one; this core does not.
         func sectionName(_ category: String) -> String {
             switch category {
             case "chats": String(localized: "Embedded chats", comment: "总控台：整体视图进程表第二组")
-            case "sidecars": String(localized: "MCP sidecars", comment: "总控台：整体视图进程表第三组")
+            case "terminals": String(localized: "Terminals", comment: "总控台：整体视图进程表里终端那一组的标题，只有旧答复会带这一组")
             default: String(localized: "The main process", comment: "总控台：整体视图进程表第一组")
             }
         }
 
-        /// The legend's three words, from the same three categories.
+        /// The legend's words (task 3113, second round: **two layers**) --
+        /// the main process, and the terminals, chats and workers in one
+        /// band. The `chats` case is what a one-release-older answer's
+        /// legend says; `terminals` is what this core sends.
         func layerName(_ name: String) -> String {
             switch name {
-            case "chats": String(localized: "Embedded chats", comment: "总控台：整体视图面积图图例第二项")
-            case "sidecars": String(localized: "MCP sidecars", comment: "总控台：整体视图面积图图例第三项")
+            case "chats": String(localized: "Embedded chats", comment: "总控台：整体视图面积图图例第二项，只有旧答复会带这一层")
+            case "terminals": String(localized: "Terminals", comment: "总控台：整体视图面积图图例第二项，这一层是各终端和群聊的整棵树")
             default: String(localized: "The main process", comment: "总控台：整体视图面积图图例第一项")
             }
         }
+
+        /// **How many of a terminal's processes the list did not show**
+        /// (task 3113, second round): the number is the core's, the words
+        /// are the host's.
+        func moreProcesses(_ n: UInt64) -> String {
+            String(format: String(localized: "and %d more processes",
+                                  comment: "总控台：整体视图进程表，一个终端下面的进程只列了最重的若干个，这一行说还有多少没列"),
+                   Int(n))
+        }
+
+        /// What a group's line says to a screen reader when it is closed
+        /// or open: the words are the host's, the count beside them is the
+        /// core's.
+        let collapsed = String(localized: "collapsed", comment: "总控台：整体视图进程表，被收起的组，读屏念的值")
+        let expanded = String(localized: "expanded", comment: "总控台：整体视图进程表，展开的组，读屏念的值")
 
         /// The rate the core worked out, with its own sign: the arrow is
         /// drawn only while it is rising, which is the core's verdict.

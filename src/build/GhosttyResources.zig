@@ -125,6 +125,28 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         try steps.append(b.allocator, &install_step.step);
     }
 
+    // The group chat transcript page (task 3084).
+    //
+    // **One page, shipped as files**, the way the skills and plugins are: the
+    // mac host serves it over its own scheme out of the bundle's resources,
+    // and the Windows host embeds the same directory at compile time. Both
+    // hosts read `web/chat/` from the repository, so there is one copy and
+    // no build step that could make the two disagree byte for byte.
+    //
+    // Found as `<resources dir>/polter-chat/index.html`; the scheme handler
+    // in `ControlRoomChatPage.swift` is the only reader. `CONTRACT.md` is
+    // the wire contract, not an asset, so it is left out -- as are any
+    // `.md` files that would otherwise ride along.
+    {
+        const install_step = b.addInstallDirectory(.{
+            .source_dir = b.path("web/chat"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = "polter-chat",
+            .exclude_extensions = &.{".md"},
+        });
+        try steps.append(b.allocator, &install_step.step);
+    }
+
     // Poltergeist skills
     //
     // Shipped as files rather than compiled in, because the whole point of

@@ -51,6 +51,7 @@ use polter_settings_shell::plugins::PageState as settings_shell_page_state;
 use polter_split_tree::Rect as TreeRect;
 
 use crate::chat_feed::{self, Action, Envelope, Feed, Kind};
+use crate::chat_page;
 use crate::chat_read::{self, Transport, TransportError};
 use crate::ffi::Surface;
 use crate::preview_page;
@@ -441,6 +442,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             });
             LRESULT(0)
         }
+        chat_page::WM_CHAT_PAGE => {
+            page_events(hwnd);
+            LRESULT(0)
+        }
         WM_KEYDOWN => {
             if search_key(hwnd, wp.0 as u16) {
                 return LRESULT(0);
@@ -742,6 +747,9 @@ fn close(mut chat: Chat, why: &str) {
     // adopted is closed here too.
     crate::preview_page::flush_deferred();
     crate::preview_page::close_all_for_parent(hwnd);
+    // The transcript page is a child of this window: its controller goes
+    // before the parent it was made for.
+    chat_page::close(hwnd);
     for token in tickets {
         crate::preview_page::close_unowned(&token);
     }
@@ -804,6 +812,9 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
     let mut show: Vec<(isize, TreeRect, bool)> = Vec::new();
     let mut hide: Vec<isize> = Vec::new();
     let mut gone: Vec<Chat> = Vec::new();
+    // **The page is made after the borrow**: creating a WebView2 environment
+    // or controller is not a thing to do with the chat registry held.
+    let mut open_pages: Vec<isize> = Vec::new();
     let mut cancels: Vec<String> = Vec::new();
     // Tickets a hidden page's feed handed back: the timer is about to stop,
     // so no tick can drain them after this borrow.
@@ -861,6 +872,10 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                         let _ = unsafe {
                             SetTimer(Some(HWND(x.hwnd as *mut c_void)), CHAT_TIMER, TICK_MS, None)
                         };
+                        // **The page for this page of the room**: one child
+                        // window inside it, made once and kept while the
+                        // chat is hidden. Made after this borrow.
+                        open_pages.push(x.hwnd);
                     }
                 }
                 _ => {
@@ -906,6 +921,7 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
                             tickets.extend(feed.take_orphan_references());
                         }
                         crate::preview_page::hide_all_for_parent(HWND(x.hwnd as *mut c_void));
+                        chat_page::hide(HWND(x.hwnd as *mut c_void));
                         let _ = unsafe { KillTimer(Some(HWND(x.hwnd as *mut c_void)), CHAT_TIMER) };
                         hide.push(x.hwnd);
                     }
@@ -926,6 +942,12 @@ pub fn place(frame: HWND, at: Option<TreeRect>) {
             gone.push(c.remove(oldest));
         }
     });
+
+    // A page made after the registry is let go: WebView2's own state is not
+    // the chat model, and its callbacks come back through their own windows.
+    for hwnd in open_pages {
+        chat_page::open(HWND(hwnd as *mut c_void));
+    }
 
     // Cancels taken under the borrow are sent after it: one ABI call at a
     // time, never inside the state machine's own bookkeeping.
@@ -2041,6 +2063,12 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
     let _ = ps;
     let dark = unsafe { crate::termcolor::chrome(GetAncestor(hwnd, GA_ROOT)).dark };
     let theme = look::theme(dark);
+    // **The page's palette is this window's** (`CONTRACT.md` §3.9): the same
+    // `look::Theme` the native drawing uses, sent whole every time it
+    // changes. The page keeps its built-in skin until it hears.
+    if chat_page::enabled() {
+        chat_page::theme(hwnd, page_theme(&theme));
+    }
     let mut client = windows::Win32::Foundation::RECT::default();
     let _ = unsafe { GetClientRect(hwnd, &mut client) };
     unsafe {
@@ -2063,6 +2091,9 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
     }
 
     let key = hwnd.0 as isize;
+    // **The page's geometry is applied after the borrow** (`None` = take it
+    // off screen): a WebView2 call is not made with the chat registry held.
+    let mut page_rect: Option<Option<windows::Win32::Foundation::RECT>> = None;
     CHATS.with(|c| {
         let Ok(mut c) = c.try_borrow_mut() else {
             return;
@@ -2115,6 +2146,42 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             *brief_open,
         );
         let width = msg.width;
+        // **The page is the transcript now** (task 3086): the WebView2 child
+        // covers the rows, and this window keeps the header, the search box
+        // and the side panel. It is taken off screen while a preview or a
+        // popover owns that rectangle, and while there are no rows -- then
+        // the empty/loading sentence is still the native one.
+        //
+        // **Covered, the panel is on top of the column**, so the page stops
+        // where the panel begins; a child window would otherwise cover the
+        // panel instead of being covered by it.
+        if chat_page::enabled() {
+            // **The page takes the scrollbar's strip too**: v3's transcript
+            // has no scrollbar at all, and the old bar is drawn where the
+            // page now sits rather than beside it.
+            let bar_w = (chat_rows::BAR_W_PT * metrics.scale).round().max(1.0) as i32;
+            let bar_gap = (chat_rows::BAR_GAP_PT * metrics.scale).round().max(0.0) as i32;
+            let mut right = msg.left + msg.width + bar_w + bar_gap;
+            if *side_mode != SidebarMode::Closed
+                && !side_by_side(&metrics, client.right - client.left)
+            {
+                right = right.min(panel_left(&client, side_w));
+            }
+            let shown = !feed.rows().is_empty()
+                && *side_mode != SidebarMode::Preview
+                && !*members_open
+                && right > msg.left;
+            page_rect = Some(if shown {
+                Some(windows::Win32::Foundation::RECT {
+                    left: msg.left,
+                    top: msg.top,
+                    right,
+                    bottom: msg.top + msg.height,
+                })
+            } else {
+                None
+            });
+        }
         let meta = feed.metadata();
         let header = paint_header(
             dc,
@@ -2539,6 +2606,13 @@ fn paint(hwnd: HWND, dc: HDC, ps: &PAINTSTRUCT) {
             );
         }
     });
+
+    // The page's geometry now that the chat registry is let go.
+    if let Some(rect) = page_rect {
+        if chat_page::enabled() {
+            chat_page::place_page(hwnd, rect);
+        }
+    }
 
     unsafe {
         SelectObject(dc, old);
@@ -6421,6 +6495,12 @@ fn jump_to(chat: &mut Chat, id: &str, view_h: i32) {
     });
     chat.pinned = false;
     project(chat, view_h);
+    // **The page scrolls itself**: a search result (or "back to latest")
+    // that only moved the native camera would leave the visible page where
+    // it was. `page.locate` is the same request in the page's words.
+    if chat_page::enabled() {
+        chat_page::locate(HWND(chat.hwnd as *mut c_void), id);
+    }
 }
 
 /// `jump_to`, addressed the way the core names a message: by its anchor,
@@ -6513,6 +6593,437 @@ fn prefetch(chat: &mut Chat, now: u64, from_input: bool) {
 /// nothing at all when the body was cleared (B2 M2).
 fn republish(hwnd: HWND) {
     publish_heights(hwnd);
+    // **Every row change goes out to the page from here**, the same funnel
+    // the native map is rebuilt in: a first page, an older block, a live
+    // append and a return to the latest all land through it.
+    sync_page(hwnd);
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+// -- the transcript page (task 3086) ---------------------------------------
+
+/// A `look::Rgba` as the CSS the page injects (`CONTRACT.md` §3.9). The
+/// alpha threshold is the macOS host's: a colour that is effectively opaque
+/// is written as `#rrggbb`, one that is not keeps its `rgba()`.
+fn page_css(color: look::Rgba) -> String {
+    if color.a >= 0.999 {
+        format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+    } else {
+        format!("rgba({}, {}, {}, {:.3})", color.r, color.g, color.b, color.a)
+    }
+}
+
+/// The page's complete variable set, from the same theme the native drawing
+/// uses. **Complete every time**: the page removes the previous injection
+/// wholesale, so a key left out would fall back to its built-in value.
+fn page_theme(theme: &look::Theme) -> serde_json::Value {
+    chat_page::theme_object(
+        if theme.dark { "dark" } else { "light" },
+        serde_json::json!({
+            "--bg": page_css(theme.window_base),
+            "--bg-code": page_css(theme.terminal_background),
+            "--fg": page_css(theme.text),
+            "--muted": page_css(theme.text_secondary),
+            "--rule": page_css(theme.line),
+            "--rule-soft": page_css(theme.line_faint),
+            "--accent": page_css(theme.pane_blue),
+            "--link": page_css(theme.pane_blue),
+            "--who-supervisor": page_css(theme.pane_purple),
+            "--who-user": page_css(theme.pane_green),
+            "--font-size": format!("{}px", look::font::BODY.round()),
+        }),
+    )
+}
+
+/// The interface's language, as a POSIX locale (`CONTRACT.md` §9): `en…`
+/// gets English, everything else Chinese. The saved choice wins; otherwise
+/// the Windows UI language says.
+fn page_locale() -> String {
+    if let Some(language) = crate::language::selected() {
+        return language.posix_locale().to_owned();
+    }
+    // 0x09 is the primary language id for English; the low ten bits are the
+    // primary language, the rest a sublanguage.
+    let english = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() } & 0x3ff
+        == 0x09;
+    if english {
+        "en_US.UTF-8".to_owned()
+    } else {
+        "zh_CN.UTF-8".to_owned()
+    }
+}
+
+/// What a row is drawn as, in the shape the speaker rule compares. The
+/// macOS host's rule (`ControlRoomChatPresentation.authorText`): a recorded
+/// author, else "you" for a message this machine sent, else nothing.
+fn page_author(message: &chat_read::Message) -> String {
+    if !message.author.is_empty() {
+        return message.author.clone();
+    }
+    if message.from_self {
+        return crate::i18n::tr("you");
+    }
+    String::new()
+}
+
+/// The feed's rows, as the page's messages (`CONTRACT.md` §2.1).
+///
+/// **`text` is the raw Markdown**, not a rendered block: the page parses it
+/// once, and that is what the page is for. `dayBreak` and `speakerRule` are
+/// decided here, where the neighbouring rows are known -- the page only
+/// draws the hairline it is told to. The speaker is
+/// `(author, role, channel, summary)` as on macOS: a new role or a new
+/// channel is a change of subject under one name.
+fn page_snapshot(hwnd: HWND) -> Option<chat_page::Snapshot> {
+    CHATS.with(|c| {
+        let c = c.try_borrow().ok()?;
+        let chat = c.iter().find(|x| x.hwnd == hwnd.0 as isize)?;
+        let feed = chat.feed.as_ref()?;
+        let mut prev_day: Option<i64> = None;
+        let mut prev_speaker: Option<(String, Option<String>, u64, bool)> = None;
+        let mut messages = Vec::with_capacity(feed.rows().len());
+        for row in feed.rows() {
+            let message = &row.message;
+            let day = local_parts(message.at_ms).map(|p| chat_meta::day_key(&p));
+            let day_break = day
+                .map(|d| chat_meta::starts_day(prev_day, d))
+                .unwrap_or(false);
+            if let Some(d) = day {
+                prev_day = Some(d);
+            }
+            let speaker = (
+                page_author(message),
+                message.role.clone().filter(|r| !r.is_empty()),
+                message.channel,
+                message.summary,
+            );
+            let speaker_rule = !day_break
+                && prev_speaker
+                    .as_ref()
+                    .is_some_and(|previous| *previous != speaker);
+            prev_speaker = Some(speaker.clone());
+            let mut value = serde_json::json!({
+                "id": row.id,
+                "seq": message.seq,
+                "at": message.at_ms,
+                "author": speaker.0,
+                "text": message.text,
+                "dayBreak": day_break,
+                "speakerRule": speaker_rule,
+            });
+            if let Some(role) = speaker.1.as_deref() {
+                value["role"] = serde_json::json!(role);
+            }
+            messages.push((row.id.clone(), value));
+        }
+        // **`End` and `Gap` are the start of the record; everything else is
+        // "not yet known", and the page's default is "there is more".**
+        let has_earlier = !matches!(
+            feed.older(),
+            chat_feed::OlderState::End
+                | chat_feed::OlderState::Gap
+                | chat_feed::OlderState::Cancelled
+                | chat_feed::OlderState::Failed(_)
+        );
+        // ⚠️ **Known gap (task 3098): the first screen has no
+        // `page.reset.error` on this host.** A first history read that fails
+        // is still drawn as an empty group; only the older (`page.prepend`)
+        // direction carries a reason. The three real-machine readings this
+        // task fixes are mac ① (first screen) and Windows ②/③ (pagination and
+        // images), so the Windows first-screen error is left for the round
+        // that decides whether to add a load-failure state here.
+        //
+        // **A failed read and a running one are two different answers**
+        // (task 3098). `sync` may only send the empty `page.prepend` once the
+        // scan has stopped, and it must carry the reason when the stop was a
+        // failure -- otherwise the page prints "start of history" over a read
+        // that never happened.
+        let (older_settled, older_error) = match feed.older() {
+            chat_feed::OlderState::Loading => (false, None),
+            chat_feed::OlderState::Failed(why) => (true, Some(why.clone())),
+            chat_feed::OlderState::Gap => (
+                true,
+                Some("some earlier chat records could not be read".to_owned()),
+            ),
+            _ => (true, None),
+        };
+        Some(chat_page::Snapshot {
+            messages,
+            has_earlier,
+            older_settled,
+            older_error,
+            locale: page_locale(),
+        })
+    })
+}
+
+/// Send the feed's rows to the page, if it is the thing on screen. Called
+/// from `republish`, the one funnel every synchronous row change goes
+/// through.
+fn sync_page(hwnd: HWND) {
+    if !chat_page::enabled() {
+        return;
+    }
+    if let Some(snapshot) = page_snapshot(hwnd) {
+        chat_page::sync(hwnd, snapshot);
+    }
+}
+
+/// The page's questions, drained from the posted `WM_CHAT_PAGE` rather than
+/// answered inside the WebView2 callback.
+fn page_events(hwnd: HWND) {
+    use chat_page::Event;
+    for event in chat_page::take_events(hwnd) {
+        match event {
+            Event::LoadOlder => ask_older(hwnd),
+            Event::OpenLink(href) => open_page_link(hwnd, &href),
+            Event::OpenImage(src) => open_page_image(hwnd, &src),
+            Event::ImageTicket { src, id } => {
+                match chat_page::image_payload(&src) {
+                    Some(payload) => chat_page::send_image(hwnd, payload),
+                    None => {
+                        // **A failure is an answer** (task 3098): the page
+                        // turns the placeholder into a clickable file link.
+                        // Silence left only the alt text.
+                        chat_page::send_not_image(hwnd, &src);
+                        plogf!(
+                            "[chat-page] imageTicket id={} src={:?}: not an image, sent page.notImage",
+                            id,
+                            page_short(&src)
+                        );
+                    }
+                }
+            }
+            Event::Follow { follow, pending } => {
+                // Logged for now (task 3086); the feed's prefetch is still
+                // driven by the native scroll state.
+                plogf!("[chat-page] follow={} pending={}", follow, pending);
+            }
+            Event::Menu { id, x, y } => {
+                plogf!("[chat-page] menu id={} at ({}, {})", id, x, y);
+            }
+            Event::Copy(text) => {
+                plogf!("[chat-page] copy {} chars", text.chars().count());
+            }
+            Event::Error(message) => {
+                plogf!("[chat-page] page error: {}", message);
+            }
+            Event::Unknown(kind) => {
+                plogf!("[chat-page] bridge: unknown {}", kind);
+            }
+        }
+    }
+}
+
+/// One older block, through the same state machine the native scroll edge
+/// uses (`prefetch`): the feed keeps one request outstanding, and the
+/// answer comes back through the ordinary tick.
+fn ask_older(hwnd: HWND) {
+    let now = now_ms();
+    let mut asked = false;
+    // **A `chat.loadOlder` is always answered with one `page.prepend`**
+    // (task 3098). While a scan runs, the answer is the prepend it brings;
+    // when there is nothing to ask, the empty prepend goes now -- and it
+    // says why when the last read failed. Silence was the defect: the page
+    // kept its loading indicator and asked again on the next scroll.
+    let mut answer: Option<(bool, Option<String>)> = None;
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return;
+        };
+        let rows_before = chat.layout.rows().len();
+        if let Some(feed) = chat.feed.as_mut() {
+            if feed.can_load_older() {
+                if let Some(id) = next_request_id() {
+                    asked = feed.load_older(id, now);
+                }
+            }
+            if !asked {
+                match feed.older() {
+                    // A scan is already out: its answer is on its way.
+                    chat_feed::OlderState::Loading => {}
+                    state => {
+                        let has_earlier = !matches!(
+                            state,
+                            chat_feed::OlderState::End
+                                | chat_feed::OlderState::Gap
+                                | chat_feed::OlderState::Cancelled
+                                | chat_feed::OlderState::Failed(_)
+                        );
+                        let error = match state {
+                            chat_feed::OlderState::Failed(why) => Some(why.clone()),
+                            chat_feed::OlderState::Gap => Some(
+                                "some earlier chat records could not be read".to_owned(),
+                            ),
+                            _ => None,
+                        };
+                        answer = Some((has_earlier, error));
+                    }
+                }
+            }
+        }
+        if asked {
+            chat.block_asked = Some((now, rows_before));
+        }
+    });
+    if asked {
+        chat_page::await_prepend(hwnd);
+    } else if let Some((has_earlier, error)) = answer {
+        chat_page::answer_older(hwnd, has_earlier, error.as_deref());
+    } else {
+        // Still loading: this request joins the one already out.
+        chat_page::await_prepend(hwnd);
+    }
+}
+
+/// A log line is not a place to print a 2,000-character reference.
+fn page_short(text: &str) -> String {
+    if text.chars().count() <= 120 {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(120).collect();
+    format!("{head}…")
+}
+
+/// Percent-decode, or `None` for a malformed escape. The page hands over
+/// the href as written; a destination with a space is `%20` in one place and
+/// not in the other, and the row is found either way.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = *bytes.get(i + 1)?;
+            let lo = *bytes.get(i + 2)?;
+            let value = u8::from_str_radix(std::str::from_utf8(&[hi, lo]).ok()?, 16).ok()?;
+            out.push(value);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A picture the page says was clicked (`chat.openImage`, `CONTRACT.md`
+/// §4.8).
+///
+/// **This is the one place a chat path leaves the workdir boundary on
+/// purpose** -- the Windows half of the macOS `ControlRoomChatTranscriptPage
+/// .openImage`. Every other local path a message names is resolved by the
+/// core, and its ticket is judged against the chat's workdir
+/// (`files/Tickets.zig`), so a picture kept outside it is refused there by
+/// design; that is why clicking one used to end in a preview that said it
+/// could not read the path. A picture the transcript already drew is
+/// different: this host read those bytes to draw it, so "open" means handing
+/// the same file to the person's own viewer.
+///
+/// **Only a picture, and only by this host's own reading**:
+/// `chat_page::local_image_path` checks the file's signature, never the
+/// page's extension or its word. A non-picture is logged and dropped, so this
+/// adds no route for opening arbitrary local files with a system program.
+fn open_page_image(hwnd: HWND, src: &str) {
+    let Some(path) = crate::chat_page::local_image_path(src) else {
+        plogf!("[chat-page] image: click not opened {:?}", page_short(src));
+        return;
+    };
+    plogf!("[chat-page] image: click opened {:?}", page_short(&path));
+    let _ = crate::links::on_open_url(
+        Some(hwnd),
+        crate::ffi::OPEN_URL_KIND_TEXT,
+        Some(path),
+    );
+}
+
+/// A link the page drew, answered the way a native row answers its own
+/// (`ControlRoomChatTranscriptPage.openWebLink` on the macOS host).
+///
+/// **The wire carries the href but not the message it was drawn in**
+/// (`CONTRACT.md` §4.4), so the message is the newest row whose raw
+/// Markdown carries that destination. An external address goes to the
+/// system browser; a file or terminal reference goes to the side panel
+/// through the same `start_preview` a click on a native row uses.
+fn open_page_link(hwnd: HWND, href: &str) {
+    // A `data:` URL is one this host produced, and the rest are schemes the
+    // page itself may load -- none of them is a reference.
+    if href.is_empty()
+        || href.starts_with("data:")
+        || href.starts_with("polter-chat:")
+        || href.starts_with("polter-file:")
+    {
+        return;
+    }
+    let decoded = percent_decode(href).unwrap_or_else(|| href.to_owned());
+    // **A link that points at a picture is not a file to preview, and is not
+    // opened here either.** The reference preview asks the core for a ticket
+    // judged against the chat's workdir, so a picture kept outside it is
+    // refused there by design, and the panel then says it cannot read the
+    // path (the person's 2026-11-09 reading: "This file cannot be
+    // previewed.") -- this host was the half that still fell into that. The
+    // macOS host's `openWebLink` already ignores an image path here, so
+    // ignoring it is the same answer on both hosts. A picture the person
+    // actually *clicked* is a different message (`chat.openImage`, §4.8),
+    // opened only after this host has read the file's own header; keeping the
+    // two apart is what stops a link from becoming a way to launch local
+    // files.
+    if crate::chat_page::local_image_path(&decoded).is_some()
+        || crate::chat_page::local_image_path(href).is_some()
+    {
+        plogf!(
+            "[chat-page] link: image path ignored {:?}",
+            page_short(href)
+        );
+        return;
+    }
+    let found = CHATS.with(|c| {
+        let c = c.try_borrow().ok()?;
+        let chat = c.iter().find(|x| x.hwnd == hwnd.0 as isize)?;
+        let feed = chat.feed.as_ref()?;
+        feed.rows()
+            .iter()
+            .rev()
+            .find(|row| {
+                row.message.text.contains(href) || row.message.text.contains(&decoded)
+            })
+            .map(|row| (row.message.anchor.clone(), row.message.location.clone()))
+    });
+    let head = href.get(..8).unwrap_or(href).to_ascii_lowercase();
+    let external = head.starts_with("http://")
+        || head.starts_with("https://")
+        || head.starts_with("mailto:");
+    if external {
+        plogf!(
+            "[chat-page] link: external {:?} handed to the system browser",
+            page_short(href)
+        );
+        let _ = crate::links::on_open_url(
+            None,
+            crate::ffi::OPEN_URL_KIND_TEXT,
+            Some(href.to_owned()),
+        );
+        return;
+    }
+    let Some((anchor, location)) = found else {
+        plogf!(
+            "[chat-page] link: no message carries {:?}",
+            page_short(href)
+        );
+        return;
+    };
+    CHATS.with(|c| {
+        let Ok(mut c) = c.try_borrow_mut() else {
+            return;
+        };
+        let Some(chat) = c.iter_mut().find(|x| x.hwnd == hwnd.0 as isize) else {
+            return;
+        };
+        start_preview(chat, anchor, location, href.to_owned());
+    });
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
@@ -7268,6 +7779,11 @@ fn tick(hwnd: HWND) {
             feed.rows().first().map(|r| r.id.clone()),
             feed.rows().last().map(|r| r.id.clone()),
         );
+        // **An older page that brings no rows still changes the answer**
+        // (task 3098): reaching the beginning (or failing) is a state the
+        // page must be told about, and it is not a row change. Without this
+        // the last `chat.loadOlder` got no `page.prepend` at all.
+        let older_before = feed.older().clone();
         let owed = match kind {
             Kind::Begin => feed.accept_begin(&envelope, transport, now),
             Kind::Live => feed.accept_live(&envelope, transport, now),
@@ -7283,7 +7799,8 @@ fn tick(hwnd: HWND) {
             != (
                 feed.rows().first().map(|r| r.id.clone()),
                 feed.rows().last().map(|r| r.id.clone()),
-            );
+            )
+            || older_before != *feed.older();
         if let Some(Action::Cancel { request }) = owed {
             // **A hidden page has no tick to owe it to.** The timer was
             // killed when it left, so a cancel the stale reply produced is

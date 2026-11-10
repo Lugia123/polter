@@ -154,7 +154,7 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `session_recall()`          | 无         | 上次关机前写下的现场材料，只读，没有任何东西照它接线 | 总管     |
 | `skill_read(name)`          | skill 名   | 那份 skill 的正文                                  | 全部     |
 | `config_get(key?)`          | 配置键，省略为全部 | 用户配了什么，只读                        | 总管     |
-| `resource_overview(group?, pid?)` | 群名，或进程号 | Polter 自己各进程（总管、内嵌群聊、MCP 边车、监控自己）的内存、CPU、「在涨」判定与最近 24 小时；整机内存/交换区/磁盘，磁盘带 15 GB 线；每个群的合计、任务数与记录大小。给 `group` 只要那一群，给 `pid` 只要那一个进程并带 24 小时的点 | 全部 |
+| `resource_overview(group?, pid?)` | 群名，或进程号 | Polter 自己各进程（主进程、内嵌群聊、**每个有进程的 worker 终端**、监控自己）的内存、CPU、「在涨」判定与最近 24 小时；整机内存/交换区/磁盘，磁盘带 15 GB 线；每个群的合计、任务数与记录大小。给 `group` 只要那一群，给 `pid` 只要那一个进程并带 24 小时的点。**终端那一行是它整棵进程树**（task 3113：agent CLI、它起的构建、`polter +mcp` 一起，与群性能页对同一终端的口径一致；有没有 `+mcp` 都有行），行上带 `terminal`（16 位 `0x…`）、`terminal_title` 和 `children`（这棵树里最重的至多 12 个进程：`pid`/`name`/`mem_mib`）。行的 `kind` 是 `terminal`、`category` 是 `terminals`；面积图两层（`main`、`terminals`） | 全部 |
 | `plugin_list(key?)`         | 插件名，省略为全部 | 每插件一行：装没装、开没开、**订阅了什么**、声明调什么、参数以什么形式配着；有实例在跑的另带 `state` / `cursor` / `failures` / `restart_pending`（在跑的那份是用另一套设置起的，重启后才生效）；这一版没发却留在 bundle 里的带 `stray: true` | 总管 |
 
 **`plugin_list` 的脱敏规则，三条，穷尽：**
@@ -217,6 +217,19 @@ connect 探测对活着的那一头是**无声的**：它看到的是一个握�
 | `cwd` / `title` | 在哪儿干活、tab 叫什么 | 总在 |
 | `quiet_ms` | 屏幕静止了多久 | 没人在量它时**整个字段不出现** |
 | `rounds` | 自上次动起来以来被报过几轮 | 同上 |
+| `shown` | 宿主是否还把它放在能显示它的窗口 / tab 里（`false` = 已经从每个窗口拿掉了） | 总在 |
+
+**`shown` 不是从 `window` 推出来的，这是它存在的理由。** `window` / `tab` 为 null
+有两种完全不同的意思：这个终端不在任何 tab 里，**或者**这个 apprt 根本不回答那个
+问题（GTK 就是，所以 Linux 上每个终端都是 null）。拿 null 当「关了」会凭空发明一个
+安排，拿它当「不知道」就看不见一个已经关掉的终端。`shown` 只认宿主自己说的话
+（`ghostty_surface_poltergeist_housed` → `Bus.noteUnhoused`），**没有人说过 = `true`**。
+
+⚠️ **`false` 不是「没了」。** 一个 pane 被关掉后，mac 会把它里面的终端留着（给撤销，
+实际上往往更久，见 issue #25）：`terminal_read` 仍读得到它、它的 shell 可能还在跑、
+`resources` 仍在数它的进程。它是一个**看不见的座位**，不是一个关失败的 pane——而它
+正是「收工后的空席位」留在 `terminal_list` 里的样子。`terminal_action` 的三个关闭在
+回复正文里也说这件事（`shown:true` 还在 tab 里，`shown:false` 已不在任何窗口）。
 
 **「没有这个字段」不是「这个字段是 0」。** Zig 侧的类型是 `?u64`，而
 `wire.writeTerminal` 在它为 null 时**根本不写这个键**（不是写一个 `null`）——所以

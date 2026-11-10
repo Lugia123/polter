@@ -13,8 +13,9 @@ struct ControlRoomChatTransportTests {
 
     // MARK: - One call, one buffer
 
-    /// **The call happens exactly once**, and the buffer it is handed is the
-    /// one fixed size this host uses: 96 KiB of body plus the NUL.
+    /// **A reply within the core's own budget costs one call**, in a buffer
+    /// of 96 KiB + 1: the first size is the core's page budget, and the
+    /// second call is only for a live page above it.
     @Test func testTheCoreIsCalledOnceInTheFixedBuffer() {
         let request = #"{"method":"group_read","params":{"group":"polter","since":7}}"#
         var calls = 0
@@ -50,15 +51,92 @@ struct ControlRoomChatTransportTests {
         }
     }
 
-    /// Needing one byte more than the buffer holds is refused **without
-    /// parsing**: the buffer is filled with bytes that are not UTF-8, and
-    /// the refusal is about the length, not about the bytes.
-    @Test func testOneByteTooManyIsRefusedWithoutParsing() {
+    /// **One byte over the core's budget is now an answer, not a refusal**
+    /// (the user's `chat read needs 104317 bytes; the buffer holds 98304`).
+    /// The first call is asked at 96 KiB + 1; the reply's length is the
+    /// signal to grow, and the same request is asked again at that length.
+    @Test func testAReplyOverTheBudgetIsReadAtItsOwnSize() {
+        // The user's own reading, kept as the shape this exists for.
+        let needed = 104_317
+        var calls = 0
+        var firstCapacity = 0
+        var secondCapacity = 0
         let outcome = Transport.read("{}") { _, out in
-            out[0] = CChar(bitPattern: 0xFF)
-            return Transport.bodyLimit + 1
+            calls += 1
+            if calls == 1 {
+                firstCapacity = out.count
+                return needed           // does not fit: nothing written
+            }
+            secondCapacity = out.count
+            for i in 0..<needed { out[i] = CChar(bitPattern: UInt8(ascii: "a")) }
+            return needed
         }
-        #expect(outcome == .refused("chat read needs \(Transport.bodyLimit + 1) bytes; the buffer holds \(Transport.bodyLimit)"))
+        #expect(calls == 2)
+        #expect(firstCapacity == Transport.bodyLimit + 1)
+        #expect(secondCapacity == needed + 1)
+        if case let .answer(text) = outcome {
+            #expect(text.utf8.count == needed)
+        } else {
+            Issue.record("expected an answer, got \(outcome)")
+        }
+    }
+
+    /// **The live ceiling is 4 MiB, and a reply past it is refused with both
+    /// numbers named.** The buffer is filled with bytes that are not UTF-8,
+    /// so the refusal is provably about the length and not about the bytes;
+    /// and nothing past the first call is written or parsed.
+    @Test func testAReplyOverFourMiBIsRefusedByNameAndIsNotParsed() {
+        var calls = 0
+        let outcome = Transport.read("{}") { _, out in
+            calls += 1
+            out[0] = CChar(bitPattern: 0xFF)
+            return Transport.maxBodyLimit + 1
+        }
+        #expect(calls == 1)
+        #expect(outcome == .refused(
+            "chat read needs \(Transport.maxBodyLimit + 1) bytes; the cap is \(Transport.maxBodyLimit)"))
+    }
+
+    /// A live read can gain a message between the two calls: a length that
+    /// grew is asked again, and the answer is the one that fit.
+    @Test func testAReplyThatGrowsBetweenCallsIsAskedAgain() {
+        let first = Transport.bodyLimit + 1
+        let second = Transport.bodyLimit + 10
+        var calls = 0
+        let outcome = Transport.read("{}") { _, out in
+            calls += 1
+            switch calls {
+            case 1:
+                return first            // fits nowhere in 96 KiB + 1
+            case 2:
+                return second           // grew; 96 KiB + 2 is too small
+            default:
+                for i in 0..<second { out[i] = CChar(bitPattern: UInt8(ascii: "b")) }
+                return second
+            }
+        }
+        #expect(calls == 3)
+        if case let .answer(text) = outcome {
+            #expect(text.utf8.count == second)
+        } else {
+            Issue.record("expected an answer, got \(outcome)")
+        }
+    }
+
+    /// A reply that keeps growing is a caller to stop: it is refused after
+    /// `growAttempts` grows rather than asking for ever.
+    @Test func testAReplyThatKeepsGrowingIsStopped() {
+        var calls = 0
+        let outcome = Transport.read("{}") { _, out in
+            calls += 1
+            return out.count        // always one byte more than this buffer
+        }
+        #expect(calls == Transport.growAttempts + 1)
+        if case let .refused(why) = outcome {
+            #expect(why.hasPrefix("chat read kept growing; the last reading was "))
+        } else {
+            Issue.record("expected a refusal, got \(outcome)")
+        }
     }
 
     /// A negative injected reading is a transport failure, not a body.

@@ -180,9 +180,24 @@ final class ControlRoomChatFeed: ObservableObject {
     static let firstChunkFallback = 192
     /// **The later pages are their own size each time.** A page asks for
     /// what the five-screen margin is missing, with a floor so one round
-    /// trip brings back more than a handful; `ControlRoomChatWindow` computes
-    /// it and `loadOlder(limit:)` carries it.
-    static let olderChunkFloor = ControlRoomChatWindow.requestFloor
+    /// trip brings back more than a handful; `loadOlder(limit:)` carries it.
+    ///
+    /// **The numbers here were the chat window's** (design v3 §七): the
+    /// window, its ruler and its screens all went with the native list, and
+    /// what the feed actually uses of them is these four values, written
+    /// down where they are read.
+    static let requestFloor = 40
+    static let olderChunkFloor = ControlRoomChatFeed.requestFloor
+    /// **Twelve screens** of the rows the pane has measured, capped at 200:
+    /// the first screen is fetched whole (task 3016 R4), and no single
+    /// request may be bigger than the cap.
+    static let firstScreenScreens = 12.0
+    static let retainScreens = 12.0
+    static let maxRequestRows = 200
+    static func firstScreenRows(viewportRows: Int) -> Int {
+        let rows = Int((firstScreenScreens * Double(max(1, viewportRows))).rounded(.up))
+        return min(maxRequestRows, max(1, rows))
+    }
     /// The context page's own size. **Not the plain resume page's** (they
     /// are different questions and may be tuned apart). Its own window is
     /// around the located row, so the page is a screen and a half either
@@ -361,9 +376,12 @@ final class ControlRoomChatFeed: ObservableObject {
     /// top of the same row.
     private(set) var readingOffset: Double = 0
 
-    /// The position a re-displayed page restores to, if it has one.
-    var savedReading: ControlRoomChatCamera.Place? {
-        readingAnchor.map { ControlRoomChatCamera.Place(id: $0, offset: readingOffset) }
+    /// The position a re-displayed page restores to, if it has one. **The
+    /// container's own `Place`** (`ControlRoomChatReadingPlaces.Place`), not
+    /// the old view's camera place: the camera went with the native list
+    /// (design v3 §七) and all this ever needed was the id and the offset.
+    var savedReading: ControlRoomChatReadingPlaces.Place? {
+        readingAnchor.map { ControlRoomChatReadingPlaces.Place(id: $0, offset: readingOffset) }
     }
 
     /// **Whether a reader ever said where they were.** `readingAnchor` is also
@@ -378,12 +396,12 @@ final class ControlRoomChatFeed: ObservableObject {
     /// the chat is made again (task 3070). Nil for a chat that was never
     /// closed, which is every chat in the normal stop/start path: that path
     /// keeps `readingAnchor` and does not touch this.
-    private(set) var restoredPlace: ControlRoomChatCamera.Place?
+    private(set) var restoredPlace: ControlRoomChatReadingPlaces.Place?
 
     /// Seed a chat made again with the place its closed self was left at.
     /// **It also becomes the reading anchor**, so the stop/start path and the
     /// view's `savedReading` adopt see the same place.
-    func restore(_ place: ControlRoomChatCamera.Place) {
+    func restore(_ place: ControlRoomChatReadingPlaces.Place) {
         restoredPlace = place
         readingAnchor = place.id
         readingOffset = place.offset
@@ -415,6 +433,44 @@ final class ControlRoomChatFeed: ObservableObject {
         switch older {
         case .loading, .scanning: return false
         default: return true
+        }
+    }
+
+    /// **Whether the older scan has stopped** (task 3098). A `chat.loadOlder`
+    /// with no prepend while this is true is a failure to answer, not a wait.
+    /// Only the plain scan has a running state; a located window's cursor
+    /// answers a no-rows load as `reachedBeginning`.
+    var olderSettled: Bool {
+        // **A located window's cursor has no loading flag of its own.** Its
+        // "nothing older" answer arrives as `reachedBeginning`, and claiming
+        // settled here would let the bridge send an empty prepend while the
+        // context page is still out -- which the page reads as "start of
+        // history". False means "not known yet"; the page's own timeout is
+        // the fallback, not a false end.
+        if context != nil { return false }
+        switch older {
+        case .loading, .scanning: return false
+        default: return true
+        }
+    }
+
+    /// The first screen's failure as the page's `page.reset.error`
+    /// (task 3098), or nil when there is nothing to say.
+    var resetFailure: String? {
+        switch state {
+        case .failed(let why): return why
+        case .gap: return "some of the chat records could not be read"
+        case .idle, .loading, .ready, .empty, .cancelled: return nil
+        }
+    }
+
+    /// The older read's failure as the page's `page.prepend.error`
+    /// (task 3098).
+    var olderFailure: String? {
+        switch older {
+        case .failed(let why): return why
+        case .gap: return "some earlier chat records could not be read"
+        case .idle, .loading, .scanning, .atEnd, .cancelled: return nil
         }
     }
 
@@ -569,6 +625,23 @@ final class ControlRoomChatFeed: ObservableObject {
     /// have.
     private(set) var above: [Row] = []
     private(set) var below: [Row] = []
+
+    /// **The list is a web page's document, so a row it has been given may
+    /// not be dropped from under it** (task 3084). Set by the view when the
+    /// transcript page is the list.
+    ///
+    /// The native list can lose rows: its window is recomputed from measured
+    /// frames, so a row released at either end is redrawn as a boundary.
+    /// The page has no such machinery -- its DOM is what it was told, and it
+    /// can only be told "these are all the messages" (`page.reset`) or "here
+    /// are more/fewer at one end". So in this mode `trim` drops **only the
+    /// older apron**, which is the one run of rows the page never received;
+    /// the document itself never gives. Memory is therefore bounded by what
+    /// the reader has actually loaded, and a long scroll grows it: until
+    /// `page.trim {dropNewer|dropOlder, count}` exists, that is the trade
+    /// this mode makes rather than silently taking the newest messages away
+    /// (the person's 2026-11-09 reading: "最新的内容消失，且滚不出来").
+    var keepsWholeDocument = false
     /// How many rows are loaded outside the document, for the view's window
     /// arithmetic and for a test to read.
     var aboveCount: Int { above.count }
@@ -583,7 +656,7 @@ final class ControlRoomChatFeed: ObservableObject {
     /// cannot measure rows; it uses this to turn "half a screen" and a
     /// request's deficit into counts. **A measurement, not a constant**: the
     /// same margin is 250 rows of 16 pt and 13 rows of 300 pt (review C, M5).
-    var rowHeightEstimate = ControlRoomChatWindow.defaultRowHeight
+    var rowHeightEstimate = 50.0
     /// The locate job: around first, then one context page at a time.
     private var locateJobID: String?
     private var locateRequestID: String?
@@ -916,9 +989,9 @@ final class ControlRoomChatFeed: ObservableObject {
     /// same number, so the core's answer is the same question.
     private var firstScreenLimit: Int {
         let rows = viewportMeasured
-            ? ControlRoomChatWindow.firstScreenRows(viewportRows: viewportRows)
+            ? Self.firstScreenRows(viewportRows: viewportRows)
             : Self.firstChunkFallback
-        return min(ControlRoomChatWindow.maxRequestRows, max(1, rows))
+        return min(Self.maxRequestRows, max(1, rows))
     }
     /// The limit the bootstrap out now was sent with. **A retry of the same
     /// begin reuses it**, so the core is answering the same question even if
@@ -1306,13 +1379,24 @@ final class ControlRoomChatFeed: ObservableObject {
     // MARK: - Loading older pages
 
     /// The view is looking at `id` at its top edge. Told on every scroll that
-    /// moves it; the only reader is `trim`.
-    func reading(anchor id: String?, offset: Double = 0) {
+    /// moves it; the readers are `trim` and the close store.
+    ///
+    /// **`following` is "the reader is at the bottom", and it is not a
+    /// place.** The anchor still moves (trim needs it), but
+    /// `readingWasReported` is cleared, so the container keeps no place for
+    /// a group that was left at the newest: coming back to the bottom is the
+    /// right answer there, and storing the bottom as a row would land the
+    /// reader on an arbitrary line (task 3096 #4).
+    func reading(anchor id: String?, offset: Double = 0, following: Bool = false) {
         readingAnchor = id
         readingOffset = offset
         // **The view's own word** -- see `readingWasReported`: this is the
         // only writer that means "a reader was here".
-        if id != nil { readingWasReported = true }
+        if following {
+            readingWasReported = false
+        } else if id != nil {
+            readingWasReported = true
+        }
     }
 
     // MARK: - The window (task 3016 R4, amended by review C)
@@ -1390,7 +1474,7 @@ final class ControlRoomChatFeed: ObservableObject {
     func goToLatest() {
         guard started, !below.isEmpty else { return }
         let loaded = above + rows + below
-        let keep = max(1, Int(ControlRoomChatWindow.firstScreenScreens * Double(viewportRows)))
+        let keep = max(1, Int(Self.firstScreenScreens * Double(viewportRows)))
         let take = min(keep, loaded.count)
         above = Array(loaded.prefix(loaded.count - take))
         rows = Array(loaded.suffix(take))
@@ -1415,7 +1499,7 @@ final class ControlRoomChatFeed: ObservableObject {
         guard let index = loaded.firstIndex(where: { $0.id == target }) else {
             return false
         }
-        let keep = max(1, Int(ControlRoomChatWindow.retainScreens * Double(viewportRows)))
+        let keep = max(1, Int(Self.retainScreens * Double(viewportRows)))
         let start = max(0, min(index - keep / 2, loaded.count - keep))
         let end = min(loaded.count, start + keep)
         above = Array(loaded[..<start])
@@ -1455,22 +1539,32 @@ final class ControlRoomChatFeed: ObservableObject {
     /// `.ready` while an older page is out, `.loading` belongs to a first
     /// screen that has nothing to draw yet.
     ///
-    /// `limit` is **how many rows the five-screen margin is missing**, as
-    /// `ControlRoomChatWindow` computed it (review C, M6), not a fixed page:
-    /// a fixed hundred in a group of long messages is thirty screens sitting
-    /// in an apron.
-    func loadOlder(limit: Int = ControlRoomChatFeed.olderChunkFloor) {
-        guard started, group != nil, !olderCoolingDown else { return }
+    /// `limit` is **how many rows the five-screen margin is missing** (review
+    /// C, M6), not a fixed page: a fixed hundred in a group of long messages
+    /// is thirty screens sitting in an apron.
+    /// **What a caller asked for, answered rather than left to guess**
+    /// (task 3098). `.started` means a scan is out (or already was) and its
+    /// answer will be a page or a terminal state; `.nothing` means this feed
+    /// has nothing to ask -- the page's `page.prepend` must still be sent.
+    enum OlderStart: Equatable {
+        case started
+        case nothing
+    }
+
+    @discardableResult
+    func loadOlder(limit: Int = ControlRoomChatFeed.olderChunkFloor) -> OlderStart {
+        guard started, group != nil, !olderCoolingDown else { return .nothing }
         if context != nil {
             loadContextOlder()
-            return
+            return .started
         }
-        guard let token = historyTail?.nextToken else { return }
+        guard let token = historyTail?.nextToken else { return .nothing }
         switch older {
-        case .loading, .scanning: return
+        case .loading, .scanning: return .started
         default: break
         }
         beginContinuation(token: token, automatic: false, limit: limit)
+        return .started
     }
 
     /// **The view's one teleport primitive** (task 3016 §6). A row already in
@@ -2788,10 +2882,10 @@ final class ControlRoomChatFeed: ObservableObject {
         }
     }
 
-    /// **The memory ceiling** -- not the window's shape. The window moves
-    /// rows between the document and its aprons by height
-    /// (`ControlRoomChatWindow`); this only runs when the retainer itself is
-    /// over its bound, and it drops records for real.
+    /// **The memory ceiling** -- not the window's shape. Running the chat
+    /// over a stream is what loads rows into the document and its two
+    /// aprons; this only runs when the retainer itself is over its bound,
+    /// and it drops records for real.
     ///
     /// **The far apron goes first, a step at a time**, because a dropped
     /// record is gone: there is no forward history cursor to read it back
@@ -2820,6 +2914,15 @@ final class ControlRoomChatFeed: ObservableObject {
     /// far end. False when there is nothing that may go.
     private func trimOneBlock() -> Bool {
         let block = Self.trimBlockRows
+        // **A page's document only gives from the apron.** See
+        // `keepsWholeDocument`: the other ends are rows the page is drawing
+        // right now, and there is no message that would take one back.
+        if keepsWholeDocument {
+            guard !above.isEmpty else { return false }
+            drop(above.prefix(min(block, above.count)), from: .above)
+            trimmedBefore = loadedFirstID
+            return true
+        }
         let cameraIndex = readingAnchor.flatMap { anchor in
             rows.firstIndex(where: { $0.id == anchor })
         }

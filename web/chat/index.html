@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Polter · 群聊</title>
+<link rel="stylesheet" href="chat.css">
+</head>
+<body>
+<!-- The host owns head, search bar, sidebar and composer; this page is the
+     transcript only (DESIGN-CHAT-TRANSCRIPT-V3 §5). -->
+<main id="scroll" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
+  <div id="top" class="top" role="status" aria-live="polite" hidden><span id="top-text"></span></div>
+</main>
+<button id="jump" type="button" hidden>
+  <span id="jump-label"></span><span id="jump-count"></span>
+</button>
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="chat.js"></script>
+</body>
+</html>

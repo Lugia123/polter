@@ -1612,7 +1612,7 @@ fn look_tokens() -> serde_json::Value {
 /// through `read`, and a text document is not the only thing this serves --
 /// a base64 string is what both hosts can hand to a page without a second
 /// encoding rule per platform.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {

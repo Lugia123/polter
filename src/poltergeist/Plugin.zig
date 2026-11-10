@@ -996,6 +996,13 @@ pub fn nextOptionKey(manifests: []const Manifest, cli: ?[]const u8) []const u8 {
 ///                                 "description": "take the trust box's default (Yes)" }] }
 /// ```
 ///
+/// **An answer may name a sequence of keys** (task 3088), for a box whose
+/// default is not the answer: Claude Code's `Do you want to use this API
+/// key?` starts with its cursor on `❯ No (recommended)`, so taking the key
+/// the launcher put in the environment is `arrow_up` and then `enter`.
+/// `Answer.keys` is that sequence, and the older single `key` is read as a
+/// sequence of one.
+///
 /// `tools_from_second_turn` says the CLI's first turn has none of Polter's
 /// tools: Antigravity starts its MCP servers with the first prompt and lists
 /// their tools from the turn after (measured on agy 1.4.2, task 1740). So
@@ -1014,22 +1021,41 @@ pub const StartupSays = struct {
 
     pub const none: StartupSays = .{ .blocks = &.{}, .ready_says = &.{}, .ready_without_agent = false, .tools_from_second_turn = false, .answers = &.{} };
 
-    /// One question a plugin lets Polter answer, and the key that answers
-    /// it (task 2635).
+    /// One question a plugin lets Polter answer, and the keys that answer it
+    /// (task 2635; key sequences from task 3088).
     ///
     /// ```json
-    /// { "contains": "Do you trust the contents of this project?",
-    ///   "key": "enter", "description": "take the trust box's default" }
+    /// { "contains": "❯ No (recommended)",
+    ///   "keys": ["arrow_up", "enter"], "description": "use the API key ..." }
     /// ```
     ///
-    /// **`key` is a keystroke, not an option number.** The question this
+    /// **`keys` are keystrokes, not option numbers.** The question this
     /// exists for is not the list-with-a-highlight the `choice` parameter
     /// walks: it is a box whose highlighted option is already the answer
     /// (`> Yes, I trust this folder`), so one return takes it and the arrows
     /// have nothing to move between. That is why `terminal_answer_prompt`
-    /// presses exactly this string and never `choice`, and why the key is
+    /// presses exactly these strings and never `choice`, and why they are
     /// parsed here at load (`keys.parse`) rather than being discovered as
     /// unpressable at the moment somebody needs it.
+    ///
+    /// **The whole list goes in one call, in this order.** After `arrow_up`
+    /// the screen reads `❯ Yes`, so `contains` -- which names the cursor's
+    /// row -- no longer matches on the next look; a sequence continued
+    /// across ticks would never send its `enter` at all. And because
+    /// `arrow_up` is not idempotent (from `❯ Yes` it goes back to `❯ No`),
+    /// a failure after the first key is **not** retried: only a first key
+    /// that left the box untouched may be replayed. Both callers
+    /// (`App.answerStartupQuestions`, `rpc.startupAnswerRefusal`) do that.
+    ///
+    /// **`contains` naming the cursor's row, not the question, is the
+    /// safety property**: a menu whose default moves stops matching, and
+    /// the question falls back to the person's (`unanswerable`) rather than
+    /// pressing the option the cursor happened to land on.
+    ///
+    /// **The older `"key": "enter"` is still read** as a sequence of one;
+    /// a manifest should spell `keys` from now on. An entry with neither,
+    /// or with a `keys` list that is empty, longer than `max_keys`, or
+    /// holding an item `keys.parse` refuses, costs only itself.
     ///
     /// **`description` is for people reading the declaration**, never for a
     /// settings page: it is what the log line and the tool's reply name the
@@ -1044,13 +1070,18 @@ pub const StartupSays = struct {
         /// narrow terminal broke over two rows is still that question).
         contains: []const u8,
 
-        /// What `terminal_answer_prompt` presses. Must be a key
+        /// The keys pressed, in order, all in one call. Each must be a key
         /// `terminal_key` would take by the same name; a manifest spelling
         /// one it would not costs that entry and nothing else.
-        key: []const u8,
+        keys: []const []const u8,
 
         /// Which answer this is, in words, for whoever reads the log.
         description: []const u8,
+
+        /// The most keys one answer may name. **Bounded**: a declaration is
+        /// a way round a box, not a script, and an entry too long to read at
+        /// load is one nobody meant.
+        pub const max_keys: usize = 4;
     };
 
     pub fn declared(self: StartupSays) bool {
@@ -2171,10 +2202,12 @@ fn startupSaysOf(arena: Allocator, key: []const u8, obj: std.json.ObjectMap) All
 /// Four ways an entry is dropped, each logged with the entry's own words so
 /// that a reader can find the line to fix:
 ///   * not an object, or a field missing or not a string;
-///   * `contains` empty or longer than `max_text_bytes`, or `key` not one
-///     `keys.parse` accepts (`PlainText` is the usual one: a bare letter is
-///     text, and text belongs in `terminal_send`, which is refused while a
-///     question is up -- an entry spelling one could never fire);
+///   * `contains` empty or longer than `max_text_bytes`; `keys` not 1 to
+///     `Answer.max_keys` key names, or any of them not one `keys.parse`
+///     accepts (`PlainText` is the usual one: a bare letter is text, and
+///     text belongs in `terminal_send`, which is refused while a question
+///     is up -- an entry spelling one could never fire); the older `key`
+///     is the same rule for a sequence of one;
 ///   * `description` longer than `max_text_bytes` (the same limit the rest
 ///     of a screen text is held to);
 ///   * more than `max_texts` entries, past which the rest are ignored.
@@ -2203,28 +2236,89 @@ fn startupAnswersOf(arena: Allocator, key: []const u8, section: std.json.ObjectM
             log.warn("plugin {s}: startup_says.answers[{d}] has no `contains` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
             continue;
         };
-        const pressed = shortText(obj, "key") orelse {
-            log.warn("plugin {s}: startup_says.answers[{d}] has no `key` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
-            continue;
-        };
         // **At load, not at the press.** A key nothing can press would
         // otherwise fail at the moment somebody needed it answered, which is
         // the worst moment and the one hardest to trace back to a manifest.
-        _ = keys.parse(pressed) catch |err| {
-            log.warn("plugin {s}: startup_says.answers[{d}].key \"{s}\" is not a key ({s}); ignored", .{ key, i, pressed, @errorName(err) });
-            continue;
-        };
+        const pressed = (try startupAnswerKeys(arena, key, obj, i)) orelse continue;
         const description = shortText(obj, "description") orelse {
             log.warn("plugin {s}: startup_says.answers[{d}] has no `description` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
             continue;
         };
         try out.append(arena, .{
             .contains = try arena.dupe(u8, said),
-            .key = try arena.dupe(u8, pressed),
+            .keys = pressed,
             .description = try arena.dupe(u8, description),
         });
     }
     return out.items;
+}
+
+/// The keys of one `answers` entry, in the order it wrote them, or null for
+/// an entry to be dropped (task 3088).
+///
+/// `keys` is a list of 1 to `Answer.max_keys` key names; the older `key` is
+/// read as a list of one. **Every item is checked with `keys.parse` here at
+/// load**, for the reason the single key always was: a key nothing can
+/// press should cost the entry now, not the answer at the moment somebody
+/// needs it.
+///
+/// **A sequence with one bad item is dropped whole.** The missing step is
+/// not a shorter answer, it is a different one -- an `enter` without its
+/// `arrow_up` takes `❯ No (recommended)`, which is the opposite of what the
+/// declaration says it does.
+fn startupAnswerKeys(
+    arena: Allocator,
+    key: []const u8,
+    obj: std.json.ObjectMap,
+    i: usize,
+) Allocator.Error!?[]const []const u8 {
+    if (obj.get("keys")) |v| {
+        const list = switch (v) {
+            .array => |a| a.items,
+            else => {
+                log.warn("plugin {s}: startup_says.answers[{d}].keys is not a list; ignored", .{ key, i });
+                return null;
+            },
+        };
+        if (list.len == 0 or list.len > StartupSays.Answer.max_keys) {
+            log.warn(
+                "plugin {s}: startup_says.answers[{d}].keys has {d} entries, not 1 to {d}; ignored",
+                .{ key, i, list.len, StartupSays.Answer.max_keys },
+            );
+            return null;
+        }
+        var out: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (list, 0..) |item, j| {
+            const spec = switch (item) {
+                .string => |s| s,
+                else => {
+                    log.warn("plugin {s}: startup_says.answers[{d}].keys[{d}] is not a string; ignored", .{ key, i, j });
+                    return null;
+                },
+            };
+            if (spec.len == 0 or spec.len > ScreenSays.max_text_bytes) {
+                log.warn("plugin {s}: startup_says.answers[{d}].keys[{d}] is not 1 to {d} bytes; ignored", .{ key, i, j, ScreenSays.max_text_bytes });
+                return null;
+            }
+            _ = keys.parse(spec) catch |err| {
+                log.warn("plugin {s}: startup_says.answers[{d}].keys[{d}] \"{s}\" is not a key ({s}); ignored", .{ key, i, j, spec, @errorName(err) });
+                return null;
+            };
+            try out.append(arena, try arena.dupe(u8, spec));
+        }
+        return out.items;
+    }
+    const pressed = shortText(obj, "key") orelse {
+        log.warn("plugin {s}: startup_says.answers[{d}] has no `keys` or `key` of 1 to {d} bytes; ignored", .{ key, i, ScreenSays.max_text_bytes });
+        return null;
+    };
+    _ = keys.parse(pressed) catch |err| {
+        log.warn("plugin {s}: startup_says.answers[{d}].key \"{s}\" is not a key ({s}); ignored", .{ key, i, pressed, @errorName(err) });
+        return null;
+    };
+    const one = try arena.alloc([]const u8, 1);
+    one[0] = try arena.dupe(u8, pressed);
+    return one;
 }
 
 /// A non-empty string field of at most `max_text_bytes`, or null.
@@ -5652,7 +5746,7 @@ test "2674: the shipped Codex manifest answers the wording 0.166 draws, and only
         else => return error.NoAnswerForTheTrustBox,
     };
     try testing.expectEqualStrings("Trust this folder?", trust.contains);
-    try testing.expectEqualStrings("enter", trust.key);
+    try testing.expectEqualStrings("enter", trust.keys[0]);
     try testing.expect(trust.description.len > 0);
 
     // **The other two questions are recognised and NOT answered**, which is
@@ -5676,7 +5770,7 @@ test "2674: the shipped Codex manifest answers the wording 0.166 draws, and only
         else => return error.NoAnswerForTheOldTrustBox,
     };
     try testing.expectEqualStrings("Do you trust the contents of this directory?", old.contains);
-    try testing.expectEqualStrings("enter", old.key);
+    try testing.expectEqualStrings("enter", old.keys[0]);
 }
 
 /// The folder trust box codex-cli 0.154.0 drew, verbatim, as it stands in
@@ -5761,7 +5855,7 @@ test "2635: startup_says.answers is parsed one entry at a time, and a bad entry 
     const one = try startupAnswersOf(a, "antigravity", only);
     try testing.expectEqual(@as(usize, 1), one.len);
     try testing.expectEqualStrings("Do you trust the contents of this project?", one[0].contains);
-    try testing.expectEqualStrings("enter", one[0].key);
+    try testing.expectEqualStrings("enter", one[0].keys[0]);
     try testing.expectEqualStrings("take the default", one[0].description);
 
     // A plain letter is text, not a key (`keys.parse` refuses `PlainText`):
@@ -5772,7 +5866,7 @@ test "2635: startup_says.answers is parsed one entry at a time, and a bad entry 
     const obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, mixed, .{})).object;
     const kept = try startupAnswersOf(a, "antigravity", obj);
     try testing.expectEqual(@as(usize, 1), kept.len);
-    try testing.expectEqualStrings("enter", kept[0].key);
+    try testing.expectEqualStrings("enter", kept[0].keys[0]);
 
     // Every shape that costs an entry, each with a good one beside it so
     // that "dropped the entry" cannot pass as "dropped the table".
@@ -5797,7 +5891,7 @@ test "2635: startup_says.answers is parsed one entry at a time, and a bad entry 
         const o = (try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{})).object;
         const out = try startupAnswersOf(a, "antigravity", o);
         try testing.expectEqual(@as(usize, 1), out.len);
-        try testing.expectEqualStrings("enter", out[0].key);
+        try testing.expectEqualStrings("enter", out[0].keys[0]);
     }
 
     // Nine is one past `max_texts`: the eighth is kept, the ninth is not.
@@ -5816,6 +5910,117 @@ test "2635: startup_says.answers is parsed one entry at a time, and a bad entry 
     // Not a list at all: none, with the rest of the section intact.
     const not_a_list = (try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"answers\":3}", .{})).object;
     try testing.expectEqual(@as(usize, 0), (try startupAnswersOf(a, "x", not_a_list)).len);
+}
+
+test "3088: startup_says.answers reads a key sequence, and the old single key is a sequence of one" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The new spelling: the order written is the order pressed.
+    const seq = "{\"contains\":\"❯ No (recommended)\",\"keys\":[\"arrow_up\",\"enter\"],\"description\":\"use the API key\"}";
+    const seq_body = try std.fmt.allocPrint(a, "{{\"answers\":[{s}]}}", .{seq});
+    const parsed = (try std.json.parseFromSliceLeaky(std.json.Value, a, seq_body, .{})).object;
+    const out = try startupAnswersOf(a, "claude-code", parsed);
+    try testing.expectEqual(@as(usize, 1), out.len);
+    try testing.expectEqual(@as(usize, 2), out[0].keys.len);
+    try testing.expectEqualStrings("arrow_up", out[0].keys[0]);
+    try testing.expectEqualStrings("enter", out[0].keys[1]);
+
+    // The old spelling is still a sequence of one: antigravity and codex
+    // keep their manifests untouched.
+    const legacy = try answerJson(a, "Do you trust the contents of this project?", "enter", "take the default");
+    const legacy_body = try std.fmt.allocPrint(a, "{{\"answers\":[{s}]}}", .{legacy});
+    const legacy_obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, legacy_body, .{})).object;
+    const old = try startupAnswersOf(a, "antigravity", legacy_obj);
+    try testing.expectEqual(@as(usize, 1), old.len);
+    try testing.expectEqual(@as(usize, 1), old[0].keys.len);
+    try testing.expectEqualStrings("enter", old[0].keys[0]);
+
+    // Every shape of a bad sequence costs its own entry and nothing else --
+    // the good one beside it stays. **A sequence is dropped whole**: the
+    // missing step is a different answer (an `enter` without its
+    // `arrow_up` takes `No`), not a shorter one.
+    for ([_][]const u8{
+        // Empty.
+        "{\"contains\":\"❯ No (recommended)\",\"keys\":[],\"description\":\"d\"}",
+        // One past `max_keys`.
+        "{\"contains\":\"❯ No (recommended)\",\"keys\":[\"a\",\"b\",\"c\",\"d\",\"e\"],\"description\":\"d\"}",
+        // Not a list.
+        "{\"contains\":\"❯ No (recommended)\",\"keys\":\"enter\",\"description\":\"d\"}",
+        // An item that is not a string.
+        "{\"contains\":\"❯ No (recommended)\",\"keys\":[\"arrow_up\",3],\"description\":\"d\"}",
+        // An item that is not a key: `y` is text.
+        "{\"contains\":\"❯ No (recommended)\",\"keys\":[\"arrow_up\",\"y\"],\"description\":\"d\"}",
+        // Neither spelling.
+        "{\"contains\":\"❯ No (recommended)\",\"description\":\"d\"}",
+    }) |broken| {
+        const body = try std.fmt.allocPrint(a, "{{\"answers\":[{s},{s}]}}", .{ seq, broken });
+        const o = (try std.json.parseFromSliceLeaky(std.json.Value, a, body, .{})).object;
+        const kept = try startupAnswersOf(a, "claude-code", o);
+        try testing.expectEqual(@as(usize, 1), kept.len);
+        try testing.expectEqualStrings("arrow_up", kept[0].keys[0]);
+    }
+}
+
+/// The Claude Code API-key box as measured for task 3088: the question
+/// `blocks` declares, and the cursor on `No (recommended)` -- Claude Code's
+/// default. One `arrow_up` puts it on `Yes`.
+const api_key_box_at_no =
+    \\Do you want to use this API key?
+    \\
+    \\❯ No (recommended)
+    \\  Yes
+    \\
+    \\  ↑/↓ Navigate · enter Confirm
+;
+const api_key_box_at_yes =
+    \\Do you want to use this API key?
+    \\
+    \\  No (recommended)
+    \\❯ Yes
+    \\
+    \\  ↑/↓ Navigate · enter Confirm
+;
+
+test "3088: the shipped Claude Code manifest answers the API-key box only while its cursor is on No" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, @embedFile("plugin_claude_code_json"), .{});
+    const manifest = Manifest{ .key = "claude-code", .exec = "p", .startup_says = try startupSaysOf(a, "claude-code", parsed.object) };
+    const all = [_]Manifest{manifest};
+
+    // **The question is the one `blocks` declares**, checked first for the
+    // reason the Codex test gives: `startupAskFor` asks `blockSaid` before
+    // `answerFor`, so drift in either half turns the answer into a rule
+    // that can never fire.
+    try testing.expect(manifest.startup_says.blockSaid(api_key_box_at_no) != null);
+
+    // The declaration itself: the cursor's row, and the two keys the box
+    // takes, in the order the cursor has to move.
+    const says = manifest.startup_says;
+    try testing.expectEqual(@as(usize, 1), says.answers.len);
+    try testing.expectEqualStrings("❯ No (recommended)", says.answers[0].contains);
+    try testing.expectEqual(@as(usize, 2), says.answers[0].keys.len);
+    try testing.expectEqualStrings("arrow_up", says.answers[0].keys[0]);
+    try testing.expectEqualStrings("enter", says.answers[0].keys[1]);
+    try testing.expect(says.answers[0].description.len > 0);
+
+    // **Cursor on No: this is the answer**, through the whole path a caller
+    // takes (`blockSaid` then `answerFor`).
+    const at_no = switch (startupAskFor(&all, "claude-code", api_key_box_at_no)) {
+        .key => |k| k,
+        else => return error.NoAnswerForTheApiKeyBox,
+    };
+    try testing.expectEqualStrings("❯ No (recommended)", at_no.contains);
+
+    // **Cursor on Yes: no answer, and the question is still recognised** --
+    // `unanswerable` leaves it to the person rather than pressing anything.
+    // This is the direction that keeps a moved default from being answered:
+    // the entry names the cursor's row, not the question.
+    try testing.expect(says.answerFor(api_key_box_at_yes) == null);
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "claude-code", api_key_box_at_yes));
 }
 
 test "2635: the shipped antigravity manifest declares an answer for its own trust box" {
@@ -5840,7 +6045,7 @@ test "2635: the shipped antigravity manifest declares an answer for its own trus
 
     // And the key is the one agy's box takes: its highlighted option is
     // already "Yes, I trust this folder", so one return takes it.
-    try testing.expectEqualStrings("enter", says.answers[0].key);
+    try testing.expectEqualStrings("enter", says.answers[0].keys[0]);
     try testing.expect(says.answers[0].description.len > 0);
 }
 
@@ -5851,15 +6056,15 @@ test "2635: answerFor takes the first declared entry whose text is on the screen
         .ready_without_agent = true,
         .tools_from_second_turn = false,
         .answers = &.{
-            .{ .contains = "No, exit", .key = "arrow_down", .description = "leave instead of trusting" },
-            .{ .contains = "Do you trust the contents of this project?", .key = "enter", .description = "take the default" },
+            .{ .contains = "No, exit", .keys = &.{"arrow_down"}, .description = "leave instead of trusting" },
+            .{ .contains = "Do you trust the contents of this project?", .keys = &.{"enter"}, .description = "take the default" },
         },
     };
 
     // Both texts are on this screen, so the order the manifest wrote them in
     // is the answer -- first match wins, and there is no second rule to
     // learn.
-    try testing.expectEqualStrings("arrow_down", says.answerFor(trust_box_with_answer).?.key);
+    try testing.expectEqualStrings("arrow_down", says.answerFor(trust_box_with_answer).?.keys[0]);
 
     // The second entry on its own.
     const only_second: StartupSays = .{
@@ -5869,7 +6074,7 @@ test "2635: answerFor takes the first declared entry whose text is on the screen
         .tools_from_second_turn = false,
         .answers = says.answers[1..],
     };
-    try testing.expectEqualStrings("enter", only_second.answerFor(trust_box_with_answer).?.key);
+    try testing.expectEqualStrings("enter", only_second.answerFor(trust_box_with_answer).?.keys[0]);
     try testing.expectEqualStrings("take the default", only_second.answerFor(trust_box_with_answer).?.description);
 
     // A question a narrow terminal broke over two rows is still that
@@ -5881,7 +6086,7 @@ test "2635: answerFor takes the first declared entry whose text is on the screen
         \\Do you trust the contents of this
         \\project?
         \\> Yes, I trust this folder
-    ).?.key);
+    ).?.keys[0]);
 
     // Nothing declared is on this screen: no answer, and no answer for the
     // input box either -- an answer fires at a question, not at a CLI.
@@ -5916,7 +6121,7 @@ test "2635: startupAskFor separates 'no question of ours' from 'a question we ca
             .ready_says = &.{},
             .ready_without_agent = true,
             .tools_from_second_turn = false,
-            .answers = &.{.{ .contains = "Do you trust the contents of this project?", .key = "enter", .description = "take the default" }},
+            .answers = &.{.{ .contains = "Do you trust the contents of this project?", .keys = &.{"enter"}, .description = "take the default" }},
         },
     };
     // The same CLI with the question declared and no answer for it: a plugin
@@ -5945,7 +6150,7 @@ test "2635: startupAskFor separates 'no question of ours' from 'a question we ca
         else => return error.TestUnexpectedResult,
     }
     switch (startupAskFor(&all, "antigravity", trust_box_with_answer)) {
-        .key => |k| try testing.expectEqualStrings("enter", k.key),
+        .key => |k| try testing.expectEqualStrings("enter", k.keys[0]),
         else => return error.TestUnexpectedResult,
     }
 

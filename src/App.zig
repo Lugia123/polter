@@ -73,11 +73,6 @@ squads_attempted: bool = false,
 /// reports it. Filled on a thread of its own; see `agent_cli.Cache`.
 poltergeist_agent_clis: poltergeistpkg.agent_cli.Cache,
 
-/// How many turns of the app loop have gone by. `ownClis` reads
-/// launchers.json once per round and keeps the answer in an arena, because
-/// what it hands out points into it (`poltergeist_own_round`).
-own_round: u64 = 0,
-
 /// Who a hand-started agent is, by its adapter's word (task 1635); asked on
 /// a thread, and `identity_changed` is raised when an answer is kept.
 identities: poltergeistpkg.Identities,
@@ -414,18 +409,22 @@ poltergeist_plugin_arena: ?std.heap.ArenaAllocator = null,
 /// 2156 v3, `ownClis`): keys, names, bases and roles -- never a command or
 /// a variable. In `poltergeist_own_arena`.
 ///
-/// **Read once per round and cached by the file's size and time**
-/// (`ownClis`). What is handed out points into `poltergeist_own_arena`, so
-/// **nothing may replace it while a round is using what it read**: a second
-/// read inside one round would have to free the arena the first read's
-/// slices live in. `poltergeist_own_round` is which round the cache belongs
-/// to, and a read re-stats the file only when the round has moved on.
+/// **Cached by the file's size and time** (`ownClisAt`), which is asked on
+/// every question: a write inside one turn has to be visible inside it
+/// (task 3124). What is handed out points into `poltergeist_own_arena`, so
+/// an answer **is never freed while the turn that took it is still
+/// running**: a write that lands in the middle of a turn replaces it, and
+/// the answer it replaced is retired into `poltergeist_own_retired` until
+/// the next turn (`setOwnClis`). Freeing it instead was task 2156 v3's
+/// use-after-free.
 poltergeist_own_clis: []const poltergeistpkg.ControlRoom.OwnCli = &.{},
 poltergeist_own_arena: ?std.heap.ArenaAllocator = null,
-/// The round `poltergeist_own_clis` was read in, and the file's size and
-/// time as it was then. A later read within the same round answers with the
-/// cache without touching the file at all.
-poltergeist_own_round: u64 = std.math.maxInt(u64),
+/// Answers a later read in the same turn replaced, freed at the top of the
+/// next turn and not before (`ownClisRound`). A turn is not over when a
+/// write lands in the middle of it, and what that turn already took points
+/// into these.
+poltergeist_own_retired: std.ArrayListUnmanaged(std.heap.ArenaAllocator) = .empty,
+/// launchers.json's size and time as the answer above was read.
 poltergeist_own_seen: ?struct { size: u64, mtime: i96 } = null,
 
 /// Every installed plugin that declares what its CLI's title says
@@ -760,7 +759,15 @@ chat_surfaces: std.ArrayListUnmanaged(poltergeistpkg.Bus.Id) = .empty,
 ///
 /// `by` is the agent that asked, kept because what the new terminal is
 /// granted depends on who that was (`Bus.markOpenedByAgent`).
-poltergeist_agent_open: ?struct { deadline_ms: u64, by: poltergeistpkg.Bus.Id } = null,
+///
+/// `title` is what to pin it to when it appears (issue #77): a worker
+/// named by its seat, a terminal by its directory. Owned here; null when
+/// the request named none. Taken and freed by `claimAgentOpened`.
+poltergeist_agent_open: ?struct {
+    deadline_ms: u64,
+    by: poltergeistpkg.Bus.Id,
+    title: ?[]const u8 = null,
+} = null,
 
 /// The apprt, kept so that a connection thread can wake the app loop after
 /// putting a request in the mailbox.
@@ -1033,6 +1040,8 @@ pub fn deinit(self: *App) void {
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
     if (self.poltergeist_own_arena) |*a| a.deinit();
+    for (self.poltergeist_own_retired.items) |*a| a.deinit();
+    self.poltergeist_own_retired.deinit(self.alloc);
     for (self.poltergeist_alerts.items) |line| self.alloc.free(line);
     self.poltergeist_alerts.deinit(self.alloc);
     if (self.poltergeist_log_dir) |d| self.alloc.free(d);
@@ -3848,34 +3857,53 @@ fn controlCliNames(self: *App, alloc: Allocator, own: []const poltergeistpkg.Con
 }
 
 /// The Agent CLIs of the person's own, as the control room offers them
-/// (task 2156 v3). **Read at most once per round** (see `ownClisNeedsRead`):
-/// what comes back are slices into `poltergeist_own_arena`, and a second
-/// read in the same round would have to free the arena the first one's
-/// answer is in -- a `use-after-free` for everything already holding it.
-/// `startRoleOf`, `controlCliNames`, `controlCliStandings`, `resolveLaunch`
-/// and the snapshot all ask inside one round.
+/// (task 2156 v3).
 ///
-/// A round is ended by `ownClisRound`, which the app loop calls once per
-/// turn: the next round re-stats launchers.json, and reads it again only
-/// when its size or time has moved since.
+/// What comes back are slices into `poltergeist_own_arena`, so an answer is
+/// **never freed while the turn that took it is still running**. A write
+/// through the settings window lands in the middle of a turn and replaces
+/// the answer; the one it replaced is retired until the next turn
+/// (`setOwnClis`, `ownClisRound`). `startRoleOf`, `controlCliNames`,
+/// `controlCliStandings`, `resolveLaunch` and the snapshot all ask inside
+/// one turn.
+///
+/// A turn is ended by `ownClisRound`, which the app loop calls once per
+/// tick: that is when a retired answer goes.
 fn ownClis(self: *App) []const poltergeistpkg.ControlRoom.OwnCli {
-    if (!ownClisNeedsRead(self.own_round, self.poltergeist_own_round)) return self.poltergeist_own_clis;
-    // From here on this round's answer is this call's: no later read in
-    // this round will replace it, so nothing anybody takes now goes stale.
-    self.poltergeist_own_round = self.own_round;
-
     var tmp: std.heap.ArenaAllocator = .init(self.alloc);
     defer tmp.deinit();
     const path = launchersPath(tmp.allocator()) catch return self.poltergeist_own_clis;
+    return self.ownClisAt(path);
+}
+
+/// `ownClis`, of the file at `path` rather than the library's own.
+///
+/// **The library's own path is the person's real `launchers.json`**, which
+/// holds their commands and the names of their variables, and a test must
+/// not read or write it -- so this one takes the path it is to answer
+/// about, and `ownClis` is the only caller that works it out (task 3124).
+fn ownClisAt(self: *App, path: []const u8) []const poltergeistpkg.ControlRoom.OwnCli {
+    var tmp: std.heap.ArenaAllocator = .init(self.alloc);
+    defer tmp.deinit();
+
+    // **The file is stat'd before the turn is asked about, not after**
+    // (task 3124). One press of the settings window's Save is one turn of
+    // the app loop: the role is written, and reading it back reads this
+    // answer first; the role switch then writes `launchers.json` and the
+    // page asks again -- all before the next tick. A question gated on the
+    // turn alone answered that last one from the state before the write, so
+    // the tick the person had just made drew as untaken.
     const st = std.Io.Dir.cwd().statFile(global.io(), path, .{}) catch {
         self.setOwnClis(null, null);
         return &.{};
     };
-    if (self.poltergeist_own_seen) |seen| {
-        if (seen.size == st.size and seen.mtime == st.mtime.nanoseconds) return self.poltergeist_own_clis;
-    }
+    const moved = if (self.poltergeist_own_seen) |seen|
+        seen.size != st.size or seen.mtime != st.mtime.nanoseconds
+    else
+        true;
+    if (!moved) return self.poltergeist_own_clis;
     var arena: std.heap.ArenaAllocator = .init(self.alloc);
-    const own = ownClisOf(arena.allocator(), self.launcherSet(tmp.allocator())) catch {
+    const own = ownClisOf(arena.allocator(), launcherSetAt(tmp.allocator(), path)) catch {
         arena.deinit();
         return self.poltergeist_own_clis;
     };
@@ -3884,28 +3912,34 @@ fn ownClis(self: *App) []const poltergeistpkg.ControlRoom.OwnCli {
     return own;
 }
 
-/// Whether this round still has to read launchers.json (task 2156 v3's
-/// must-fix): **not when it already did**, whatever the file has done since.
+/// Move to the next turn: a retired answer goes, and the next `ownClisAt`
+/// re-stats launchers.json.
 ///
-/// **Reading again is what frees the answer somebody is holding**, so the
-/// question is not "has the file moved" but "does this round already have an
-/// answer". A round is one turn of the app loop (`ownClisRound`); inside it
-/// the person's own Agent CLIs are one fact, and a file written by another
-/// process halfway through it is seen at the next turn.
-fn ownClisNeedsRead(round: u64, kept_round: u64) bool {
-    return round != kept_round;
-}
-
-/// Move to the next round: the next `ownClis` looks at launchers.json
-/// again. Called once at the top of each turn of the app loop, so that
-/// everything one turn asks gets one answer, and nothing is freed under
-/// anybody within it.
+/// Called once at the top of each turn of the app loop. **This is the one
+/// place an answer is ever freed** (task 3124): a write that lands in the
+/// middle of a turn replaces the answer, and the one it replaced has to stay
+/// readable until that turn is over -- everything it already took points
+/// into it. By the time this runs, the turn that took it has ended.
 fn ownClisRound(self: *App) void {
-    self.own_round +%= 1;
+    for (self.poltergeist_own_retired.items) |*a| a.deinit();
+    self.poltergeist_own_retired.clearRetainingCapacity();
 }
 
+/// Keep `own` as this turn's answer, **retiring** the one that was there
+/// rather than freeing it.
+///
+/// A write through the settings window lands in the middle of a turn: the
+/// role switch's own read-back is the next question in that same turn. So
+/// the answer before it must stay readable until the turn is over -- a
+/// free here is a `use-after-free` for everything that turn already took,
+/// which is exactly what task 2156 v3's must-fix was about. `ownClisRound`
+/// frees it at the top of the next turn.
 fn setOwnClis(self: *App, arena: ?std.heap.ArenaAllocator, own: ?[]const poltergeistpkg.ControlRoom.OwnCli) void {
-    if (self.poltergeist_own_arena) |*a| a.deinit();
+    if (self.poltergeist_own_arena) |old| {
+        // Out of memory here only brings back the old behaviour for this
+        // one answer: it is freed, which is what the code did before.
+        self.poltergeist_own_retired.append(self.alloc, old) catch old.deinit();
+    }
     self.poltergeist_own_arena = arena;
     self.poltergeist_own_clis = own orelse &.{};
     self.poltergeist_own_seen = null;
@@ -5615,7 +5649,10 @@ fn deliverPoltergeistNotices(self: *App, now_ms: u64) void {
             continue;
         };
 
-        var buf: [255:0]u8 = undefined;
+        // **`Bus.notice_bytes`, not 255**: a launch that connected no
+        // agent carries the screen's last lines (task 3097), and what this
+        // line is written into is the transport's size. See `Bus.screenTail`.
+        var buf: [poltergeistpkg.Bus.notice_bytes:0]u8 = undefined;
         // `chat.peers()`: a terminal the user watched by hand has no minder,
         // and with several supervisors it is the groups that say whose work
         // it is part of (#1064). The bus cannot know that; the chat does.
@@ -8034,6 +8071,12 @@ fn launchersPath(alloc: Allocator) ![]const u8 {
 fn launcherSet(self: *App, aa: Allocator) poltergeistpkg.Launchers.Set {
     _ = self;
     const path = launchersPath(aa) catch return .{};
+    return launcherSetAt(aa, path);
+}
+
+/// `launcherSet`, of the file at `path` -- the seam a test points at its own
+/// (task 3124); the person's real file is never read by one.
+fn launcherSetAt(aa: Allocator, path: []const u8) poltergeistpkg.Launchers.Set {
     const bytes = std.Io.Dir.cwd().readFileAlloc(global.io(), path, aa, .limited(poltergeistpkg.Launchers.max_bytes)) catch return .{};
     const got = poltergeistpkg.Launchers.parseLeaky(aa, bytes) catch {
         log.warn("launchers: {s} does not read; none are offered", .{path});
@@ -8046,8 +8089,14 @@ fn launcherSet(self: *App, aa: Allocator) poltergeistpkg.Launchers.Set {
 /// Written whole and atomically, owner-only: it may hold a token the
 /// person chose to write into it.
 fn writeLauncherSet(aa: Allocator, set: poltergeistpkg.Launchers.Set) !void {
-    const io = global.io();
     const path = try launchersPath(aa);
+    return writeLauncherSetAt(aa, path, set);
+}
+
+/// `writeLauncherSet` into `path` -- the seam a test writes its own through
+/// (task 3124). Never the person's file: no test names it.
+fn writeLauncherSetAt(aa: Allocator, path: []const u8, set: poltergeistpkg.Launchers.Set) !void {
+    const io = global.io();
     var buf: std.Io.Writer.Allocating = .init(aa);
     try poltergeistpkg.Launchers.writeFile(&buf.writer, set);
     const dir = std.fs.path.dirname(path) orelse return error.WriteFailed;
@@ -9757,23 +9806,156 @@ fn answerStartupQuestions(self: *App, now_ms: u64) void {
             .key => |a| a,
             else => continue,
         };
-        const outcome = surface.sendPoltergeistKey(a.key) catch |err| {
-            self.startup_answers.failed(id);
-            log.warn("poltergeist: could not press {s} at the startup question on 0x{x} err={}", .{ a.key, id, err });
-            continue;
-        };
-        // **A key that did not reach the program is not an answer.** The
-        // claim is kept -- so the same question is not answered twice over
-        // -- but it is not marked answered, and the next look tries again
-        // within the bound.
-        if (outcome != .written) {
-            self.startup_answers.failed(id);
-            log.warn("poltergeist: {s} did not reach the program at the startup question on 0x{x} outcome={s}", .{ a.key, id, @tagName(outcome) });
-            continue;
-        }
-        self.startup_answers.sent(id);
-        log.info("poltergeist: pressed {s} at the startup question on 0x{x}: {s}", .{ a.key, id, a.description });
+        pressStartupKeys(&self.startup_answers, id, a, SurfaceStartupPresser{ .surface = surface });
     }
+}
+
+/// `pressStartupKeys`'s press, at the terminal the question is on.
+const SurfaceStartupPresser = struct {
+    surface: *Surface,
+
+    fn press(self: @This(), spec: []const u8) anyerror!poltergeistpkg.keys.Outcome {
+        return self.surface.sendPoltergeistKey(spec);
+    }
+};
+
+/// Press a startup answer's keys, all in this one call, and record what it
+/// came to in `answers` (task 3088).
+///
+/// **One tick, not one key per tick.** After `arrow_up` the screen reads
+/// `❯ Yes`, so `StartupSays.Answer.contains` -- which names the cursor's row,
+/// `❯ No (recommended)` -- no longer matches on the next look. A sequence
+/// continued across ticks would never send its `enter` at all.
+///
+/// **A sequence is replayed only when none of it took effect.** A first key
+/// that did not reach the program left the box exactly as it was, so the
+/// whole sequence may go again on the next look. A first key that *did*
+/// reach it moves the cursor, and `arrow_up` is not idempotent -- sending
+/// the sequence again from `❯ Yes` takes the cursor back to `❯ No`. So from
+/// there the question is `sent` (Polter has done its part, and no look will
+/// press at it again), and a later key that failed is logged and left to
+/// the person.
+fn pressStartupKeys(
+    answers: *poltergeistpkg.StartupAnswers,
+    id: poltergeistpkg.Bus.Id,
+    a: poltergeistpkg.Plugin.StartupSays.Answer,
+    press: anytype,
+) void {
+    for (a.keys, 0..) |k, i| {
+        const outcome = press.press(k) catch |err| {
+            if (i == 0) {
+                answers.failed(id);
+                log.warn("poltergeist: could not press {s} at the startup question on 0x{x} err={}", .{ k, id, err });
+            } else {
+                answers.sent(id);
+                log.warn(
+                    "poltergeist: {s} reached the startup question on 0x{x} but {s} did not, err={}; the box may still be showing and the rest is the person's",
+                    .{ a.keys[0], id, k, err },
+                );
+            }
+            return;
+        };
+        // **A key that did not reach the program is not an answer.** On the
+        // first key the claim is kept -- so the same question is not
+        // answered twice over -- but it is not marked answered, and the
+        // next look tries again within the bound. After that, nothing is
+        // replayed.
+        if (outcome != .written) {
+            if (i == 0) {
+                answers.failed(id);
+                log.warn("poltergeist: {s} did not reach the program at the startup question on 0x{x} outcome={s}", .{ k, id, @tagName(outcome) });
+            } else {
+                answers.sent(id);
+                log.warn(
+                    "poltergeist: {s} reached the startup question on 0x{x} but {s} did not, outcome={s}; the box may still be showing and the rest is the person's",
+                    .{ a.keys[0], id, k, @tagName(outcome) },
+                );
+            }
+            return;
+        }
+        log.info("poltergeist: pressed {s} at the startup question on 0x{x} ({d}/{d}): {s}", .{ k, id, i + 1, a.keys.len, a.description });
+    }
+    // Every key reached the program: the question is Polter's no more,
+    // whatever its box goes on drawing.
+    answers.sent(id);
+}
+
+test "3088: a startup answer's keys go in one call, and only a first key that missed is replayed" {
+    const testing_ = std.testing;
+    const Answer = poltergeistpkg.Plugin.StartupSays.Answer;
+    const Verdict = poltergeistpkg.StartupAnswers.Verdict;
+
+    // What the terminal says to each key this fake is handed, in order,
+    // and which keys it was handed -- so both the sequence and the
+    // stopping point are read off the same run.
+    const Presser = struct {
+        outcomes: []const anyerror!poltergeistpkg.keys.Outcome,
+        asked: usize = 0,
+        keys_asked: [8][]const u8 = undefined,
+
+        fn press(self: *@This(), key: []const u8) anyerror!poltergeistpkg.keys.Outcome {
+            self.keys_asked[self.asked] = key;
+            self.asked += 1;
+            return self.outcomes[self.asked - 1];
+        }
+    };
+
+    // Claude Code's API-key box: the cursor starts on No, one arrow up puts
+    // it on Yes.
+    const answer: Answer = .{
+        .contains = "❯ No (recommended)",
+        .keys = &.{ "arrow_up", "enter" },
+        .description = "use the API key the launcher set (cursor starts on No)",
+    };
+
+    var answers: poltergeistpkg.StartupAnswers = .{ .alloc = testing_.allocator };
+    defer answers.deinit();
+
+    // The claim is made by the look that decided to press, as `consider`
+    // does in the app; the press itself only records what came of it.
+    try testing_.expectEqual(Verdict.answer, try answers.look(0x71, answer.contains, 0));
+    var all_written: Presser = .{ .outcomes = &.{ .written, .written } };
+    pressStartupKeys(&answers, 0x71, answer, &all_written);
+    // Both keys, in the declared order, in this one call.
+    try testing_.expectEqual(@as(usize, 2), all_written.asked);
+    try testing_.expectEqualStrings("arrow_up", all_written.keys_asked[0]);
+    try testing_.expectEqualStrings("enter", all_written.keys_asked[1]);
+    // Answered once: no later look presses again, however long the box is
+    // drawn.
+    try testing_.expect(answers.claimOf(0x71).?.answered);
+    try testing_.expectEqual(Verdict.wait, try answers.look(0x71, answer.contains, 2_000));
+
+    // **First key in, second out.** The cursor has moved, so the sequence
+    // must never be replayed (`arrow_up` from Yes goes back to No). It is
+    // recorded as pressed, and no later look presses at it.
+    try testing_.expectEqual(Verdict.answer, try answers.look(0x72, answer.contains, 0));
+    var gone_second: Presser = .{ .outcomes = &.{ .written, error.KeyFailed } };
+    pressStartupKeys(&answers, 0x72, answer, &gone_second);
+    try testing_.expectEqual(@as(usize, 2), gone_second.asked);
+    try testing_.expect(answers.claimOf(0x72).?.answered);
+    try testing_.expectEqual(Verdict.wait, try answers.look(0x72, answer.contains, 2_000));
+    try testing_.expectEqual(@as(u8, 1), answers.claimOf(0x72).?.tries);
+
+    // **First key out:** nothing took effect, so the record says not
+    // answered and the next look sends the whole sequence again.
+    try testing_.expectEqual(Verdict.answer, try answers.look(0x73, answer.contains, 0));
+    var gone_first: Presser = .{ .outcomes = &.{error.KeyFailed} };
+    pressStartupKeys(&answers, 0x73, answer, &gone_first);
+    try testing_.expectEqual(@as(usize, 1), gone_first.asked);
+    try testing_.expect(!answers.claimOf(0x73).?.answered);
+    try testing_.expectEqual(Verdict.answer, try answers.look(0x73, answer.contains, 2_000));
+    var replayed: Presser = .{ .outcomes = &.{ .written, .written } };
+    pressStartupKeys(&answers, 0x73, answer, &replayed);
+    try testing_.expectEqual(@as(usize, 2), replayed.asked);
+    try testing_.expect(answers.claimOf(0x73).?.answered);
+
+    // **A first key that encoded to nothing is the same as one that
+    // failed**: the box never saw it.
+    try testing_.expectEqual(Verdict.answer, try answers.look(0x74, answer.contains, 0));
+    var ignored_first: Presser = .{ .outcomes = &.{.ignored} };
+    pressStartupKeys(&answers, 0x74, answer, &ignored_first);
+    try testing_.expectEqual(@as(usize, 1), ignored_first.asked);
+    try testing_.expect(!answers.claimOf(0x74).?.answered);
 }
 
 /// The declared text of the question `startupQuestionUp` sees, or null.
@@ -9848,11 +10030,43 @@ fn considerLaunches(self: *App, now_ms: u64) bool {
     var left: usize = self.poltergeist.entries.count();
     while (left > 0) : (left -= 1) {
         const id = self.poltergeist.launchWithNoAgent(now_ms, self, poltergeistAgentPresent) orelse break;
+
+        // **The screen at this moment, carried with the failure** (task
+        // 3097). The line used to guess at a cause, and the day six seats
+        // sat on a CLI's own API-key box for the whole minute the guess was
+        // wrong. Read here rather than in the bus for the reason the bus
+        // states -- it never reads a screen -- and read now rather than
+        // kept: this is the visible screen at the 60-second mark, so a CLI
+        // that has already exited, or a screen that has since scrolled, is
+        // seen afterwards. That is the accepted trade, not a defect:
+        // keeping screen history for later would make every notice dearer
+        // and is not what this is for.
+        var tail_buf: [poltergeistpkg.Bus.screen_tail_bytes]u8 = undefined;
+        const tail = blk: {
+            const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+                log.debug("poltergeist: could not read the screen of a launch with no agent id={x} err={}", .{ id, err });
+                break :blk "";
+            };
+            defer self.alloc.free(screen);
+            break :blk poltergeistpkg.Bus.screenTail(screen, &tail_buf);
+        };
+        // **The line has to hold the whole tail**: `Bus.writeAgent` writes
+        // it whole and refuses to cut it (the lines it would drop are the
+        // ones nearest what is on the screen now). One line break becomes
+        // ` ⏎ ` there -- five bytes for one -- so the room the line needs
+        // is the tail plus four for each. Asserted here, where the notice
+        // is composed, rather than trusted: the assert is the early alarm,
+        // and the test that builds the whole notice into a real
+        // `[notice_bytes]` buffer is what the floor actually rests on.
+        const expanded = tail.len + 4 * std.mem.count(u8, tail, "\n");
+        std.debug.assert(poltergeistpkg.Bus.launch_failed_words_max + expanded <= poltergeistpkg.Bus.notice_bytes);
+
         var ev: poltergeistpkg.agent_event.Event = .none;
         ev.event = .launch_failed;
         ev.detail = @tagName(poltergeistpkg.agent_event.LaunchFailure.no_agent);
+        if (tail.len > 0) ev.note = tail;
         _ = self.poltergeist.agentEvent(id, ev, now_ms) catch break;
-        poltergeistLaunchFailed(self, &self.poltergeist, id, .no_agent, null);
+        poltergeistLaunchFailed(self, &self.poltergeist, id, .no_agent, if (tail.len > 0) tail else null);
         log.info("poltergeist: no agent connected from 0x{x} within a minute of its launch", .{id});
         any = true;
     }
@@ -9893,7 +10107,10 @@ pub fn launchPersona(
     /// null for a launch that is not a supervisor's -- a person's click.
     group: ?[]const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
-    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, null);
+    // No name: this is the person's click and the control room's start,
+    // neither of which has one to give (issue #77 names the tool's own
+    // launches; a click can still be renamed by hand).
+    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, null, "");
 }
 
 /// What a seat of a squad starts as, to be carried to wherever the start
@@ -9948,6 +10165,9 @@ pub fn launchPersonaSeat(
     beside: ?poltergeistpkg.Bus.Id,
     group: ?[]const u8,
     seat: ?poltergeistpkg.rpc.MemberSeat,
+    /// What to pin its title to when it appears after this returns (issue
+    /// #77); empty for none.
+    title: []const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const choice = try self.resolveLaunchSeat(alloc, key, cli, by, self.ownClis(), if (seat) |s| s.over else null);
     const effective: ?poltergeistpkg.persona.Effective = if (seat) |s| try effectiveOf(alloc, choice, s) else null;
@@ -10024,7 +10244,7 @@ pub fn launchPersonaSeat(
         try self.poltergeistStackOf(alloc, by)
     else
         null;
-    var opened = try self.openTerminalAt(alloc, cwd, by, where, anchor);
+    var opened = try self.openTerminalAt(alloc, cwd, by, where, anchor, title);
     opened.passed_over = passed_over;
     opened.joins = joining.name();
     opened.join_note = join_note;
@@ -10362,8 +10582,47 @@ test "the worker pane passed over is the oldest in the tab, with its reason (#14
 pub fn claimAgentOpened(self: *App, surface: *Surface) void {
     const pending = self.poltergeist_agent_open orelse return;
     self.poltergeist_agent_open = null;
+    defer if (pending.title) |t| self.alloc.free(t);
     if (self.poltergeistElapsedMs() > pending.deadline_ms) return;
     self.markAgentOpened(surface.id, pending.by);
+    // **The name, here, because this is the half of the road with no id**
+    // (issue #77). A caller that had an id pinned it itself on the way out
+    // of the request; this terminal did not exist yet then, and this is the
+    // first moment anything can be sent to it.
+    if (pending.title) |title| self.pinSurfaceTitle(surface, title);
+}
+
+/// Remember that the next terminal to finish starting was asked for by
+/// `by`, and what it is to be called. Replaces one already waiting: a
+/// second request before the first terminal appeared cannot have the first
+/// one's name.
+fn setAgentOpen(self: *App, by: poltergeistpkg.Bus.Id, title: []const u8) void {
+    self.clearAgentOpen();
+    self.poltergeist_agent_open = .{
+        .deadline_ms = self.poltergeistElapsedMs() + poltergeistpkg.PersonaStore.pending_launch_ms,
+        .by = by,
+        .title = if (title.len == 0) null else (self.alloc.dupe(u8, title) catch null),
+    };
+}
+
+/// Forget the waiting mark, name and all.
+fn clearAgentOpen(self: *App) void {
+    if (self.poltergeist_agent_open) |p| if (p.title) |t| self.alloc.free(t);
+    self.poltergeist_agent_open = null;
+}
+
+/// Pin a terminal's two titles (issue #77): the surface's, which
+/// `terminal_list` and the chat's member names read, and the tab's, which
+/// the person sees. A refusal is logged and nothing else -- the terminal
+/// is open either way, and a name is not worth failing it for.
+fn pinSurfaceTitle(self: *App, surface: *Surface, name: []const u8) void {
+    _ = self;
+    _ = surface.performBindingAction(.{ .set_surface_title = name }) catch |err| {
+        log.warn("poltergeist: could not name terminal {x} {s} err={}", .{ surface.id, name, err });
+    };
+    _ = surface.performBindingAction(.{ .set_tab_title = name }) catch |err| {
+        log.warn("poltergeist: could not name terminal {x}'s tab {s} err={}", .{ surface.id, name, err });
+    };
 }
 
 /// Record that the agent in `by` opened `id`. A failure to record leaves it
@@ -10465,6 +10724,16 @@ fn poltergeistPersonaCatalog(ctx: *anyopaque, alloc: Allocator) anyerror![]const
     return self.personaCatalogJson(alloc);
 }
 
+/// `rpc.Host.personaName`: the role's own name, borrowed from the library
+/// for the request. Read without copying because the only caller builds a
+/// title with it and drops it with the reply.
+fn poltergeistPersonaName(ctx: *anyopaque, key: []const u8) ?[]const u8 {
+    const self: *App = @ptrCast(@alignCast(ctx));
+    self.ensurePersonas();
+    const p = self.personas.set.find(key) orelse return null;
+    return p.name;
+}
+
 fn poltergeistPersonaPut(ctx: *anyopaque, json: []const u8) anyerror!void {
     const self: *App = @ptrCast(@alignCast(ctx));
     // The tool surface: only a supervisor reaches `role_put`.
@@ -10499,9 +10768,10 @@ fn poltergeistPersonaLaunch(
     beside: ?poltergeistpkg.Bus.Id,
     group: []const u8,
     seat: ?poltergeistpkg.rpc.MemberSeat,
+    title: []const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, seat);
+    return self.launchPersonaSeat(alloc, by, key, cli, cwd, place, into, beside, group, seat, title);
 }
 
 /// The group a supervisor's `role_launch` puts its worker in (task 1971):
@@ -10724,6 +10994,7 @@ fn poltergeistHost(self: *App) poltergeistpkg.rpc.Host {
             .launchedForGroup = poltergeistLaunchedForGroup,
             .launchers = poltergeistLaunchers,
             .personaCatalog = poltergeistPersonaCatalog,
+            .personaName = poltergeistPersonaName,
             .personaPut = poltergeistPersonaPut,
             .personaDelete = poltergeistPersonaDelete,
             .agentClis = poltergeistAgentClis,
@@ -12810,7 +13081,30 @@ fn poltergeistResourceUsage(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) ?polterg
     return self.resource_usage.get(id);
 }
 
-/// Which group a terminal is in, for the overall reading's sidecar rows
+/// What a terminal is called, for the overall reading's rows (task 3113).
+///
+/// **The apprt's own title**, which is the one on the tab: the person's
+/// name for the terminal, or the one the agent in it sets. The same title
+/// the control room's list names a lone terminal by, so the overall view's
+/// process table and the list cannot call one terminal two things.
+///
+/// The title is copied into the arena the answer is built in, because that
+/// is how long the reply lives and the surface's own copy may be replaced
+/// by the next title before the reply is written.
+const OverallTitles = struct {
+    app: *const App,
+    alloc: Allocator,
+};
+
+fn overallTitleOfPane(ctx: ?*const anyopaque, pane: u64) []const u8 {
+    const t: *const OverallTitles = @ptrCast(@alignCast(ctx orelse return ""));
+    const surface = t.app.findSurfaceByID(pane) orelse return "";
+    const title = surface.rt_surface.getTitle() orelse return "";
+    if (title.len == 0) return "";
+    return t.alloc.dupe(u8, title) catch "";
+}
+
+/// Which group a terminal is in, for the overall reading's terminal rows
 /// (task 2149): read from the control room's rows, the same place the
 /// performance page reads a terminal's group from.
 fn overallGroupOfPane(ctx: ?*const anyopaque, pane: u64) []const u8 {
@@ -12888,6 +13182,10 @@ fn overallAnswer(self: *App, alloc: Allocator, group: []const u8, pid: u32) (All
     }
 
     const wall = self.overall_wall_ms_for_test orelse self.poltergeistWallMs();
+    // **The titles live in the same arena as the reply** (task 3113): a
+    // reading is built and written out inside this call, and the title is
+    // read from the surface at that moment.
+    const titles: OverallTitles = .{ .app = self, .alloc = alloc };
     return poltergeistpkg.OverallPage.render(alloc, overall, .{
         .now_ms = wall,
         .offset_ms = poltergeistpkg.daylog.localOffsetMs(wall),
@@ -12895,6 +13193,8 @@ fn overallAnswer(self: *App, alloc: Allocator, group: []const u8, pid: u32) (All
         .groups = facts.items,
         .groupOfPane = overallGroupOfPane,
         .ctx = self,
+        .titleOfPane = overallTitleOfPane,
+        .title_ctx = &titles,
         .only_group = group,
         .only_pid = pid,
     });
@@ -14271,9 +14571,10 @@ fn poltergeistOpenTerminal(
     cwd: []const u8,
     by: poltergeistpkg.Bus.Id,
     place: poltergeistpkg.rpc.Placement,
+    title: []const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const self: *App = @ptrCast(@alignCast(ctx));
-    return self.openTerminalAt(alloc, cwd, by, place, null);
+    return self.openTerminalAt(alloc, cwd, by, place, null, title);
 }
 
 /// `poltergeistOpenTerminal`, with the tab it goes in named by `beside`
@@ -14291,6 +14592,9 @@ fn openTerminalAt(
     by: poltergeistpkg.Bus.Id,
     place: poltergeistpkg.rpc.Placement,
     beside: ?*Surface,
+    /// What to pin its title to when it appears after this returns (issue
+    /// #77); empty for none.
+    title: []const u8,
 ) anyerror!poltergeistpkg.rpc.Opened {
     const surface = beside orelse self.findSurfaceByID(by) orelse return error.UnknownTerminal;
 
@@ -14321,13 +14625,10 @@ fn openTerminalAt(
     // whenever it appears: now, if the runtime makes it inside the calls
     // below (its `init` claims this), or later, if it makes it after this
     // returns. Taken back below when the terminal is found here.
-    self.poltergeist_agent_open = .{
-        .deadline_ms = self.poltergeistElapsedMs() + poltergeistpkg.PersonaStore.pending_launch_ms,
-        .by = by,
-    };
+    self.setAgentOpen(by, title);
     // A terminal that was never made must not leave the mark waiting for the
     // next one somebody else opens.
-    errdefer self.poltergeist_agent_open = null;
+    errdefer self.clearAgentOpen();
 
     // **Where it goes, decided here and nowhere else.**
     //
@@ -14509,7 +14810,7 @@ fn openTerminalAt(
         // Who opened it is, though (#989): it is here, it is new, and the
         // agent asked for it. Its own `init` may already have claimed the
         // mark; either way the claim waiting for a later terminal is spent.
-        self.poltergeist_agent_open = null;
+        self.clearAgentOpen();
         self.markAgentOpened(id, by);
         return .{ .id = id, .placed = placed };
     }
@@ -14697,7 +14998,10 @@ fn poltergeistDrainNotices(
 ) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(ctx));
 
-    var buf: [255]u8 = undefined;
+    // The same size the hand-over is typed from (task 3097): `notices`
+    // reads the same box, and a tail that arrives typed must arrive here
+    // whole too -- this is the answer a supervisor spends its context on.
+    var buf: [poltergeistpkg.Bus.notice_bytes]u8 = undefined;
     const line = self.poltergeist.drain(
         to,
         self.poltergeistElapsedMs(),
@@ -19975,7 +20279,7 @@ fn tellTerminalsAboutMessages(self: *App) void {
                 continue;
             }
 
-            var buf: [255:0]u8 = undefined;
+            var buf: [poltergeistpkg.Bus.notice_bytes:0]u8 = undefined;
             const line = poltergeistpkg.Chat.formatNotice(name, count, &buf) catch
                 continue;
             buf[line.len] = 0;
@@ -20002,7 +20306,7 @@ fn tellTerminalsAboutMessages(self: *App) void {
 pub fn tellSurface(self: *App, id: poltergeistpkg.Bus.Id, text: []const u8) void {
     const surface = self.findSurfaceByID(id) orelse return;
 
-    var buf: [255:0]u8 = undefined;
+    var buf: [poltergeistpkg.Bus.notice_bytes:0]u8 = undefined;
     if (text.len >= buf.len) return;
     @memcpy(buf[0..text.len], text);
     buf[text.len] = 0;
@@ -20082,7 +20386,7 @@ fn presenceIn(ctx: *anyopaque, id: poltergeistpkg.Bus.Id) bool {
 fn noticeFor(
     self: *App,
     id: poltergeistpkg.Bus.Id,
-    buf: [255:0]u8,
+    buf: [poltergeistpkg.Bus.notice_bytes:0]u8,
 ) apprt.surface.Message {
     const agent_here = self.agentPresent(id);
     // The first of the two answers a notice gets; the second is asked when
@@ -21402,28 +21706,140 @@ test "task 1730: the burst, measured over the sizes and costs it can have" {
     }
 }
 
-test "2156 v3: the person's own Agent CLIs are read once a round, so nothing a round took is freed under it" {
+/// An `App` with only what `ownClisAt` and `ownClisRound` touch, for the two
+/// tests below.
+///
+/// **A test must not build its app as `var app: App = undefined;`** (task
+/// 3124). One did, and the day `poltergeist_own_retired` was added it became
+/// an ABRT -- `ownClisRound` read the field and the struct had never been
+/// initialised. A crash is the worst reading a test can give: it says "it
+/// died" and not what was expected against what was there. Start from this
+/// instead, and **when either function grows a field, add it here**: the next
+/// `undefined` App breaks the same way, and later, and somewhere else.
+fn ownClisTestApp(alloc: Allocator) App {
+    var app: App = undefined;
+    app.alloc = alloc;
+    app.poltergeist_own_clis = &.{};
+    app.poltergeist_own_arena = null;
+    app.poltergeist_own_retired = .empty;
+    app.poltergeist_own_seen = null;
+    return app;
+}
+
+test "2156 v3 + 3124: the answer a later read replaces is retired, not freed under its turn" {
     const testing = std.testing;
 
-    // A round that has not read yet reads; one that has, does not --
-    // **whatever the file has done since**, because reading again is what
-    // would free the answer everything in the round is holding.
-    try testing.expect(ownClisNeedsRead(7, std.math.maxInt(u64)));
-    try testing.expect(ownClisNeedsRead(7, 6));
-    try testing.expect(!ownClisNeedsRead(7, 7));
-    // The first round of all reads, and so does the round after a wrap.
-    try testing.expect(ownClisNeedsRead(0, std.math.maxInt(u64)));
-    try testing.expect(ownClisNeedsRead(0, std.math.maxInt(u64) - 1));
+    // A `launchers.json` of the test's own (never the person's; `ownClisAt`).
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir);
+    const path = try std.fs.path.join(testing.allocator, &.{ dir, "launchers.json" });
+    defer testing.allocator.free(path);
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try writeLauncherSetAt(a, path, .{ .launchers = &.{.{
+            .key = "mine",
+            .name = "Mine",
+            .base = "claude-code",
+            .command = "/bin/true",
+        }} });
+    }
 
-    // Moving the round on is what asks for the next read.
-    var app: App = undefined;
-    app.own_round = 0;
-    app.poltergeist_own_round = 0;
-    try testing.expect(!ownClisNeedsRead(app.own_round, app.poltergeist_own_round));
+    var app = ownClisTestApp(testing.allocator);
+    defer {
+        app.setOwnClis(null, null);
+        app.ownClisRound();
+        app.poltergeist_own_retired.deinit(testing.allocator);
+    }
+
+    // The turn takes its answer...
+    const first = app.ownClisAt(path);
+    try testing.expectEqual(@as(usize, 1), first.len);
+    // ...a write replaces it in the middle of that same turn...
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try writeLauncherSetAt(a, path, .{ .launchers = &.{ .{ .key = "mine", .name = "Mine", .base = "claude-code", .command = "/bin/true" }, .{ .key = "other", .name = "Other", .base = "codex", .command = "/bin/false" } } });
+    }
+    const second = app.ownClisAt(path);
+    try testing.expectEqual(@as(usize, 2), second.len);
+    // ...and **what the turn took before still reads**: it was retired, not
+    // freed under the turn that took it. This is task 2156 v3's must-fix,
+    // now that a write can replace an answer inside a turn (task 3124).
+    try testing.expectEqual(@as(usize, 1), first.len);
+    try testing.expectEqualStrings("mine", first[0].key);
+    // The next turn is when the retired one goes -- and the current answer
+    // is untouched by that.
     app.ownClisRound();
-    try testing.expect(ownClisNeedsRead(app.own_round, app.poltergeist_own_round));
-    app.ownClisRound();
-    try testing.expect(app.own_round == 2);
+    try testing.expectEqual(@as(usize, 2), second.len);
+    try testing.expectEqualStrings("other", second[1].key);
+}
+
+test "3124: a switch written through the settings window reads back in the turn it was written" {
+    const testing = std.testing;
+
+    // A `launchers.json` of the test's own. The person's holds their
+    // commands and their variables' names, and no test reads or writes it
+    // (`ownClisAt`).
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir);
+    const path = try std.fs.path.join(testing.allocator, &.{ dir, "launchers.json" });
+    defer testing.allocator.free(path);
+
+    // What the Agent CLI page leaves behind: one launcher of the person's
+    // own, switched on for no role.
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        try writeLauncherSetAt(a, path, .{ .launchers = &.{.{
+            .key = "mine",
+            .name = "Mine",
+            .base = "claude-code",
+            .command = "/bin/true",
+        }} });
+    }
+
+    var app = ownClisTestApp(testing.allocator);
+    defer {
+        app.setOwnClis(null, null);
+        app.ownClisRound();
+        app.poltergeist_own_retired.deinit(testing.allocator);
+    }
+
+    // The turn's first question: the one `RoleLibrary.put`'s read-back asks,
+    // and it comes before the switch is written.
+    const before = app.ownClisAt(path);
+    try testing.expectEqual(@as(usize, 1), before.len);
+    try testing.expectEqual(@as(usize, 0), before[0].roles.len);
+
+    // **The same turn writes the switch** -- the writer the settings role
+    // switch goes through, with no tick of the app loop in between (task
+    // 3124: one button press is one turn).
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const set = try poltergeistpkg.Launchers.setRole(a, launcherSetAt(a, path), "mine", "polter-tester", true);
+        try writeLauncherSetAt(a, path, set);
+    }
+
+    // Asked again in that same turn -- the question the role page draws its
+    // tick from -- it answers with the write. In 3124's report it answered
+    // with the state before it, and the tick sprang back.
+    const after = app.ownClisAt(path);
+    try testing.expectEqual(@as(usize, 1), after.len);
+    try testing.expectEqual(@as(usize, 1), after[0].roles.len);
+    try testing.expectEqualStrings("polter-tester", after[0].roles[0]);
+    // And what the turn took before the write still reads: the old answer
+    // was retired, not freed.
+    try testing.expectEqual(@as(usize, 0), before[0].roles.len);
 }
 
 test "2793: chat_metadata takes one name and refuses every other shape" {

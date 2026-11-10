@@ -142,8 +142,20 @@ struct ControlRoomChatHeader: View {
         .buttonStyle(.plain)
         .popover(isPresented: $membersShown, arrowEdge: .bottom) {
             memberPopover(facts, theme: theme)
+                // **A tighter corner than the system's** (the person's
+                // 2026-11-09 reading: the member box's radius is too round
+                // for a list of names; the same reading came again on the
+                // same day, so the radius was halved a second time).
+                // `presentationCornerRadius` is the only handle SwiftUI
+                // gives a popover's shape; on a system older than macOS
+                // 13.3 it is not there and the default stands.
+                .polterPopoverRadius(Self.memberPopoverRadius)
         }
     }
+
+    /// The member box's corner, in points: a panel, not a pill. Halved from
+    /// 7 on the person's second reading of the same day.
+    private static let memberPopoverRadius: CGFloat = 3.5
 
     private func memberCount(_ facts: ControlRoomChatMetadata.Group) -> String {
         // An explicit format key: the repo already ships "%d members", and
@@ -168,6 +180,10 @@ struct ControlRoomChatHeader: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(facts.members, id: \.id) { member in
                         HStack(spacing: 6) {
+                            // **The badge has the priority, not the name**:
+                            // the role keeps the width it needs on the right
+                            // of the row, and a long name truncates instead
+                            // of squeezing the badge.
                             Text(member.title.isEmpty ? member.id : member.title)
                                 .font(.system(size: Look.Font.min))
                                 .lineLimit(1)
@@ -175,6 +191,12 @@ struct ControlRoomChatHeader: View {
                                 Text(role)
                                     .font(.system(size: Look.Font.min))
                                     .foregroundStyle(theme.textSecondary.color)
+                                    // **One line, never two**: a role is a
+                                    // label, not a sentence; a wider box
+                                    // plus this keeps `polter-supervisor`
+                                    // whole instead of breaking it.
+                                    .lineLimit(1)
+                                    .layoutPriority(1)
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
                                     .background(theme.textSecondary.color.opacity(0.10))
@@ -209,6 +231,24 @@ struct ControlRoomChatHeader: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
         }
-        .frame(width: 240, alignment: .leading)
+        // 300 rather than 240: a `polter-supervisor` badge fits whole at
+        // this width, so the name only truncates when it is long.
+        .frame(width: 300, alignment: .leading)
+    }
+}
+
+// MARK: - A popover's corner
+
+private extension View {
+    /// `presentationCornerRadius` arrived in macOS 13.3; the deployment
+    /// target is 13.0, so the modifier is applied where it exists and the
+    /// system's own radius stands where it does not.
+    @ViewBuilder
+    func polterPopoverRadius(_ radius: CGFloat) -> some View {
+        if #available(macOS 13.3, *) {
+            self.presentationCornerRadius(radius)
+        } else {
+            self
+        }
     }
 }

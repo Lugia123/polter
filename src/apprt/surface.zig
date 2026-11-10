@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const poltergeist = @import("../poltergeist/Bus.zig");
 const apprt = @import("../apprt.zig");
 const build_config = @import("../build_config.zig");
 const App = @import("../App.zig");
@@ -60,17 +61,24 @@ pub const Message = union(enum) {
     /// A line for Poltergeist to type into this terminal, exactly as if
     /// the user had typed it.
     ///
-    /// Fixed size and NUL terminated rather than a `WriteReq`: notices are
-    /// short by design (an id and two durations -- never screen contents),
-    /// and a fixed buffer keeps this off the allocator on the app thread.
-    poltergeist_notice: [255:0]u8,
+    /// Fixed size and NUL terminated rather than a `WriteReq`: a fixed
+    /// buffer keeps this off the allocator on the app thread.
+    ///
+    /// ⚠️ **Not "short by design" any more, and the old comment said
+    /// "never screen contents"** -- that is false since task 3097: a launch
+    /// that connected no agent carries the last lines of its screen, so
+    /// that a supervisor does not have to guess why or go and look. The
+    /// size is `Bus.notice_bytes` for all three notice variants, one fact
+    /// rather than three, and the bus refuses to cut a tail to fit
+    /// (`Bus.writeAgent`).
+    poltergeist_notice: [poltergeist.notice_bytes:0]u8,
 
     /// The bus's scheduled hand-over (`Bus.drainIfDue`): typed like a
     /// notice, and **when it was typed and submitted, what it carried has
     /// arrived** (`Bus.delivered`, task 1503). Its own variant so that a
     /// group's "N new messages" typed by the same path does not count as
     /// the bus's line having arrived.
-    poltergeist_handover: [255:0]u8,
+    poltergeist_handover: [poltergeist.notice_bytes:0]u8,
 
     /// A line for Poltergeist to put on this terminal's screen, for the
     /// user to read.
@@ -83,10 +91,11 @@ pub const Message = union(enum) {
     /// one recipient that cannot be relied on -- see
     /// `poltergeist/provision.zig`.
     ///
-    /// Same fixed size and NUL termination, for the same reason: these are
-    /// short by construction and this keeps them off the allocator on the
-    /// app thread.
-    poltergeist_alert: [255:0]u8,
+    /// Same fixed size and NUL termination, for the same reason: this keeps
+    /// them off the allocator on the app thread. The same `Bus.notice_bytes`
+    /// as the other two, because a notice that could not be typed is
+    /// printed -- the screen tail included.
+    poltergeist_alert: [poltergeist.notice_bytes:0]u8,
 
     /// Set the title of the surface.
     /// TODO: we should change this to a "WriteReq" style structure in

@@ -175,30 +175,42 @@ struct ControlRoomChatSidebarPanel: View {
         .padding(.bottom, 6)
     }
 
-    /// The left side's state, said on the right. **Nothing while there is
-    /// nothing to say**; the results below are never cleared by either.
+    /// The left side's state, said on the right.
+    ///
+    /// **The line keeps its height whether or not it has a word to put in
+    /// it** (the person's 2026-11-09 reading: clicking a result inserted
+    /// "Locating…" above the list and the whole result list jumped down under
+    /// the pointer). A fixed-height slot means the first result's y is the
+    /// same before, during and after a locate -- the text changes, the
+    /// layout does not.
     @ViewBuilder
     private func locateStatus(_ theme: Look.Theme) -> some View {
-        if locating {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text(String(localized: "Locating…",
-                            comment: "总控台：群聊页，正在定位搜索结果"))
+        Group {
+            if locating {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(String(localized: "Locating…",
+                                comment: "总控台：群聊页，正在定位搜索结果"))
+                }
+            } else if let locateFailed {
+                Text(String(localized: "Could not locate that message.",
+                            comment: "总控台：群聊页，搜索结果定位失败"))
+                    .help(locateFailed)
+            } else {
+                Color.clear
             }
-            .font(.system(size: Look.Font.min))
-            .foregroundStyle(theme.textSecondary.color)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
-        } else if let locateFailed {
-            Text(String(localized: "Could not locate that message.",
-                        comment: "总控台：群聊页，搜索结果定位失败"))
-                .font(.system(size: Look.Font.min))
-                .foregroundStyle(theme.textSecondary.color)
-                .help(locateFailed)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
         }
+        .font(.system(size: Look.Font.min))
+        .foregroundStyle(theme.textSecondary.color)
+        .lineLimit(1)
+        .frame(height: Self.locateStatusHeight, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
     }
+
+    /// One line at the panel's font, so the slot above the list never
+    /// changes the list's position.
+    private static let locateStatusHeight: CGFloat = 18
 
     // MARK: - Results
 

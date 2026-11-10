@@ -31,8 +31,6 @@
   ],
   "sources": {
     "in": [
-    "macos/Sources/Features/ControlRoom/ControlRoomChatLineTable.swift",
-    "macos/Sources/Features/ControlRoom/ControlRoomChatLineBar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomAlert.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomElsewhere.swift",
@@ -91,11 +89,7 @@
       "macos/Sources/Features/ControlRoom/ControlRoomChatData.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatHistory.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatMetadata.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomChatAnchor.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomChatWindow.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomChatScrollSurface.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatPresentation.swift",
-      "macos/Sources/Features/ControlRoom/ControlRoomChatIndexBar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatSearch.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatSearchFeed.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomChatContext.swift",
@@ -111,6 +105,14 @@
       {
         "path": "macos/Sources/Features/ControlRoom/ControlRoomNativeChatView.swift",
         "why": "the chat's message list as a SwiftUI view over values it is handed (task 2791): no core, no window and no terminal, so the package compiles it; what it draws is a later slice's business"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomChatPage.swift",
+        "why": "the group chat's transcript page in the same WebKit shell a plugin's settings page and a file preview use (task 3084): it draws nothing and asks nobody for anything -- it serialises what its owner already computed and answers the page's eight questions. `ControlRoomNativeChatView.swift` (in) names it, so the package compiles it, and the shell it conforms to (`Preview/PluginWebView.swift`) is in the package already. It serves its files out of `Bundle.main`, so no test here starts a page"
+      },
+      {
+        "path": "macos/Sources/Features/ControlRoom/ControlRoomChatTranscriptDiff.swift",
+        "why": "how the page's list of row ids changed between two updates -- append, prepend, slide or another map (design v3 §五). It was the native list's anchor classifier and the anchor is gone (design v3 §七); the page bridge is its only reader now, and the rule is plain arrays in, one enum out, so a test can hold it without a page"
       },
       "macos/Sources/Features/ControlRoom/ControlRoomSidebar.swift",
       "macos/Sources/Features/ControlRoom/ControlRoomAnswerReader.swift",
@@ -314,7 +316,6 @@
   },
   "tests": {
     "in": [
-    "macos/Tests/ControlRoom/ControlRoomChatLineTests.swift",
       "macos/Tests/ControlRoom/ControlRoomAlertTests.swift",
       "macos/Tests/ControlRoom/ControlRoomAtLaunchTests.swift",
       "macos/Tests/ControlRoom/ControlRoomElsewhereTests.swift",
@@ -343,6 +344,7 @@
       "macos/Tests/ControlRoom/ControlRoomWindowSizeTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatRulesTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatPresentationTests.swift",
+  "macos/Tests/ControlRoom/ControlRoomChatTranscriptObligationsTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatSearchTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatSearchFeedTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatContextTests.swift",
@@ -350,8 +352,6 @@
   "macos/Tests/ControlRoom/ControlRoomChatReferenceDeskTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatDisplayHighlightTests.swift",
   "macos/Tests/ControlRoom/ControlRoomChatSidebarTests.swift",
-      "macos/Tests/ControlRoom/ControlRoomChatScrollSurfaceTests.swift",
-      "macos/Tests/ControlRoom/ControlRoomChatDebugJumpTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatFeedTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatHistoryTests.swift",
       "macos/Tests/ControlRoom/ControlRoomChatTransportTests.swift",

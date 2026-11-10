@@ -75,7 +75,18 @@ pub const App = struct {
         return false;
     }
 };
-pub const Surface = struct {};
+pub const Surface = struct {
+    /// **Nothing on screen, so nothing named** (task 3113). The other two
+    /// runtimes answer with the title the person sees on the tab; this one
+    /// has no tab. Declared here rather than guarded at every caller: the
+    /// core reads a terminal's title for the overall view's rows
+    /// (`App.overallTitleOfPane`), and a test build reaches that code, so
+    /// the stub is what says "there is no title" instead of the code
+    /// failing to compile.
+    pub fn getTitle(_: *Surface) ?[:0]const u8 {
+        return null;
+    }
+};
 
 test "the wakeup counter counts wakeups, and only wakeups" {
     // ⚠️ **This runs before anything relies on the counter, on purpose.**

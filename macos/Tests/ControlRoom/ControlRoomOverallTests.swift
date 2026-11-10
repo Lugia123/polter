@@ -576,10 +576,11 @@ struct ControlRoomOverallTests {
     // MARK: The overall view's chart (handoff §6, the third of slice 2's
     // three blocks)
 
-    /// An answer carrying the three stacked layers, in the core's own order
-    /// (`main`, `chats`, `sidecars`), and the moment the chart's right edge
-    /// is. **The numbers are small on purpose**: the sums the tests assert
-    /// below are read by eye against the layer beside them.
+    /// An answer carrying the two stacked layers this core sends (task
+    /// 3113, second round: `main`, `terminals`), in the core's own order,
+    /// and the moment the chart's right edge is. **The numbers are small on
+    /// purpose**: the sums the tests assert below are read by eye against
+    /// the layer beside them.
     static func seriesFixture(nowS: Int = 7200) -> Data {
         Data("""
             {"at":"2026-10-25T16:10:00+08:00",
@@ -587,11 +588,9 @@ struct ControlRoomOverallTests {
                        "run_started":"2026-10-25T14:10:00+08:00",
                        "series":{
                          "hour":[{"category":"main","cells":[10,20,30]},
-                                 {"category":"chats","cells":[1,2,3]},
-                                 {"category":"sidecars","cells":[100,200,300]}],
+                                 {"category":"terminals","cells":[100,200,300]}],
                          "week":[{"category":"main","cells":[7,8]},
-                                 {"category":"chats","cells":[9,10]},
-                                 {"category":"sidecars","cells":[11,12]}],
+                                 {"category":"terminals","cells":[9,10]}],
                          "hour_step_s":300,"week_step_s":1800,"now_s":\(nowS)}}}
             """.utf8)
     }
@@ -602,28 +601,28 @@ struct ControlRoomOverallTests {
         U.Layer(name: name, cells: cells)
     }
 
-    /// **The three layers added up, cell by cell, in the core's order**: the
-    /// second layer's top edge is the first's plus its own, the third's is
-    /// both. The order out is the order in -- nothing here sorts the layers
-    /// or works out which is which.
-    @Test func theThreeLayersAreAddedUpCellByCell() throws {
+    /// **The layers added up, cell by cell, in the core's order**: the
+    /// second layer's top edge is the first's plus its own. The order out is
+    /// the order in -- nothing here sorts the layers or works out which is
+    /// which.
+    @Test func theLayersAreAddedUpCellByCell() throws {
         let a = try U.decode(Self.seriesFixture())
-        #expect(a.polter.series.hour.count == 3)
+        #expect(a.polter.series.hour.count == 2)
         let s = U.stack(a.polter.series.hour)
         #expect(s.cells == 3)
-        #expect(s.tops.count == 3)
+        #expect(s.tops.count == 2)
         // The first layer is itself, cell for cell.
         #expect(s.top(0) == [10, 20, 30])
-        // The second is the first plus its own.
-        #expect(s.top(1) == [11, 22, 33])
-        // The third is both, and its last cell is the highest anywhere.
-        #expect(s.top(2) == [111, 222, 333])
-        #expect(same(s.maxMib, 333))
+        // The second is the first plus its own, and its last cell is the
+        // highest anywhere.
+        #expect(s.top(1) == [110, 220, 330])
+        #expect(same(s.maxMib, 330))
         // Each layer's base is the one below it, and the bottom's is
         // nothing: they are stacked and not laid side by side.
         #expect(same(s.base(0, 0), 0))
         #expect(same(s.base(1, 2), 30))
-        #expect(same(s.base(2, 2), 33))
+        // A layer there is no such row for is nothing, not the row above.
+        #expect(same(s.base(2, 2), 0))
     }
 
     /// **A layer that came short is zero where it has nothing**, not a
@@ -632,7 +631,7 @@ struct ControlRoomOverallTests {
     @Test func aLayerThatCameShortIsZeroWhereItHasNothing() {
         let s = U.stack([Self.layer("main", [5, 5]),
                          Self.layer("chats", [1, 2, 3, 4]),
-                         Self.layer("sidecars", [9])])
+                         Self.layer("terminals", [9])])
         #expect(s.cells == 4)
         #expect(s.top(0) == [5, 5, 0, 0])
         #expect(s.top(1) == [6, 7, 3, 4])
@@ -741,20 +740,21 @@ struct ControlRoomOverallTests {
         #expect(bare.polter.series.nowS == 0)
     }
 
-    /// The chart's three layers are read as the core sent them, name and
-    /// all, for both spans: **the host draws the core's order and does not
-    /// sort it**.
+    /// The chart's layers are read as the core sent them, name and all, for
+    /// both spans: **the host draws the core's order and does not sort it**.
+    /// Two of them now (task 3113, second round): the main process and the
+    /// terminals.
     @Test func theChartsLayersTakeTheCoresOrderAndNames() throws {
         let a = try U.decode(Self.seriesFixture())
         let hour = a.polter.series.layers(.day)
-        #expect(hour.map(\.name) == ["main", "chats", "sidecars"])
-        #expect(hour[1].cells == [1, 2, 3])
+        #expect(hour.map(\.name) == ["main", "terminals"])
+        #expect(hour[1].cells == [100, 200, 300])
         #expect(same(a.polter.series.stepS(.day), 300))
         #expect(same(a.polter.series.stepS(.week), 1800))
-        // The week's own three, and the same names in the same order.
+        // The week's own two, and the same names in the same order.
         let week = a.polter.series.layers(.week)
-        #expect(week.map(\.name) == ["main", "chats", "sidecars"])
-        #expect(week[2].cells == [11, 12])
+        #expect(week.map(\.name) == ["main", "terminals"])
+        #expect(week[1].cells == [9, 10])
         // The switch's two spans, in the order it draws them.
         #expect(U.Span.allCases == [.day, .week])
     }
@@ -766,20 +766,35 @@ struct ControlRoomOverallTests {
     /// `category` (never its `kind`), the two verdicts, and the three facts
     /// the row is named from.
     static func process(_ category: String, pid: UInt64 = 1, group: String? = nil,
-                        memMib: UInt64 = 100, insideMain: Bool = false,
-                        terminal: String? = nil, rising: Bool = false) -> U.Process {
-        U.Process(category: category, pid: pid, group: group, count: 1, memMib: memMib,
+                        memMib: UInt64 = 100, count: UInt64 = 1, insideMain: Bool = false,
+                        terminal: String? = nil, terminalTitle: String? = nil,
+                        children: [U.Process.Child] = [], childrenMore: UInt64 = 0,
+                        rising: Bool = false) -> U.Process {
+        U.Process(category: category, pid: pid, group: group, count: count, memMib: memMib,
                   cpuDecimals: 4, rising: rising, slopeMibPerHour: rising ? 1331 : 0,
                   insideMain: insideMain, alive: true, diedAt: nil, started: nil,
-                  terminal: terminal)
+                  terminal: terminal, terminalTitle: terminalTitle, children: children,
+                  childrenMore: childrenMore)
     }
 
-    /// A `polter` block with just the two lists the table is drawn from, for
-    /// the tests that ask about the table and not about a reading.
+    /// One process inside a terminal's tree, for the table's per-terminal
+    /// groups.
+    static func child(_ pid: UInt64, _ name: String, _ memMib: UInt64) -> U.Process.Child {
+        U.Process.Child(pid: pid, name: name, memMib: memMib)
+    }
+
+    /// A `polter` block with just the lists the table is drawn from, for the
+    /// tests that ask about the table and not about a reading.
     static func whole(sections: [U.Section], processes: [U.Process],
-                      treeMib: UInt64? = nil) -> U.Whole {
+                      tableGroups: [U.TableGroup] = [], treeMib: UInt64? = nil) -> U.Whole {
         U.Whole(treeMib: treeMib, cpuDecimals: 0, monitorBytes: 0, untracked: 0, runStarted: "",
-                series: .none, processes: processes, sections: sections, rise: nil)
+                series: .none, processes: processes, sections: sections,
+                tableGroups: tableGroups, rise: nil)
+    }
+
+    /// One group heading of the table, as `tableGroupsOf` writes it.
+    static func group(_ name: String, count: UInt64, totalMib: UInt64) -> U.TableGroup {
+        U.TableGroup(group: name, count: count, totalMib: totalMib)
     }
 
     /// **The table is grouped by the two things the core sent**: a heading
@@ -790,19 +805,17 @@ struct ControlRoomOverallTests {
         let w = Self.whole(sections: [
             U.Section(category: "main", count: 1, totalMib: 512),
             U.Section(category: "chats", count: 2, totalMib: 21_074),
-            U.Section(category: "sidecars", count: 1, totalMib: 92),
         ], processes: [
             Self.process("main", pid: 812, memMib: 512),
             Self.process("main", pid: 812, memMib: 1, insideMain: true),
             Self.process("chats", pid: 1904, group: "web-app", memMib: 20_787),
             Self.process("chats", pid: 1911, group: "billing", memMib: 287),
-            Self.process("sidecars", pid: 2210, memMib: 92),
         ])
         let lines = U.tableLines(w)
         // The order out is the core's: a heading, then the rows it named, in
         // the order the core's own list has them.
-        #expect(lines.map(\.sectionOrNil?.category) == ["main", nil, nil, "chats", nil, nil, "sidecars", nil])
-        #expect(lines.map(\.pidOrNil) == [nil, 812, 812, nil, 1904, 1911, nil, 2210])
+        #expect(lines.map(\.sectionOrNil?.category) == ["main", nil, nil, "chats", nil, nil])
+        #expect(lines.map(\.pidOrNil) == [nil, 812, 812, nil, 1904, 1911])
         // The numbers on the headings are the core's, drawn as they came:
         // the main process's is one process and 512 MiB even though two rows
         // are drawn under it, because the monitor's row is inside it and the
@@ -815,9 +828,11 @@ struct ControlRoomOverallTests {
         #expect(U.tableHeight(rows: lines.count + 1) > U.tableHeight(rows: 1))
     }
 
-    /// **A row the core gave no heading for is not drawn**, rather than put
-    /// in a group of the host's own invention: naming a group the core did
-    /// not name is the host deciding.
+    /// **A row the core gave no heading for and did not name a terminal on
+    /// is not drawn**, rather than put in a group of the host's own
+    /// invention: naming a group the core did not name is the host
+    /// deciding. A row that *is* a terminal is its own group (task 3113,
+    /// second round) -- the core named it, so there is nothing invented.
     @Test func aRowWithNoHeadingIsNotDrawn() {
         let w = Self.whole(sections: [U.Section(category: "main", count: 1, totalMib: 5)],
                            processes: [Self.process("main", pid: 1), Self.process("chats", pid: 2)])
@@ -849,21 +864,30 @@ struct ControlRoomOverallTests {
     }
 
     /// The other rows are named from what the core sent beside them: the
-    /// group a chat is, the terminal a sidecar serves. **The names are the
-    /// host's** (`rowName`); the facts in them are the core's, and a fact
-    /// that did not arrive leaves the application's own name rather than a
-    /// half sentence.
+    /// group a chat is, the terminal a terminal's row is. **The names are
+    /// the host's** (`rowName`); the facts in them are the core's, and a
+    /// fact that did not arrive leaves the application's own name rather
+    /// than a half sentence.
     @Test func theRowsAreNamedFromWhatTheCoreSentBesideThem() {
         let chat = Self.process("chats", group: "web-app")
         #expect(U.rowName(chat).contains("web-app"))
         #expect(chat.group == "web-app")
-        // A sidecar is named by the terminal it serves.
-        let sidecar = Self.process("sidecars", group: "web-app", terminal: "0xab")
-        #expect(U.rowName(sidecar).contains("0xab"))
-        #expect(sidecar.terminal == "0xab")
-        // Neither a group nor a terminal: the application's own name, which
-        // is what the main process's row is.
-        #expect(U.rowName(Self.process("sidecars")) == "Polter")
+        // A terminal's row is named by the terminal: its title, then its id
+        // (task 3113, the user's ruling -- not one word for the kind).
+        let terminal = Self.process("terminals", group: "web-app",
+                                    terminal: "0x00000000000000ab",
+                                    terminalTitle: "开发")
+        #expect(U.rowName(terminal) == "开发 0x00000000000000ab")
+        #expect(terminal.terminal == "0x00000000000000ab")
+        // No title: the id alone, rather than half a name.
+        let idOnly = Self.process("terminals", terminal: "0x00000000000000ab")
+        #expect(U.rowName(idOnly) == "0x00000000000000ab")
+        // A title that never arrived does not leave a dangling separator.
+        let blank = Self.process("terminals", terminal: "0x00000000000000ab", terminalTitle: "")
+        #expect(U.rowName(blank) == "0x00000000000000ab")
+        // Neither a title nor an id: the terminal's own word, never the
+        // application's (which is the main process's row).
+        #expect(U.rowName(Self.process("terminals")) == "Terminal")
         // An empty string is a fact that did not arrive, not a name.
         #expect(U.rowName(Self.process("chats", group: "")) == "Polter")
     }
@@ -872,12 +896,15 @@ struct ControlRoomOverallTests {
     /// core's own category on each: **the host is handed the grouping and
     /// never reads the core's `kind`**, which is the field it must not
     /// (`tools/control-room-hosts-do-not-decide.py`, rule 1).
+    ///
+    /// **A terminal is its own group** (task 3113, second round): the answer
+    /// carries no heading over the terminals, so the row is drawn as one --
+    /// named by the terminal, with the processes it started under it.
     @Test func theProcessTableIsReadInTheCoresOrder() throws {
         let a = try U.decode(Data("""
             {"polter":{"cpu_cores":"2.6","total_mib":22938,
               "sections":[{"category":"main","count":1,"total_mib":512},
-                          {"category":"chats","count":1,"total_mib":20787},
-                          {"category":"sidecars","count":2,"total_mib":92}],
+                          {"category":"chats","count":1,"total_mib":20787}],
               "processes":[
                 {"kind":"main","category":"main","pid":812,"group":null,"count":1,
                  "mem_mib":512,"cpu_ds":4,"inside_main":false,"alive":true},
@@ -885,28 +912,194 @@ struct ControlRoomOverallTests {
                  "mem_mib":1,"cpu_ds":0,"inside_main":true,"alive":true},
                 {"kind":"chat","category":"chats","pid":1904,"group":"web-app","count":1,
                  "mem_mib":20787,"cpu_ds":9,"inside_main":false,"alive":true},
-                {"kind":"sidecar","category":"sidecars","pid":2210,"group":"web-app","count":2,
+                {"kind":"terminal","category":"terminals","pid":2210,"group":"web-app","count":2,
                  "mem_mib":92,"cpu_ds":0,"inside_main":false,"alive":false,
-                 "died_at":"2026-10-25T16:10:02+08:00"}]}}
+                 "died_at":"2026-10-25T16:10:02+08:00",
+                 "terminal":"0x00000000000008a2","terminal_title":"开发",
+                 "children":[{"pid":2211,"name":"claude","mem_mib":60},
+                             {"pid":2212,"name":"polter","mem_mib":32}],
+                 "children_more":5}]}}
             """.utf8))
         let rows = a.polter.processes
-        #expect(rows.map(\.category) == ["main", "main", "chats", "sidecars"])
+        #expect(rows.map(\.category) == ["main", "main", "chats", "terminals"])
         #expect(rows.map(\.pid) == [812, 812, 1904, 2210])
         #expect(rows[2].group == "web-app")
         #expect(rows[2].memMib == 20_787)
         #expect(rows[3].count == 2)
         #expect(!rows[3].alive)
         #expect(rows[3].diedAt == "2026-10-25T16:10:02+08:00")
+        // **The terminal a row is, what it is called, and what is in it**
+        // (task 3113): all read, in the core's order.
+        #expect(rows[3].terminal == "0x00000000000008a2")
+        #expect(rows[3].terminalTitle == "开发")
+        #expect(U.rowName(rows[3]) == "开发 0x00000000000008a2")
+        #expect(rows[3].children.map(\.name) == ["claude", "polter"])
+        #expect(rows[3].children.map(\.memMib) == [60, 32])
+        // The rest of the tree, counted by the core: the table says "and 5
+        // more" rather than showing two as all of it.
+        #expect(rows[3].childrenMore == 5)
+        // A row that names no terminal has no title or children either,
+        // rather than a title hanging on a row it does not belong to.
+        #expect(rows[0].terminal == nil)
+        #expect(rows[0].terminalTitle == nil)
+        #expect(rows[0].children.isEmpty)
+        #expect(rows[0].childrenMore == 0)
         // And the headings, read as the core sent them: **the main process's
         // count is 1 although two rows are drawn under it**, because the
         // monitor's row is inside it and the core left it out. The host is
         // handed both numbers and adds nothing up (review r2 ①).
         let s = a.polter.sections
-        #expect(s.map(\.category) == ["main", "chats", "sidecars"])
-        #expect(s.map(\.count) == [1, 1, 2])
-        #expect(s.map(\.totalMib) == [512, 20_787, 92])
-        // Which is the same as the JSON above, drawn line by line.
-        #expect(U.tableLines(a.polter).map(\.pidOrNil) == [nil, 812, 812, nil, 1904, nil, 2210])
+        #expect(s.map(\.category) == ["main", "chats"])
+        #expect(s.map(\.count) == [1, 1])
+        #expect(s.map(\.totalMib) == [512, 20_787])
+        // Which is the same as the JSON above, drawn line by line: two
+        // headings with their rows, then the terminal as its own group with
+        // its two processes under it.
+        #expect(U.tableLines(a.polter).map(\.pidOrNil) == [nil, 812, 812, nil, 1904, 2210, nil, nil, nil])
+    }
+
+    /// **A folded group keeps its line and loses the rows under it**
+    /// (task 3113): the triangle used to be a picture a press did nothing
+    /// to. A category heading folds by its category and a terminal by its
+    /// id; the line keeps the core's own count and total, so a reader who
+    /// closed a group can see what it costs.
+    @Test func aFoldedGroupKeepsItsLineAndLosesItsRows() {
+        let w = Self.whole(sections: [
+            U.Section(category: "main", count: 1, totalMib: 512),
+            U.Section(category: "chats", count: 2, totalMib: 21_074),
+        ], processes: [
+            Self.process("main", pid: 812, memMib: 512),
+            Self.process("main", pid: 812, memMib: 1, insideMain: true),
+            Self.process("chats", pid: 1904, group: "web-app", memMib: 20_787),
+            Self.process("chats", pid: 1911, group: "billing", memMib: 287),
+            Self.process("terminals", pid: 2210, memMib: 92, count: 32,
+                         terminal: "0x00000000000008a2", terminalTitle: "开发",
+                         children: [Self.child(2211, "claude", 60), Self.child(2212, "polter", 32)],
+                         childrenMore: 30),
+        ])
+        // Nothing folded: the whole table -- two headings with their rows,
+        // then the terminal as its own group with its two processes and the
+        // line that says thirty more did not fit.
+        #expect(U.tableLines(w).map(\.pidOrNil) == [nil, 812, 812, nil, 1904, 1911, 2210, nil, nil, nil])
+        // The chats folded away: their heading stays, their two rows go.
+        let folded = U.tableLines(w, folded: [U.sectionKey("chats")])
+        #expect(folded.map(\.pidOrNil) == [nil, 812, 812, nil, 2210, nil, nil, nil])
+        #expect(folded.map(\.sectionOrNil?.category) == ["main", nil, nil, "chats", nil, nil, nil, nil])
+        // The heading still carries the core's own count and total.
+        #expect(folded[3].sectionOrNil?.count == 2)
+        #expect(folded[3].sectionOrNil?.totalMib == 21_074)
+        // **The terminal folded by its id**: its own line stays -- with the
+        // core's count and memory -- and the processes and the "and thirty
+        // more" line under it go.
+        let term = U.tableLines(w, folded: [U.foldKey(w.processes[4])])
+        #expect(term.map(\.pidOrNil) == [nil, 812, 812, nil, 1904, 1911, 2210])
+        if case let .terminal(p) = term.last {
+            #expect(p.memMib == 92)
+            #expect(p.count == 32)
+            #expect(p.childrenMore == 30)
+        } else {
+            Issue.record("the terminal's line is not a terminal line")
+        }
+        // Every group folded: the two headings and the terminal's line, and
+        // no rows -- shorter than the table's own height.
+        let all = U.tableLines(w, folded: [U.sectionKey("main"), U.sectionKey("chats"),
+                                           U.foldKey(w.processes[4])])
+        #expect(all.count == 3)
+        #expect(all.allSatisfy { $0.sectionOrNil != nil || $0.pidOrNil != nil })
+        #expect(U.tableHeight(rows: all.count + 1) < U.tableHeight(rows: 10))
+        // A name the core never sent folds nothing rather than swallowing
+        // a group nobody named.
+        #expect(U.tableLines(w, folded: ["nope"]) == U.tableLines(w))
+    }
+
+    /// **The table is three layers** (task 3119): the main process, then one
+    /// line per group with the terminals and the chat that carry its name,
+    /// then a terminal's own processes. The rows in no group are the last
+    /// layer and are not dropped.
+    ///
+    /// **Every number on a heading is the core's**: the counts and totals
+    /// arrive from `tableGroups`, and nothing here works one out.
+    @Test func theTableIsThreeLayers() {
+        let w = Self.whole(
+            sections: [U.Section(category: "main", count: 1, totalMib: 500)],
+            processes: [
+                Self.process("main", pid: 812, memMib: 500),
+                Self.process("main", pid: 812, memMib: 1, insideMain: true),
+                Self.process("chats", pid: 1904, group: "web-app", memMib: 640,
+                             terminal: "0x0000000000000a21", terminalTitle: "web-app"),
+                Self.process("terminals", pid: 2210, group: "web-app", memMib: 3_120, count: 3,
+                             terminal: "0x0000000000000a11", terminalTitle: "开发",
+                             children: [Self.child(2211, "claude", 60)], childrenMore: 2),
+                Self.process("terminals", pid: 2212, group: "", memMib: 40, count: 1,
+                             terminal: "0x0000000000000a12", terminalTitle: "孤立"),
+                Self.process("terminals", pid: 2213, group: "billing", memMib: 410, count: 1,
+                             terminal: "0x0000000000000a13", terminalTitle: "mac 测试"),
+            ],
+            tableGroups: [
+                Self.group("billing", count: 1, totalMib: 410),
+                Self.group("web-app", count: 2, totalMib: 3_760),
+                // **The empty name is a layer, not a missing fact**: the
+                // terminal in no group is still visible, last.
+                Self.group("", count: 1, totalMib: 40),
+            ])
+        let lines = U.tableLines(w)
+        // The main heading and its two rows, then each group in the core's
+        // order with the rows that carry its name, in the core's order.
+        #expect(lines.map(\.pidOrNil) == [nil, 812, 812,
+                                          nil, 2213,
+                                          nil, 1904, 2210, nil, nil,
+                                          nil, 2212])
+        #expect(lines.map(\.groupOrNil?.group) == [nil, nil, nil,
+                                                  "billing", nil,
+                                                  "web-app", nil, nil, nil, nil,
+                                                  "", nil])
+        #expect(lines.map(\.sectionOrNil?.category) == ["main", nil, nil,
+                                                        nil, nil,
+                                                        nil, nil, nil, nil, nil,
+                                                        nil, nil])
+        // The headings' numbers are drawn as they came.
+        #expect(lines[0].sectionOrNil?.totalMib == 500)
+        #expect(lines[3].groupOrNil?.count == 1)
+        #expect(lines[3].groupOrNil?.totalMib == 410)
+        #expect(lines[5].groupOrNil?.count == 2)
+        #expect(lines[5].groupOrNil?.totalMib == 3_760)
+
+        // **A group folds away its rows and keeps its line** (the core's
+        // count is still on it).
+        let webApp = U.tableLines(w, folded: [U.groupKey("web-app")])
+        #expect(webApp.map(\.pidOrNil) == [nil, 812, 812, nil, 2213, nil, nil, 2212])
+        #expect(webApp[5].groupOrNil?.count == 2)
+        // **A terminal folds away its processes** and keeps its own line.
+        let term = U.tableLines(w, folded: [U.terminalKey(w.processes[3])])
+        #expect(term.map(\.pidOrNil) == [nil, 812, 812, nil, 2213, nil, 1904, 2210,
+                                         nil, 2212])
+        // **The no-group layer folds as a layer of its own.**
+        let noGroup = U.tableLines(w, folded: [U.groupKey("")])
+        #expect(noGroup.map(\.pidOrNil) == [nil, 812, 812, nil, 2213,
+                                            nil, 1904, 2210, nil, nil, nil])
+    }
+
+    /// **A group can be called `main`, and its fold key does not collide with
+    /// the main process's category** (task 3119): the two keys carry what
+    /// kind of line each is, so folding one leaves the other alone.
+    @Test func aGroupNamedMainDoesNotCollideWithTheMainCategory() {
+        let w = Self.whole(
+            sections: [U.Section(category: "main", count: 1, totalMib: 500)],
+            processes: [
+                Self.process("main", pid: 812, memMib: 500),
+                Self.process("terminals", pid: 2210, group: "main", memMib: 40, count: 1,
+                             terminal: "0x0000000000000a11", terminalTitle: "开发"),
+            ],
+            tableGroups: [Self.group("main", count: 1, totalMib: 40)])
+        #expect(U.sectionKey("main") != U.groupKey("main"))
+        // Folding the category leaves the group's own row alone.
+        let byCategory = U.tableLines(w, folded: [U.sectionKey("main")])
+        #expect(byCategory.map(\.pidOrNil) == [nil, nil, 2210])
+        // Folding the group leaves the main process's row alone.
+        let byGroup = U.tableLines(w, folded: [U.groupKey("main")])
+        #expect(byGroup.map(\.pidOrNil) == [nil, 812, nil])
+        // And a bare `main` -- the old spelling -- folds neither.
+        #expect(U.tableLines(w, folded: ["main"]).map(\.pidOrNil) == [nil, 812, nil, 2210])
     }
 
     // MARK: Opening the overall view (handoff §6's entry, and the
@@ -942,6 +1135,25 @@ struct ControlRoomOverallTests {
         model.showOverall()
         #expect(model.showingOverall)
         #expect(model.overallInFront)
+    }
+
+    /// **The page says its own name in the bar while it is in front** (task
+    /// 3113): the frame's bar took the selected row's name, so with a group
+    /// called `polter` selected the page's title read `polter`. The whole
+    /// of Polter is not a row's, so it has a name of its own.
+    @Test func theOverallViewSaysItsOwnNameInTheBar() {
+        let model = Self.openModel()
+        let row = model.selectedRow
+        #expect(row != nil)
+        let groupsBar = ControlRoomList.detailBar(row: row, selection: model.selection,
+                                                  holdsTerminal: false, title: nil)
+        #expect(groupsBar.caption == "billing")
+        let overallBar = ControlRoomList.detailBar(row: row, selection: model.selection,
+                                                   holdsTerminal: false, title: nil,
+                                                   overallTitle: ControlRoomOverall.pageTitle)
+        #expect(overallBar.title == nil)
+        #expect(overallBar.caption == ControlRoomOverall.pageTitle)
+        #expect(overallBar.caption == "Polter performance monitoring")
     }
 
     /// **Coming back to a group puts it on the page it was left on, and the
@@ -1109,6 +1321,60 @@ struct ControlRoomOverallTests {
         #expect(at.plotGutter.maxX == at.plot.minX)
         #expect(at.plotXLabels.minY == at.plot.maxY + CGFloat(o.plotAxisGap))
         #expect(at.contentHeight == at.table.minY)
+    }
+
+    /// **The two little curves stay inside their cards** (task 3113). The
+    /// rect the points are scaled into has its origin at zero and the box
+    /// is placed in the card once: the rect used to carry the card's origin
+    /// as well, which the view then added again, and the newest points were
+    /// drawn below the card's bottom edge -- the line the user saw poking
+    /// out of the corner.
+    ///
+    /// Every reading below is the page's own arithmetic: the card is the
+    /// one `layout` hands a mini, and the points are drawn by the same
+    /// `ControlRoomResources.curve` the view calls.
+    @Test func theLittleCurvesLineStaysInsideItsCard() throws {
+        let o = Look.OverallPage.self
+        let card = CGRect(x: 20, y: 100, width: 500,
+                          height: CGFloat(o.cardPadY) + CGFloat(o.miniHeadHeight)
+                              + CGFloat(o.miniTop) + CGFloat(o.miniHeight) + CGFloat(o.cardPadY))
+        let (box, place) = U.miniCurve(in: card)
+        // The box is its own space, starting at zero.
+        #expect(box.minX == 0)
+        #expect(box.minY == 0)
+        #expect(box.width == card.width - 2 * CGFloat(o.cardPadX))
+        #expect(box.height == CGFloat(o.miniHeight))
+        // Placed from the card's padding: the head's line, its gap, then
+        // the box -- and the box ends above the card's bottom padding.
+        #expect(place.x == CGFloat(o.cardPadX))
+        #expect(place.y == CGFloat(o.cardPadY) + CGFloat(o.miniHeadHeight) + CGFloat(o.miniTop))
+        #expect(place.x + box.width <= card.width)
+        #expect(place.y + box.height <= card.height - CGFloat(o.cardPadY))
+
+        // The line itself, placed as the view places it, is in the card --
+        // the disk's own line against it too. A value near zero is the
+        // point nearest the box's floor, which is the one the old rect put
+        // below the card.
+        let points: [(UInt64, UInt64)] = [(0, 5), (3600, 140), (7200, 180)]
+        let drawn = ControlRoomResources.curve(points, lineAt: 200, rect: box,
+                                               now: 7200, span: 24 * 60 * 60)
+        #expect(drawn.line.count == 3)
+        for p in drawn.line {
+            #expect(place.x + p.x >= 0)
+            #expect(place.x + p.x <= card.width)
+            #expect(place.y + p.y >= 0)
+            #expect(place.y + p.y <= card.height)
+        }
+        let killY = try #require(drawn.killY)
+        #expect(place.y + killY >= 0)
+        #expect(place.y + killY <= card.height)
+        // **The bug's own shape**: a box that carries the card's origin
+        // puts the newest point below the card. This is the floor the test
+        // is for, measured rather than asserted in the abstract.
+        let carried = CGRect(x: CGFloat(o.cardPadX), y: place.y, width: box.width, height: box.height)
+        let wrong = ControlRoomResources.curve(points, lineAt: 200, rect: carried,
+                                               now: 7200, span: 24 * 60 * 60)
+        #expect(wrong.line.contains { place.y + $0.y > card.height })
     }
 
     /// **The sentence takes its room off the chart and nothing else moves**:
