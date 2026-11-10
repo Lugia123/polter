@@ -4740,7 +4740,8 @@ test "ControlRoom what: a question is whole, and a part of one is never passed o
     const a = arena.allocator();
 
     // A dialog: the hook sends a first line and all of it. Longer than the
-    // 160 bytes the bus keeps of a note.
+    // bytes the bus keeps of a note, and shorter than the cap, so nothing
+    // of it is cut.
     var long: std.ArrayListUnmanaged(u8) = .empty;
     for (0..30) |_| try long.appendSlice(a, "发票编号要按租户分开吗？");
     try w.steward(0xa1, "one", 0x21, "dialog");
@@ -4762,10 +4763,12 @@ test "ControlRoom what: a question is whole, and a part of one is never passed o
     try w.hook(0xa3, .turn_ended, "先切一半流量，还是一次切完？\n", 10 * min);
     try w.hook(0xa3, .awaiting_input, null, 11 * min);
 
-    // A note as long as the bus keeps one and nothing else: it may have
-    // been cut, and the row says so.
+    // A note longer than the bus keeps and nothing else: it is cut to
+    // `Bus.screen_tail_bytes`, and the row says so. The two numbers are
+    // written from the constant, not spelled out, so raising the cap does
+    // not leave this asserting a limit that no longer exists.
     try w.steward(0xa4, "four", 0x24, "capped");
-    try w.hook(0xa4, .awaiting_input, "x" ** 200, 10 * min);
+    try w.hook(0xa4, .awaiting_input, "x" ** (Bus.screen_tail_bytes + 50), 10 * min);
     // A short note is all of it.
     try w.steward(0xa5, "five", 0x25, "short");
     try w.hook(0xa5, .awaiting_input, "用哪个分支？", 10 * min);
@@ -4788,7 +4791,7 @@ test "ControlRoom what: a question is whole, and a part of one is never passed o
     try testing.expectEqual(What.Cut.none, only.cut);
 
     const capped = (try rowNamed(s, "capped")).what;
-    try testing.expectEqual(@as(usize, 160), capped.lines[0].len);
+    try testing.expectEqual(@as(usize, Bus.screen_tail_bytes), capped.lines[0].len);
     try testing.expectEqual(What.Cut.tail, capped.cut);
 
     try testing.expectEqual(What.Cut.none, (try rowNamed(s, "short")).what.cut);
