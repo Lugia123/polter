@@ -250,6 +250,23 @@ fn said(r: &mut Reader, v: &Value, path: &str) -> Said {
     Said { at: r.text(v, path, "at"), who: r.text(v, path, "who"), text: r.text(v, path, "text") }
 }
 
+/// The object at `key` when the answer may say there is none. **The core
+/// writes no optional field it has nothing for** (`std.json` drops a null
+/// optional, and the core fixtures have no `squad`/`worktree`/`tokens` key
+/// at all), so an absent key is the core saying "none" -- silence, not
+/// "not retrieved". A key that is there and is not an object is an answer
+/// this build cannot read: none, and said.
+fn optional_object<'a>(r: &mut Reader, v: &'a Value, path: &str, key: &str) -> Option<&'a Value> {
+    match v.get(key) {
+        None | Some(Value::Null) => None,
+        Some(o @ Value::Obj(_)) => Some(o),
+        Some(_) => {
+            r.miss(join(path, key));
+            None
+        }
+    }
+}
+
 fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
     let lp = join(path, "log");
     let log = r.list(v, path, "log").iter().enumerate().filter_map(|(i, l)| {
@@ -278,8 +295,15 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
     let sp = join(path, "said");
     let said = r.list(v, path, "said").iter().enumerate().map(|(i, x)| said(r, x, &at(&sp, i))).collect();
 
-    let squad = match v.get("squad") {
-        Some(sq @ Value::Obj(_)) => {
+    // **The three cards are optional, and there are two ways to have none**
+    // (`optional_object`): the core left the key out (or wrote null), which
+    // is a task without a squad/a tree/tokens -- nothing said; or it sent
+    // something this build cannot read, whose path goes to `missing` for
+    // the host to write down. A squad that is there with its seats missing
+    // is a third: the card is drawn with no seats in it (`squad.seats` is
+    // said), which is not the same page as no squad at all.
+    let squad = match optional_object(r, v, path, "squad") {
+        Some(sq) => {
             let sp_path = join(path, "squad");
             let name = r.text(sq, &sp_path, "name");
             let seats_path = join(&sp_path, "seats");
@@ -296,11 +320,11 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
             }).collect();
             Some(SquadDetail { name, seats })
         }
-        _ => None,
+        None => None,
     };
 
-    let worktree = match v.get("worktree") {
-        Some(wt @ Value::Obj(_)) => {
+    let worktree = match optional_object(r, v, path, "worktree") {
+        Some(wt) => {
             let wp = join(path, "worktree");
             Some(WorktreeDetail {
                 branch: r.text(wt, &wp, "branch"),
@@ -308,11 +332,11 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
                 state: r.text(wt, &wp, "state"),
             })
         }
-        _ => None,
+        None => None,
     };
 
-    let tokens = match v.get("tokens") {
-        Some(tk @ Value::Obj(_)) => {
+    let tokens = match optional_object(r, v, path, "tokens") {
+        Some(tk) => {
             let tp = join(path, "tokens");
             let total = r.text(tk, &tp, "total");
             let bp = join(&tp, "breakdown");
@@ -328,7 +352,7 @@ fn detail(r: &mut Reader, v: &Value, path: &str) -> Detail {
             }).collect();
             Some(TokensDetail { total, breakdown })
         }
-        _ => None,
+        None => None,
     };
 
     Detail {
@@ -457,6 +481,8 @@ pub(crate) mod tests {
     pub(crate) const OPEN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-open.json"));
     pub(crate) const CLOSED: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-closed.json"));
     pub(crate) const NULLS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-nulls.json"));
+    /// #3150: the open task carries a squad, a worktree and tokens.
+    pub(crate) const SQUAD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-squad.json"));
     pub(crate) const FILTER: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-filter.json"));
     pub(crate) const NOMATCH: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tasks-nomatch.json"));
     /// The core's own answers (#2083, 0x1c0de's `polter-artifacts/2083/examples`,
@@ -745,5 +771,44 @@ pub(crate) mod tests {
         let tok = d.tokens.as_ref().expect("tokens should exist");
         assert_eq!(tok.total, "110.6k");
         assert_eq!(tok.breakdown.len(), 1);
+    }
+
+    /// #3150: **a card that is not there and a card that did not arrive are
+    /// two states.** The core writes no optional field it has nothing for
+    /// (the fixtures it produced have no `squad`/`worktree`/`tokens` key at
+    /// all), so an absent key is a task with none -- silence. A key that is
+    /// there and is not an object is an answer this build cannot read, and
+    /// its path goes to `missing` for the host to write down. `null` is the
+    /// same fact as absent. A squad that arrived without its `seats` is the
+    /// third: the card is drawn with none in it, never as "no squad".
+    #[test]
+    fn a_card_absent_and_a_card_that_did_not_arrive_are_two_states() {
+        use crate::reader::edited;
+
+        let t = decode(SQUAD).unwrap();
+        assert!(t.missing.is_empty(), "{:?}", t.missing);
+        let d = t.open.iter().find_map(|x| x.detail.as_ref()).expect("the open one's detail");
+        assert_eq!(d.squad.as_ref().map(|s| s.seats.len()), Some(3));
+        assert!(d.worktree.is_some() && d.tokens.is_some());
+
+        let v = json::parse(SQUAD).unwrap();
+        // null and absent are the same fact, and neither is said.
+        for with in [Some(Value::Null), None] {
+            let t = decode_value(&edited(&v, "open[1].detail.squad", with)).unwrap();
+            let d = t.open.iter().find_map(|x| x.detail.as_ref()).unwrap();
+            assert!(d.squad.is_none(), "{:?}", d.squad);
+            assert!(t.missing.is_empty(), "{:?}", t.missing);
+        }
+        // Present and not an object: not read, and said.
+        let t = decode_value(&edited(&v, "open[1].detail.squad", Some(Value::Bool(true)))).unwrap();
+        let d = t.open.iter().find_map(|x| x.detail.as_ref()).unwrap();
+        assert!(d.squad.is_none());
+        assert!(t.missing.iter().any(|m| m.ends_with("detail.squad")), "{:?}", t.missing);
+        // There, with its seats not: still the squad's card, with none in
+        // it, and the unread list said.
+        let t = decode_value(&edited(&v, "open[1].detail.squad.seats", None)).unwrap();
+        let d = t.open.iter().find_map(|x| x.detail.as_ref()).unwrap();
+        assert_eq!(d.squad.as_ref().map(|s| s.seats.len()), Some(0));
+        assert!(t.missing.iter().any(|m| m.ends_with("squad.seats")), "{:?}", t.missing);
     }
 }

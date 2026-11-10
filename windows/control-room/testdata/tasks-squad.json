@@ -1,0 +1,262 @@
+{
+ "page": "tasks",
+ "group": "web-app",
+ "goal": "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。",
+ "goal_lines": [
+  "给任务列表加批量编辑：frontend 做多选和工具条，api 做 PATCH /api/tasks，tests 补用例。"
+ ],
+ "head": {
+  "id": "号",
+  "state": "状态",
+  "title": "标题",
+  "owner": "负责人",
+  "idle": "多久没动"
+ },
+ "open": [
+  {
+   "id": 214,
+   "glyph": "done",
+   "state": "做完待关",
+   "title": "列表加多选和「改负责人」工具条",
+   "title_parts": null,
+   "owner": "frontend",
+   "idle": "17 分钟",
+   "emph": false,
+   "detail": null
+  },
+  {
+   "id": 215,
+   "glyph": "working",
+   "state": "在做",
+   "title": "PATCH /api/tasks 接受一组 id",
+   "title_parts": null,
+   "owner": "api",
+   "idle": "2 分钟",
+   "emph": true,
+   "detail": {
+    "body_title": "任务原文",
+    "body": "PATCH /api/tasks 接受一组 id，一次改多条任务的负责人。\n不存在的 id 整批拒绝；已经关了的任务算不存在。\n返回里写明被拒绝的是哪一条。配套的用例在 #216。",
+    "log_title": "经过",
+    "log": [
+     {
+      "entry": "event",
+      "at": "13:02",
+      "who": "总管",
+      "text": "建了这条任务",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:02",
+      "who": "总管",
+      "text": "派给 api",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:03",
+      "who": "api",
+      "text": "开始做",
+      "last": false
+     },
+     {
+      "entry": "gap",
+      "at": null,
+      "who": null,
+      "text": "隔了 18 分钟",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:21",
+      "who": "api",
+      "text": "报卡住：一组 id 里有已经关了的怎么办",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:24",
+      "who": "总管",
+      "text": "回了：整批拒绝",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:24",
+      "who": "api",
+      "text": "接着做",
+      "last": false
+     },
+     {
+      "entry": "gap",
+      "at": null,
+      "who": null,
+      "text": "隔了 13 分钟",
+      "last": false
+     },
+     {
+      "entry": "event",
+      "at": "13:37",
+      "who": "api",
+      "text": "最近一次动静，还在做",
+      "last": true
+     }
+    ],
+    "said_title": "群里提到 #215 的消息",
+    "said": [
+     {
+      "at": "13:02",
+      "who": "总管",
+      "text": "任务 #215 → api：PATCH /api/tasks 接受一组 id，一次改多条任务的负责人。"
+     },
+     {
+      "at": "13:21",
+      "who": "api",
+      "text": "#215 卡住：一组 id 里有一条已经关了，是整批拒绝还是跳过它？需求里没写。先按整批拒绝做了。"
+     },
+     {
+      "at": "13:24",
+      "who": "总管",
+      "text": "就按整批拒绝。#215 继续，返回里写明是哪一条。"
+     },
+     {
+      "at": "13:31",
+      "who": "tests",
+      "text": "#216 的用例等 #215 的返回格式定了再补最后两条。"
+     }
+    ],
+    "squad": {
+     "name": "Polter核心开发小队",
+     "seats": [
+      {
+       "alias": "审核",
+       "role": "reviewer",
+       "lead": true,
+       "slot": "filled",
+       "terminal": "0x361a",
+       "cli": "Claude · DS Flash"
+      },
+      {
+       "alias": "开发",
+       "role": "developer",
+       "lead": false,
+       "slot": "empty",
+       "terminal": "—",
+       "cli": ""
+      },
+      {
+       "alias": "测试",
+       "role": "tester",
+       "lead": false,
+       "slot": "vacated",
+       "terminal": "—",
+       "cli": ""
+      }
+     ]
+    },
+    "worktree": {
+     "branch": "wt/web-app/215",
+     "path": "/src/proj-wt/web-app/wt-215",
+     "state": "made"
+    },
+    "tokens": {
+     "total": "110.6k",
+     "breakdown": [
+      {
+       "alias": "审核",
+       "role": "reviewer",
+       "tokens": "38.5k",
+       "pct": 35,
+       "color": "#3B82F6"
+      },
+      {
+       "alias": "开发",
+       "role": "developer",
+       "tokens": "44.2k",
+       "pct": 40,
+       "color": "#10B981"
+      },
+      {
+       "alias": "测试",
+       "role": "tester",
+       "tokens": "27.9k",
+       "pct": 25,
+       "color": "#F59E0B"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": 216,
+   "glyph": "working",
+   "state": "在做",
+   "title": "批量编辑的用例：空选择、混合状态、不存在的 id",
+   "title_parts": null,
+   "owner": "tests",
+   "idle": "6 分钟",
+   "emph": false,
+   "detail": null
+  },
+  {
+   "id": 217,
+   "glyph": "blocked",
+   "state": "卡住",
+   "title": "分页测试在 CI 上偶发失败",
+   "title_parts": null,
+   "owner": "tests",
+   "idle": "41 分钟",
+   "emph": false,
+   "detail": null
+  },
+  {
+   "id": 218,
+   "glyph": "queued",
+   "state": "排着",
+   "title": "批量编辑以后是乐观更新还是重新拉取？",
+   "title_parts": null,
+   "owner": "未指派",
+   "idle": "1 小时",
+   "emph": false,
+   "detail": null
+  },
+  {
+   "id": 219,
+   "glyph": "queued",
+   "state": "排着",
+   "title": "「改负责人」工具条的键盘操作",
+   "title_parts": null,
+   "owner": "未指派",
+   "idle": "1 小时",
+   "emph": false,
+   "detail": null
+  }
+ ],
+ "closed_title": "已隐藏 8 条已关闭或已取消的任务",
+ "closed_key": {
+  "key": "c",
+  "text": "或点这一行显示"
+ },
+ "closed_count": 8,
+ "closed": [],
+ "hints": [
+  {
+   "key": "↑↓",
+   "text": "选任务"
+  },
+  {
+   "key": "Enter",
+   "text": "收起这条的经过"
+  },
+  {
+   "key": "f",
+   "text": "按标题筛选"
+  }
+ ],
+ "hint_closed": {
+  "key": "c",
+  "text": "显示已关闭的 8 条"
+ },
+ "filter": null,
+ "no_match": null
+}

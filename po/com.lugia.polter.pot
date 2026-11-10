@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.lugia.polter\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-11-06 01:34+0800\n"
+"POT-Creation-Date: 2026-11-11 02:27+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -25,7 +25,7 @@ msgstr ""
 #: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-#: windows/host/src/main.rs:2748 windows/host/src/main.rs:2754
+#: windows/host/src/main.rs:2749 windows/host/src/main.rs:2755
 msgid "Authorize Clipboard Access"
 msgstr ""
 
@@ -314,26 +314,26 @@ msgid "Editing configuration file"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
-#: windows/host/src/main.rs:2756
+#: windows/host/src/main.rs:2757
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
-#: windows/host/src/main.rs:2750
+#: windows/host/src/main.rs:2751
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
-#: windows/host/src/main.rs:2760
+#: windows/host/src/main.rs:2761
 msgid "Warning: Potentially Unsafe Paste"
 msgstr ""
 
 #: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
-#: windows/host/src/main.rs:2762
+#: windows/host/src/main.rs:2763
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
@@ -3099,229 +3099,197 @@ msgstr ""
 msgid "Memory pressure is critical. Holding the most: {1}"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1042
+#: windows/host/src/chat_native.rs:1139
 msgid "Today"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1049
+#: windows/host/src/chat_native.rs:1146
 msgid "Group chat"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1051
+#: windows/host/src/chat_native.rs:1148
 msgid "Task"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1058
+#: windows/host/src/chat_native.rs:1155
 msgid "Member"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1060 windows/host/src/chat_native.rs:1453
+#: windows/host/src/chat_native.rs:1157 windows/host/src/chat_native.rs:1565
 msgid "Members"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1241 windows/host/src/chat_native.rs:1376
+#: windows/host/src/chat_native.rs:1353 windows/host/src/chat_native.rs:1488
 msgid "Show less"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1243 windows/host/src/chat_native.rs:1378
+#: windows/host/src/chat_native.rs:1355 windows/host/src/chat_native.rs:1490
 msgid "Show more"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1687
+#: windows/host/src/chat_native.rs:1799
 msgid "Locating…"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1689
+#: windows/host/src/chat_native.rs:1801
 msgid "Could not locate that message."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1691
+#: windows/host/src/chat_native.rs:1803
 msgid "Load older results"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1693
+#: windows/host/src/chat_native.rs:1805
 msgid "Load more results"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1699
+#: windows/host/src/chat_native.rs:1811
 msgid "Retry search"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1733
+#: windows/host/src/chat_native.rs:1845
 msgid "Search messages…"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1758
+#: windows/host/src/chat_native.rs:1870
 msgid "Newer results were released. Search again for the newest."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1760
+#: windows/host/src/chat_native.rs:1872
 msgid "Search this group"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1779
+#: windows/host/src/chat_native.rs:1891
 msgid "That message is not loaded here."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:6644
-msgid "That message is not in this window."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:1784
+#: windows/host/src/chat_native.rs:1896
 msgid "Searching…"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1789
-#: windows/control-room/src/chat_rows.rs:1081
+#: windows/host/src/chat_native.rs:1901
+#: windows/control-room/src/chat_rows.rs:1428
 msgid "Some records could not be read."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1790
-#: windows/control-room/src/chat_rows.rs:1080
+#: windows/host/src/chat_native.rs:1902
+#: windows/control-room/src/chat_rows.rs:1427
 msgid "Loading was cancelled."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1792
+#: windows/host/src/chat_native.rs:1904
 msgid "No results."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1903
+#: windows/host/src/chat_native.rs:2015
 msgid "Preview"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:1917 windows/host/src/project_picker.rs:1218
+#: windows/host/src/chat_native.rs:2029 windows/host/src/project_picker.rs:1218
 #: windows/host/src/search.rs:949 windows/host/src/settings_win.rs:981
 #: windows/host/src/settings_win.rs:1408
 msgid "Search"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:2306
+#: windows/host/src/chat_native.rs:2511
 msgid "Loading…"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:2311
+#: windows/host/src/chat_native.rs:2516
 msgid "WebView2 Runtime is not installed."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:2314
+#: windows/host/src/chat_native.rs:2519
 msgid "The WebView2 loader is missing."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:2317
+#: windows/host/src/chat_native.rs:2522
 msgid "Could not show this file."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:3025
+#: windows/host/src/chat_native.rs:3321
 msgid "Handoff summary"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:3041
+#: windows/host/src/chat_native.rs:3337 windows/host/src/chat_native.rs:6664
 msgid "you"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:3155 windows/host/src/chat_native.rs:3173
-msgid "Loading earlier messages…"
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3158 windows/host/src/chat_native.rs:3184
-msgid "Earlier messages could not be read. Click to retry."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:5975 windows/host/src/chat_native.rs:5995
-msgid "Earlier messages could not be read."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3163 windows/host/src/chat_native.rs:3176
-#: windows/host/src/chat_native.rs:3191
-msgid "Some earlier records could not be read."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3167 windows/host/src/chat_native.rs:3187
-#: windows/host/src/chat_native.rs:3195
-msgid "Scroll up for earlier messages."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3169 windows/host/src/chat_native.rs:3174
-#: windows/host/src/chat_native.rs:3197
-msgid "Beginning of the group"
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3180
-msgid "Loading earlier messages was cancelled. Click to retry."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3199
-#: windows/control-room/src/chat_rows.rs:1079
-msgid "Loading"
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3210
-msgid "Some later records could not be read."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3214
-msgid "Scroll down for later messages."
-msgstr ""
-
-#: windows/host/src/chat_native.rs:3225
+#: windows/host/src/chat_native.rs:3448
 msgid "New messages"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:3227
+#: windows/host/src/chat_native.rs:3450
 msgid "Back to latest"
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4687
+#: windows/host/src/chat_native.rs:5259
 msgid "The location of this file cannot be determined."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4689 windows/host/src/chat_native.rs:4709
-#: windows/host/src/chat_native.rs:4756 windows/host/src/chat_native.rs:5068
-#: windows/host/src/chat_native.rs:5099
+#: windows/host/src/chat_native.rs:5261 windows/host/src/chat_native.rs:5281
+#: windows/host/src/chat_native.rs:5328 windows/host/src/chat_native.rs:5640
+#: windows/host/src/chat_native.rs:5671
 msgid "This file cannot be previewed."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4701
+#: windows/host/src/chat_native.rs:5273
 msgid "The file is not in the group's working directory, or it is gone."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4703
+#: windows/host/src/chat_native.rs:5275
 msgid "This file cannot be read."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4704
+#: windows/host/src/chat_native.rs:5276
 msgid "That link is not a file."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4706
+#: windows/host/src/chat_native.rs:5278
 msgid "This group has no working directory to find the file in."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4708
+#: windows/host/src/chat_native.rs:5280
 msgid "Polter could not prepare the preview."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4820 windows/host/src/chat_native.rs:4833
-#: windows/host/src/chat_native.rs:4843 windows/host/src/chat_native.rs:4925
-#: windows/host/src/chat_native.rs:5147
+#: windows/host/src/chat_native.rs:5392 windows/host/src/chat_native.rs:5405
+#: windows/host/src/chat_native.rs:5415 windows/host/src/chat_native.rs:5497
+#: windows/host/src/chat_native.rs:5719
 msgid "No plugin can show this file."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4831
+#: windows/host/src/chat_native.rs:5403
 msgid "The plugin for this file is switched off."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4832
+#: windows/host/src/chat_native.rs:5404
 msgid "No plugin claims this kind of file."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4910 windows/host/src/chat_native.rs:5141
+#: windows/host/src/chat_native.rs:5482 windows/host/src/chat_native.rs:5713
 msgid "No room for another preview."
 msgstr ""
 
-#: windows/host/src/chat_native.rs:4941 windows/host/src/chat_native.rs:5085
-#: windows/host/src/chat_native.rs:5144
+#: windows/host/src/chat_native.rs:5513 windows/host/src/chat_native.rs:5657
+#: windows/host/src/chat_native.rs:5716
 msgid "That preview is open in another slot."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:6093 windows/host/src/chat_native.rs:6113
+msgid "Earlier messages could not be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:6098 windows/host/src/chat_native.rs:6117
+msgid "Some earlier records could not be read."
+msgstr ""
+
+#: windows/host/src/chat_native.rs:6101 windows/host/src/chat_native.rs:6120
+msgid "Beginning of the group"
+msgstr ""
+
+#: windows/host/src/chat_native.rs:7476
+msgid "That message is not in this window."
 msgstr ""
 
 #: windows/host/src/ctxmenu.rs:131
@@ -3668,26 +3636,26 @@ msgstr ""
 msgid "Nothing was cleared: Polter's core refused."
 msgstr ""
 
-#: windows/host/src/main.rs:2776
+#: windows/host/src/main.rs:2777
 #, rust-format
 msgid "{} lines in all."
 msgstr ""
 
-#: windows/host/src/main.rs:7116
+#: windows/host/src/main.rs:7117
 msgid "No reason was recorded."
 msgstr ""
 
-#: windows/host/src/main.rs:7123
+#: windows/host/src/main.rs:7124
 msgid ""
 "Polter already started again with software rendering "
 "(GALLIUM_DRIVER=llvmpipe), and that failed as well."
 msgstr ""
 
-#: windows/host/src/main.rs:7128
+#: windows/host/src/main.rs:7129
 msgid "Polter could not open its first terminal and will close."
 msgstr ""
 
-#: windows/host/src/main.rs:7130
+#: windows/host/src/main.rs:7131
 #, rust-format
 msgid "The full log is at {}"
 msgstr ""
@@ -5933,31 +5901,35 @@ msgstr ""
 msgid "{} more groups of the same supervisor are waiting too."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1082
+#: windows/control-room/src/chat_rows.rs:1426
+msgid "Loading"
+msgstr ""
+
+#: windows/control-room/src/chat_rows.rs:1429
 msgid "No messages yet."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1083
+#: windows/control-room/src/chat_rows.rs:1430
 msgid "The chat could not be read."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1084
+#: windows/control-room/src/chat_rows.rs:1431
 msgid "This chat is not available now."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1085
+#: windows/control-room/src/chat_rows.rs:1432
 msgid "This page is too large to show."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1086
+#: windows/control-room/src/chat_rows.rs:1433
 msgid "This history has expired."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1087
+#: windows/control-room/src/chat_rows.rs:1434
 msgid "This build cannot show the chat."
 msgstr ""
 
-#: windows/control-room/src/chat_rows.rs:1088
+#: windows/control-room/src/chat_rows.rs:1435
 msgid "This message could not be measured."
 msgstr ""
 
@@ -7009,6 +6981,36 @@ msgstr ""
 
 #: windows/control-room/src/tasks.rs:113
 msgid "Planned, not made yet"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:357
+msgid "Its own worktree (isolated)"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:358
+msgid "Branch:"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:359
+msgid "Path:"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:360
+msgid "State:"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:361
+msgid "LEAD"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:366
+#, rust-format
+msgid "Squad seat matrix ({} seats · adaptive)"
+msgstr ""
+
+#: windows/control-room/src/tasks_scene.rs:372
+#, rust-format
+msgid "Tokens used ({})"
 msgstr ""
 
 #: windows/projects/src/page_rules.rs:112

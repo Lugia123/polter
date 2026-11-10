@@ -12,9 +12,10 @@
 
 use crate::layout::{self, Rect};
 use crate::look::{font, radius, side, task_page as k, task_symbol, Rgba, Theme};
+use crate::n_;
 use crate::perf_scene::{Draw, Measure};
 use crate::scene::{self, Align, Face, Item, Part, Piece, Side, Style};
-use crate::tasks::{Detail, Glyph, Hint, LogLine, Task, Tasks};
+use crate::tasks::{Detail, Glyph, Hint, LogLine, SquadDetail, SquadSeat, Task, Tasks, TokensDetail, WorktreeDetail};
 
 /// A task's line on the page.
 #[derive(Debug, Clone, PartialEq)]
@@ -306,17 +307,477 @@ fn label(text: &str, at: (f64, f64), w: f64, theme: &Theme, scale: f64, measure:
     out
 }
 
+/// The top banner's sizes (macOS `ControlRoomTaskDetail.topBanner`,
+/// `ControlRoomTasksPage.swift:619-828`). The mac host sets its cards in
+/// 8.5 to 11.5 points; **this host draws every word at the menu font's**
+/// (`uifont::make` -> `text_px(.., menu_px)`), so the same shapes are laid
+/// out at `BODY_LINE_HEIGHT` a row instead of copying those sizes -- a row
+/// of 14-point words in a 16-point pill is cut in half.
+mod card {
+    use crate::look::task_page as k;
+
+    /// Between the cards, and between the banner and the two columns (the
+    /// mac host's `HStack(spacing: 10)` and `VStack(spacing: 14)`).
+    pub const GAP: f64 = 10.0;
+    pub const BANNER_GAP: f64 = 14.0;
+    /// Inside a card, and the radius of its outline.
+    pub const PAD: f64 = 9.0;
+    pub const RADIUS: f64 = 7.0;
+    /// Between a card's rows (mac: 5 in the worktree card, 6 in the tokens).
+    pub const SPACING: f64 = 6.0;
+    pub const SQUAD_SPACING: f64 = 7.0;
+    /// One seat's tile.
+    pub const TILE_PAD: f64 = 7.0;
+    pub const TILE_RADIUS: f64 = 6.0;
+    pub const TILE_GAP: f64 = 6.0;
+    pub const TILE_SPACING: f64 = 4.0;
+    /// A line. It is also a pill's height: the mac host's pills are 16
+    /// points high under 8.5-point words, and no word here may be smaller
+    /// than the menu font's, so a line's height is what a pill needs.
+    pub const ROW_H: f64 = k::BODY_LINE_HEIGHT;
+    /// The dot in a seat's status pill, the colour square in the tokens'
+    /// legend, and the height of the token bar.
+    pub const DOT: f64 = 5.0;
+    pub const SWATCH: f64 = 7.0;
+    pub const BAR_H: f64 = 8.0;
+    /// Between the tokens' two legend rows.
+    pub const LEGEND_GAP: f64 = 3.0;
+    /// The worktree card is `width * 0.22` wide, at least 190; the tokens
+    /// card `width * 0.24`, at least 210 (the mac host's frames).
+    pub const WORKTREE_OF: f64 = 0.22;
+    pub const WORKTREE_MIN: f64 = 190.0;
+    pub const TOKENS_OF: f64 = 0.24;
+    pub const TOKENS_MIN: f64 = 210.0;
+}
+
+/// The mac host's card words (`ControlRoomTasksPage.swift`) and its labels,
+/// **marked `n_`**: `src/build/GhosttyI18n.zig` reads this crate for the
+/// literals inside `n_(…)` and `po/` carries their translations (task
+/// 3155). A word not marked is a word no translator ever receives.
+const WORKTREE_TITLE: &str = n_("Its own worktree (isolated)");
+const BRANCH_LABEL: &str = n_("Branch:");
+const PATH_LABEL: &str = n_("Path:");
+const STATE_LABEL: &str = n_("State:");
+const LEAD_WORD: &str = n_("LEAD");
+
+/// The squad card's title, the mac host's words with the core's count
+/// (`{}` is where the count goes, as the other `n_` templates here have it).
+pub fn squad_title(seats: usize) -> String {
+    n_("Squad seat matrix ({} seats · adaptive)").replacen("{}", &seats.to_string(), 1)
+}
+
+/// The tokens card's title: the core's total, as it sent it (a formatted
+/// size such as "110.6k"; the unit is the core's, nothing is added here).
+pub fn tokens_title(total: &str) -> String {
+    n_("Tokens used ({})").replacen("{}", total, 1)
+}
+
+/// One slice's width in a bar `w` wide: its percent of it, **and a percent
+/// this build cannot mean cannot run past the bar**.
+pub fn bar_span(w: f64, pct: u8) -> f64 {
+    w.max(0.0) * f64::from(pct.min(100)) / 100.0
+}
+
+/// A colour written as `#RRGGBB`; none for anything else.
+pub fn hex_colour(s: &str) -> Option<Rgba> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some(Rgba { r: (v >> 16) as u8, g: (v >> 8) as u8, b: (v & 0xFF) as u8, a: 1.0 })
+}
+
+/// The colour of one token slice: the core's, or the mac host's grey
+/// (`NSColor(hex:) ?? .gray`) when this build cannot read it.
+pub fn slice_colour(s: &str) -> Rgba {
+    hex_colour(s).unwrap_or(Rgba { r: 128, g: 128, b: 128, a: 1.0 })
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> Rgba {
+    Rgba { r, g, b, a: 1.0 }
+}
+
+/// The three readings a seat's slot has, each its own colour (mac:
+/// `seatTile`): somebody is in it (green), nobody has taken it (grey), its
+/// terminal has gone (blue). `(word colour, pill ground)`, the ground laid
+/// over the tile's own.
+fn seat_colours(slot: &str, ground: Rgba, theme: &Theme) -> (Rgba, Rgba) {
+    let (fg, tint, amount) = if slot == "filled" {
+        if theme.dark {
+            (rgb(0x4A, 0xDE, 0x80), rgb(0x4A, 0xDE, 0x80), 0.2)
+        } else {
+            (rgb(0x04, 0x78, 0x57), rgb(0x10, 0xB9, 0x81), 0.15)
+        }
+    } else if slot == "vacated" {
+        if theme.dark {
+            (rgb(0x38, 0xBD, 0xF8), rgb(0x38, 0xBD, 0xF8), 0.2)
+        } else {
+            (rgb(0x02, 0x84, 0xC7), rgb(0x02, 0x84, 0xC7), 0.14)
+        }
+    } else if theme.dark {
+        (rgb(0x94, 0xA3, 0xB8), WHITE, 0.08)
+    } else {
+        (rgb(0x4B, 0x55, 0x63), BLACK, 0.06)
+    };
+    (fg, scene::over(ground, tint, amount))
+}
+
+/// The worktree card's accent and its state tag's ground.
+fn worktree_accent(theme: &Theme) -> Rgba {
+    if theme.dark { rgb(0x38, 0xBD, 0xF8) } else { rgb(0x03, 0x69, 0xA1) }
+}
+
+/// The ground every card stands on: the mac host's white 4% (dark) or
+/// black 2.5% (light) over the open task's own pane of glass.
+fn card_ground(theme: &Theme) -> Rgba {
+    let glass = scene::over(theme.terminal_background, theme.perf_card, 1.0);
+    if theme.dark { scene::over(glass, WHITE, 0.04) } else { scene::over(glass, BLACK, 0.025) }
+}
+
+fn card_edge(ground: Rgba, theme: &Theme) -> Rgba {
+    if theme.dark { scene::over(ground, WHITE, 0.12) } else { scene::over(ground, BLACK, 0.1) }
+}
+
+fn tile_ground(theme: &Theme) -> Rgba {
+    let card = card_ground(theme);
+    if theme.dark { scene::over(card, WHITE, 0.035) } else { scene::over(card, BLACK, 0.02) }
+}
+
+fn tile_edge(ground: Rgba, theme: &Theme) -> Rgba {
+    if theme.dark { scene::over(ground, WHITE, 0.1) } else { scene::over(ground, BLACK, 0.08) }
+}
+
+fn text_at(rect: Rect, s: &str, style: Style, align: Align) -> Draw {
+    Draw::Item(Item::Text { rect, text: s.to_string(), style, align })
+}
+
+fn rrect(rect: Rect, radius: f64, color: Rgba, edge: Option<Rgba>) -> Draw {
+    Draw::Item(Item::Round { rect, radius, color, edge })
+}
+
+/// A card's title, in the card's top-left corner.
+fn card_title(words: &str, rect: Rect, theme: &Theme) -> Draw {
+    let pad = card::PAD;
+    text_at(Rect { x: rect.x + pad, y: rect.y + pad, w: (rect.w - 2.0 * pad).max(0.0), h: card::ROW_H }, words, strong(l3(theme.text_secondary)), Align::Left)
+}
+
+/// The three widths of the banner: the squad card takes what the two fixed
+/// ones leave; the worktree and tokens cards are the mac host's
+/// `width*0.22` (at least 190) and `width*0.24` (at least 210). Narrower
+/// than the two fixed cards alone, they are cut down together rather than
+/// drawn off the glass.
+pub fn banner_widths(w: f64, squad: bool, worktree: bool, tokens: bool) -> [f64; 3] {
+    let w = w.max(0.0);
+    let count = u8::from(squad) + u8::from(worktree) + u8::from(tokens);
+    let gaps = if count > 1 { card::GAP * f64::from(count - 1) } else { 0.0 };
+    let mut wt = if worktree { (w * card::WORKTREE_OF).max(card::WORKTREE_MIN) } else { 0.0 };
+    let mut tk = if tokens { (w * card::TOKENS_OF).max(card::TOKENS_MIN) } else { 0.0 };
+    let fixed = wt + tk;
+    let squad_w = if squad { (w - gaps - fixed).max(0.0) } else { 0.0 };
+    let room = (w - gaps).max(0.0);
+    if fixed > room && fixed > 0.0 {
+        let scale = room / fixed;
+        wt *= scale;
+        tk *= scale;
+    }
+    [squad_w, wt, tk]
+}
+
+/// One seat's tile: as tall as any tile in the row needs, whether or not
+/// this one has a status word (the mac host's tiles size to their own
+/// content and centre in the row; one height for all is the same row with
+/// its words lined up).
+fn tile_height(with_word: bool) -> f64 {
+    let rows = if with_word { 4.0 } else { 3.0 };
+    card::TILE_PAD * 2.0 + rows * card::ROW_H + (rows - 1.0) * card::TILE_SPACING
+}
+
+fn squad_height(sq: &SquadDetail) -> f64 {
+    let mut h = card::PAD * 2.0 + card::ROW_H;
+    if !sq.seats.is_empty() {
+        h += card::SQUAD_SPACING + tile_height(sq.seats.iter().any(|s| s.slot_word().is_some()));
+    }
+    h
+}
+
+fn worktree_height(wt: &WorktreeDetail) -> f64 {
+    // Title, the branch, the path when there is one, the state.
+    let rows = if wt.path.is_empty() { 3.0 } else { 4.0 };
+    card::PAD * 2.0 + rows * card::ROW_H + (rows - 1.0) * card::SPACING
+}
+
+fn legend_height(slices: usize) -> f64 {
+    match slices {
+        0 => 0.0,
+        1..=2 => card::ROW_H,
+        _ => 2.0 * card::ROW_H + card::LEGEND_GAP,
+    }
+}
+
+fn tokens_height(tk: &TokensDetail) -> f64 {
+    let mut h = card::PAD * 2.0 + card::ROW_H + card::SPACING + card::BAR_H;
+    if !tk.breakdown.is_empty() {
+        h += card::SPACING + legend_height(tk.breakdown.len());
+    }
+    h
+}
+
+/// How tall the banner is: the tallest of the cards that are there, and
+/// none at all when the task has none of the three.
+pub fn banner_height(d: &Detail) -> f64 {
+    let mut h: f64 = 0.0;
+    if let Some(sq) = &d.squad {
+        h = h.max(squad_height(sq));
+    }
+    if let Some(wt) = &d.worktree {
+        h = h.max(worktree_height(wt));
+    }
+    if let Some(tk) = &d.tokens {
+        h = h.max(tokens_height(tk));
+    }
+    h
+}
+
+/// One seat: alias and LEAD, the terminal at the right, the slot's word,
+/// the role and the CLI -- the mac host's `seatTile`.
+fn seat_tile(s: &SquadSeat, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let bg = tile_ground(theme);
+    let mut out = vec![rrect(rect, card::TILE_RADIUS, bg, Some(tile_edge(bg, theme)))];
+    let left = rect.x + card::TILE_PAD;
+    let right = rect.x + rect.w - card::TILE_PAD;
+    let mut y = rect.y + card::TILE_PAD;
+
+    // The terminal's pill, at the right of the first line.
+    let term_style = mono(theme.text_tertiary);
+    let term_w = if s.terminal.is_empty() { 0.0 } else { measure(&s.terminal, &term_style) + 2.0 * 4.0 };
+    let term_x = right - term_w;
+    if term_w > 0.0 {
+        let pill = Rect { x: term_x, y, w: term_w, h: card::ROW_H };
+        let pill_bg = if theme.dark { scene::over(bg, WHITE, 0.08) } else { scene::over(bg, BLACK, 0.04) };
+        out.push(rrect(pill, 3.0, pill_bg, None));
+        out.push(text_at(pill, &s.terminal, term_style, Align::Centre));
+    }
+
+    // The alias, then LEAD when it is the lead's seat.
+    let alias_style = strong(l3(theme.text));
+    let alias_w = measure(&s.alias, &alias_style);
+    let lead_w = if s.lead { measure(LEAD_WORD, &alias_style) + 2.0 * 4.0 } else { 0.0 };
+    let alias_room = (right - term_w - (if term_w > 0.0 { 4.0 } else { 0.0 }) - left).max(0.0);
+    out.push(text_at(Rect { x: left, y, w: alias_w.min(alias_room), h: card::ROW_H }, &s.alias, alias_style, Align::Left));
+    if s.lead {
+        let pill = Rect { x: left + alias_w.min(alias_room) + 4.0, y, w: lead_w.min((right - (left + alias_w.min(alias_room) + 4.0)).max(0.0)), h: card::ROW_H };
+        let pill_bg = if theme.dark { rgb(0xF5, 0x9E, 0x0B) } else { rgb(0xD9, 0x77, 0x06) };
+        let fg = if theme.dark { BLACK } else { WHITE };
+        out.push(rrect(pill, 3.0, pill_bg, None));
+        out.push(text_at(pill, LEAD_WORD, strong(l3(fg)), Align::Centre));
+    }
+    y += card::ROW_H + card::TILE_SPACING;
+
+    // The slot's word, with its dot; no word for a slot this build does not
+    // know (`slot_word`).
+    if let Some(word) = s.slot_word() {
+        let (fg, pill_bg) = seat_colours(&s.slot, bg, theme);
+        let pill = Rect { x: left, y, w: (right - left).max(0.0), h: card::ROW_H };
+        out.push(rrect(pill, 4.0, pill_bg, None));
+        let dot = Rect { x: pill.x + 6.0, y: y + (card::ROW_H - card::DOT) / 2.0, w: card::DOT, h: card::DOT };
+        out.push(rrect(dot, card::DOT / 2.0, fg, None));
+        let word_x = dot.x + card::DOT + 5.0;
+        out.push(text_at(Rect { x: word_x, y, w: (pill.x + pill.w - 6.0 - word_x).max(0.0), h: card::ROW_H }, word, strong(l3(fg)), Align::Left));
+        y += card::ROW_H + card::TILE_SPACING;
+    }
+
+    out.push(text_at(Rect { x: left, y, w: (right - left).max(0.0), h: card::ROW_H }, &s.role, l3(theme.text), Align::Left));
+    y += card::ROW_H + card::TILE_SPACING;
+    out.push(text_at(Rect { x: left, y, w: (right - left).max(0.0), h: card::ROW_H }, &s.cli, l3(theme.text_secondary), Align::Left));
+    out
+}
+
+fn squad_card(sq: &SquadDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let bg = card_ground(theme);
+    let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
+    out.push(card_title(&squad_title(sq.seats.len()), rect, theme));
+    if sq.seats.is_empty() {
+        return out;
+    }
+    let y = rect.y + card::PAD + card::ROW_H + card::SQUAD_SPACING;
+    let inner = (rect.w - 2.0 * card::PAD).max(0.0);
+    let n = sq.seats.len() as f64;
+    let tile_w = ((inner - (n - 1.0) * card::TILE_GAP) / n).max(0.0);
+    let h = tile_height(sq.seats.iter().any(|s| s.slot_word().is_some()));
+    for (i, s) in sq.seats.iter().enumerate() {
+        let tile = Rect { x: rect.x + card::PAD + i as f64 * (tile_w + card::TILE_GAP), y, w: tile_w, h };
+        out.extend(seat_tile(s, tile, theme, measure));
+    }
+    out
+}
+
+/// A row of "label: value" in a card: the label at the left in the faint
+/// colour, the value in what is left.
+fn labelled_row(rect: Rect, label: &str, value: &str, value_style: Style, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let label_style = l3(theme.text_tertiary);
+    let lw = measure(label, &label_style);
+    let x = rect.x + lw + 4.0;
+    vec![
+        text_at(Rect { w: lw, ..rect }, label, label_style, Align::Left),
+        text_at(Rect { x, w: (rect.x + rect.w - x).max(0.0), ..rect }, value, value_style, Align::Left),
+    ]
+}
+
+fn worktree_card(wt: &WorktreeDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let bg = card_ground(theme);
+    let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
+    out.push(card_title(WORKTREE_TITLE, rect, theme));
+    let x = rect.x + card::PAD;
+    let w = (rect.w - 2.0 * card::PAD).max(0.0);
+    let mut y = rect.y + card::PAD + card::ROW_H + card::SPACING;
+    out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, BRANCH_LABEL, &wt.branch, strong(mono(theme.text)), theme, measure));
+    y += card::ROW_H + card::SPACING;
+    // A tree only planned has no path, and no row is drawn for it (the
+    // core sends ""): not an empty line.
+    if !wt.path.is_empty() {
+        out.extend(labelled_row(Rect { x, y, w, h: card::ROW_H }, PATH_LABEL, &wt.path, mono(theme.text_secondary), theme, measure));
+        y += card::ROW_H + card::SPACING;
+    }
+    let label_style = l3(theme.text_tertiary);
+    let lw = measure(STATE_LABEL, &label_style);
+    out.push(text_at(Rect { x, y, w: lw, h: card::ROW_H }, STATE_LABEL, label_style, Align::Left));
+    if let Some(word) = wt.state_word() {
+        let accent = worktree_accent(theme);
+        let style = strong(l3(accent));
+        let tag_bg = if theme.dark { scene::over(bg, accent, 0.2) } else { scene::over(bg, rgb(0x02, 0x84, 0xC7), 0.12) };
+        let tag_w = (measure(word, &style) + 2.0 * 5.0).min((x + w - (x + lw + 4.0)).max(0.0));
+        let tag = Rect { x: x + lw + 4.0, y, w: tag_w, h: card::ROW_H };
+        out.push(rrect(tag, 3.0, tag_bg, None));
+        out.push(text_at(tag, word, style, Align::Centre));
+    }
+    out
+}
+
+fn tokens_card(tk: &TokensDetail, rect: Rect, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let bg = card_ground(theme);
+    let mut out = vec![rrect(rect, card::RADIUS, bg, Some(card_edge(bg, theme)))];
+    out.push(card_title(&tokens_title(&tk.total), rect, theme));
+    let x = rect.x + card::PAD;
+    let w = (rect.w - 2.0 * card::PAD).max(0.0);
+    let mut y = rect.y + card::PAD + card::ROW_H + card::SPACING;
+
+    // The bar: the track, then each slice's share of it. The slices are
+    // clamped to the bar so none runs off it; **they are not clipped to its
+    // rounded corners** the way the mac host's `cornerRadius(4)` clips
+    // them -- `Item::Clip` is the page's one clip, pushed round the whole
+    // scrolling list by `build`, and a clip of ours would end it for
+    // everything drawn after the detail.
+    let bar = Rect { x, y, w, h: card::BAR_H };
+    let track = if theme.dark { scene::over(bg, WHITE, 0.08) } else { scene::over(bg, BLACK, 0.06) };
+    out.push(rrect(bar, 4.0, track, None));
+    let mut cx = bar.x;
+    for b in &tk.breakdown {
+        let bw = bar_span(bar.w, b.pct).min((bar.x + bar.w - cx).max(0.0));
+        if bw > 0.0 {
+            out.push(Draw::Item(Item::Fill { rect: Rect { x: cx, y, w: bw, h: card::BAR_H }, color: slice_colour(&b.color) }));
+            cx += bw;
+        }
+    }
+    y += card::BAR_H + card::SPACING;
+
+    // The legend: the first two on one line, the rest on the next (mac's
+    // two rows). A row that has no room for the next item ends there.
+    if !tk.breakdown.is_empty() {
+        for (row, slices) in [tk.breakdown.get(..2).unwrap_or(&[]), tk.breakdown.get(2..).unwrap_or(&[])].into_iter().enumerate() {
+            if row == 1 && slices.is_empty() {
+                break;
+            }
+            let mut lx = x;
+            for b in slices {
+                let alias_style = l3(theme.text_secondary);
+                let tokens_style = strong(mono(theme.text));
+                let aw = measure(&b.alias, &alias_style);
+                let tw = measure(&b.tokens, &tokens_style);
+                let item_w = w - (lx - x);
+                if item_w <= 0.0 {
+                    break;
+                }
+                let swatch = Rect { x: lx, y: y + (card::ROW_H - card::SWATCH) / 2.0, w: card::SWATCH, h: card::SWATCH };
+                out.push(rrect(swatch, 2.0, slice_colour(&b.color), None));
+                let ax = lx + card::SWATCH + 3.0;
+                let avail = (x + w - ax).max(0.0);
+                let aw = aw.min(avail);
+                out.push(text_at(Rect { x: ax, y, w: aw, h: card::ROW_H }, &b.alias, alias_style, Align::Left));
+                let tx = ax + aw + 3.0;
+                let tw = tw.min((x + w - tx).max(0.0));
+                out.push(text_at(Rect { x: tx, y, w: tw, h: card::ROW_H }, &b.tokens, tokens_style, Align::Left));
+                lx = tx + tw + 8.0;
+            }
+            y += card::ROW_H + if row == 0 { card::LEGEND_GAP } else { 0.0 };
+        }
+    }
+    out
+}
+
+/// The banner over the open task's two columns: the squad's seats, the
+/// task's own worktree and the tokens its squad has spent, in the mac
+/// host's order and widths. **A card is drawn exactly when the core sent
+/// one** (`tasks::detail`): a task with no squad has no card, and a squad
+/// whose seats went unread is still a card with none in it -- two states,
+/// not one.
+fn detail_banner(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, measure: Measure) -> Vec<Draw> {
+    let [squad_w, worktree_w, tokens_w] = banner_widths(w, d.squad.is_some(), d.worktree.is_some(), d.tokens.is_some());
+    let mut out = Vec::new();
+    let mut x = x0;
+    let mut placed = false;
+    // A card `banner_widths` could give no room is not drawn, and takes no
+    // gap: otherwise the cards after it would be pushed off the glass.
+    if let Some(sq) = &d.squad {
+        if squad_w > 0.0 {
+            let h = squad_height(sq);
+            out.extend(squad_card(sq, Rect { x, y: y0, w: squad_w, h }, theme, measure));
+            x += squad_w;
+            placed = true;
+        }
+    }
+    if let Some(wt) = &d.worktree {
+        if worktree_w > 0.0 {
+            if placed {
+                x += card::GAP;
+            }
+            let h = worktree_height(wt);
+            out.extend(worktree_card(wt, Rect { x, y: y0, w: worktree_w, h }, theme, measure));
+            x += worktree_w;
+            placed = true;
+        }
+    }
+    if let Some(tk) = &d.tokens {
+        if tokens_w > 0.0 {
+            if placed {
+                x += card::GAP;
+            }
+            let h = tokens_height(tk);
+            out.extend(tokens_card(tk, Rect { x, y: y0, w: tokens_w, h }, theme, measure));
+        }
+    }
+    out
+}
+
 /// What the open task shows under its line, from `(x0, y0)` in a space
-/// `w` wide; and how tall it is.
+/// `w` wide; and how tall it is. The banner (squad, worktree, tokens)
+/// comes first, above both columns, as the mac host's `VStack` has it.
 pub fn detail(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, scale: f64, measure: Measure) -> (Vec<Draw>, f64) {
     let mut out = Vec::new();
+    let banner = banner_height(d);
+    let top = if banner > 0.0 {
+        out.extend(detail_banner(d, x0, y0, w, theme, measure));
+        y0 + banner + card::BANNER_GAP
+    } else {
+        y0
+    };
     let left_w = k::DETAIL_LEFT_WIDTH.min(((w - k::DETAIL_COLUMN_GAP) / 2.0).max(0.0)).max(0.0);
     let right_x = x0 + left_w + k::DETAIL_COLUMN_GAP;
     let right_w = (x0 + w - right_x).max(0.0);
     let body = l3(theme.text);
 
     // Left: the wording, then the history.
-    let mut y = y0;
+    let mut y = top;
     out.extend(label(&d.body_title, (x0, y), left_w, theme, scale, measure));
     y += k::HEADING_HEIGHT;
     for line in wrapped(&d.body, &body, left_w, measure) {
@@ -367,7 +828,7 @@ pub fn detail(d: &Detail, x0: f64, y0: f64, w: f64, theme: &Theme, scale: f64, m
     let left_h = y - y0;
 
     // Right: what the group said of it, newest last.
-    let mut y = y0;
+    let mut y = top;
     out.extend(label(&d.said_title, (right_x, y), right_w, theme, scale, measure));
     y += k::HEADING_HEIGHT;
     for s in &d.said {
@@ -612,6 +1073,7 @@ fn title_pieces(parts: &[(String, bool)], col: Rect, style: Style, on_chip: Opti
 }
 
 const WHITE: Rgba = Rgba { r: 255, g: 255, b: 255, a: 1.0 };
+const BLACK: Rgba = Rgba { r: 0, g: 0, b: 0, a: 1.0 };
 
 /// What the chip is made of over `ground`: the group list's tint of white
 /// with the keyboard here, the ground itself without it.
@@ -625,7 +1087,6 @@ pub fn chip_colour(ground: Rgba, theme: &Theme, keys: bool) -> Rgba {
 /// (1.01 to the page, the design's reading); with the keyboard elsewhere,
 /// an outline and the bar. **Never a grey ground.**
 pub fn chip(rect: Rect, ground: Rgba, theme: &Theme, keys: bool, lifted: bool) -> Vec<Draw> {
-    const BLACK: Rgba = Rgba { r: 0, g: 0, b: 0, a: 1.0 };
     let mut out = Vec::new();
     if keys {
         out.extend(
@@ -804,7 +1265,7 @@ mod tests {
     use super::*;
     use crate::look::DARK;
     use crate::tasks::decode;
-    use crate::tasks::tests::{CLOSED, NULLS, OPEN};
+    use crate::tasks::tests::{CLOSED, NULLS, OPEN, SQUAD};
 
     fn nominal(s: &str, style: &Style) -> f64 {
         let cells: usize = s.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
@@ -1372,5 +1833,106 @@ mod tests {
         // In the state's own colour.
         assert!(matches!(&drawn[1][0], Draw::Arc { color, .. } if *color == DARK.task_working));
 
+    }
+
+    /// #3150: the banner is above both columns, in the mac host's order,
+    /// and every word on it is the core's or the card's own.
+    #[test]
+    fn the_banner_sits_above_the_two_columns_and_says_the_cores_words() {
+        let t = decode(SQUAD).unwrap();
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let d = t.open.iter().find_map(|x| x.detail.as_ref()).unwrap();
+        let words = texts(&at.detail);
+        let at_word = |w: &str| words.iter().find(|(_, s)| s == w).map(|(r, _)| *r);
+        for w in [
+            "Squad seat matrix (3 seats · adaptive)",
+            "Its own worktree (isolated)",
+            "Tokens used (110.6k)",
+            "Branch:",
+            "Path:",
+            "State:",
+            "Ready",
+            "LEAD",
+            "Seated",
+            "Not seated yet",
+            "Seat left",
+            "审核",
+            "开发",
+            "测试",
+            "wt/web-app/215",
+            "/src/proj-wt/web-app/wt-215",
+            "38.5k",
+            "44.2k",
+            "27.9k",
+        ] {
+            assert!(at_word(w).is_some(), "{w:?} is not drawn: {:?}", words.iter().map(|(_, s)| s).collect::<Vec<_>>());
+        }
+        // The mac host's `VStack(spacing: 14)`: the body's heading is the
+        // banner's height and 14 points below the cards' tops (the title
+        // sits `card::PAD` inside its card).
+        let card_top = at_word("Squad seat matrix (3 seats · adaptive)").unwrap().y - card::PAD;
+        assert_eq!(at_word("任务原文").unwrap().y, card_top + banner_height(d) + card::BANNER_GAP);
+        // The cards are side by side in the mac host's order, inside the
+        // detail's own width (page 1200: x 62, 1090 wide).
+        let [sq_w, wt_w, _] = banner_widths(1090.0, true, true, true);
+        let x0 = 62.0;
+        assert_eq!(at_word("Squad seat matrix (3 seats · adaptive)").unwrap().x, x0 + card::PAD);
+        assert_eq!(at_word("Its own worktree (isolated)").unwrap().x, x0 + sq_w + card::GAP + card::PAD);
+        assert_eq!(at_word("Tokens used (110.6k)").unwrap().x, x0 + sq_w + wt_w + 2.0 * card::GAP + card::PAD);
+    }
+
+    /// #3150: the widths are the mac host's, and never off the glass.
+    #[test]
+    fn the_cards_take_the_macs_widths_and_give_way_rather_than_run_off() {
+        let w = banner_widths(1200.0, true, true, true);
+        assert_eq!((w[1], w[2]), (264.0, 288.0));
+        assert_eq!(w[0], 1200.0 - 2.0 * card::GAP - 264.0 - 288.0);
+        let narrow = banner_widths(600.0, true, true, true);
+        assert_eq!((narrow[1], narrow[2]), (card::WORKTREE_MIN, card::TOKENS_MIN));
+        assert_eq!(narrow[0], 600.0 - 2.0 * card::GAP - card::WORKTREE_MIN - card::TOKENS_MIN);
+        let tight = banner_widths(300.0, false, true, true);
+        assert_eq!(tight[0], 0.0);
+        assert!(((tight[1] + tight[2]) - (300.0 - card::GAP)).abs() < 1e-9, "{tight:?}");
+        // The squad card is the one that gives way; it takes no gap with it.
+        let tight3 = banner_widths(300.0, true, true, true);
+        assert_eq!(tight3[0], 0.0);
+        assert!(tight3[1] + tight3[2] + card::GAP <= 300.0, "{tight3:?}");
+        assert_eq!(banner_widths(500.0, true, false, false), [500.0, 0.0, 0.0]);
+        assert_eq!(banner_widths(500.0, false, false, false), [0.0, 0.0, 0.0]);
+    }
+
+    /// #3150: the cards' titles, a token slice's share of the bar, and the
+    /// core's colour -- the pieces the page composes by.
+    #[test]
+    fn the_cards_titles_and_the_tokens_numbers_are_the_cores() {
+        assert_eq!(squad_title(3), "Squad seat matrix (3 seats · adaptive)");
+        assert_eq!(squad_title(0), "Squad seat matrix (0 seats · adaptive)");
+        assert_eq!(tokens_title("110.6k"), "Tokens used (110.6k)");
+        // A slice is its percent of the bar, and a percent this build
+        // cannot mean does not run past the bar.
+        assert_eq!((bar_span(200.0, 35), bar_span(200.0, 0), bar_span(200.0, 100), bar_span(200.0, 250)), (70.0, 0.0, 200.0, 200.0));
+        // The core's "#RRGGBB"; anything else is the mac host's grey.
+        assert_eq!(hex_colour("#3B82F6"), Some(rgb(0x3B, 0x82, 0xF6)));
+        assert_eq!(hex_colour("#3b82f6"), Some(rgb(0x3B, 0x82, 0xF6)));
+        assert_eq!(hex_colour("3B82F6"), None);
+        assert_eq!(hex_colour("#3B82F"), None);
+        assert_eq!(slice_colour("not a colour"), Rgba { r: 128, g: 128, b: 128, a: 1.0 });
+    }
+
+    /// #3150: **no squad and a squad whose seats did not arrive are two
+    /// pages.** One has no card; the other has the card with none in it.
+    #[test]
+    fn no_squad_and_a_squad_whose_seats_did_not_arrive_are_two_pages() {
+        let none = decode(OPEN).unwrap();
+        let at = layout(&none, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let said: Vec<String> = texts(&at.detail).into_iter().map(|(_, s)| s).collect();
+        assert!(!said.iter().any(|s| s.starts_with("Squad seat matrix")), "no squad, no card: {said:?}");
+        // The same answer with the seats taken away: the card is drawn.
+        let broken = crate::reader::edited(&crate::json::parse(SQUAD).unwrap(), "open[1].detail.squad.seats", None);
+        let t = crate::tasks::decode_value(&broken).unwrap();
+        assert!(t.missing.iter().any(|m| m.ends_with("squad.seats")), "{:?}", t.missing);
+        let at = layout(&t, 1200.0, 800.0, 0.0, &DARK, 1.0, &nominal);
+        let said: Vec<String> = texts(&at.detail).into_iter().map(|(_, s)| s).collect();
+        assert!(said.contains(&"Squad seat matrix (0 seats · adaptive)".to_string()), "{said:?}");
     }
 }
