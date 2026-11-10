@@ -6882,3 +6882,213 @@ test "2743 S5: an empty key is nobody having chosen, and a blank file is not ref
         refusal(&candidates, .{ .path = "a.txt", .preferred = "other" }).specified_not_found,
     );
 }
+
+// ---- 3151: the picture preview ------------------------------------------
+//
+// `view-image` is a page plugin whose whole manifest is a claim about names
+// and types; what the *bytes* are is the page's own judgement, so the two
+// tests below split along that line. The first measures the manifest against
+// the rule both hosts already run. The second holds the shipped page's magic
+// table and `test/fixtures/image-magic.tsv` together, row for row -- the
+// behavioural half (these bytes are a picture, those are not) is measured by
+// running that page's own `imageKind`, which a Zig test cannot do, and the
+// fixture is what both readers read so they cannot measure different bytes.
+
+test "3151: the shipped image plugin claims pictures and nothing else" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const text = std.Io.Dir.cwd().readFileAlloc(
+        threaded.io(),
+        "plugins/view-image/plugin.json",
+        a,
+        .limited(1024 * 1024),
+    ) catch |err| {
+        std.debug.print(
+            "cannot read plugins/view-image/plugin.json ({t}). Run `zig build test` from the repository root.\n",
+            .{err},
+        );
+        return error.ShippedPluginUnreadable;
+    };
+
+    const obj = (try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{})).object;
+    const p = (try previewOf(a, "view-image", obj)).?;
+    try testing.expectEqual(Preview.Render.page, p.render);
+    try testing.expectEqual(Preview.Reads.file, p.reads);
+    try testing.expectEqualStrings("page/index.html", p.page.?);
+
+    // Eleven extensions, every one a dotted name -- **and no empty one**: a
+    // file with no extension is the text plugin's (task 3146), not a picture.
+    try testing.expectEqual(@as(usize, 11), p.extensions.len);
+    for (p.extensions) |e| {
+        try testing.expect(e.len > 1 and e[0] == '.');
+    }
+
+    var manifest: Manifest = .{ .key = "view-image", .preview = p };
+    const candidates = [_]Candidate{.{ .manifest = &manifest, .enabled = true, .dir = "" }};
+
+    // Every extension the manifest names is claimed, and without regard to
+    // case -- `.JPG` is `.jpg`.
+    for ([_][]const u8{
+        "a.png", "b.JPG",  "c.jpeg", "d.gif",  "e.webp", "f.bmp",
+        "g.ico", "h.avif", "i.tif",  "j.tiff", "k.svg",
+    }) |path| {
+        testing.expectEqualStrings("view-image", pickKey(&candidates, .{ .path = path })) catch {
+            std.debug.print("a picture was not claimed: \"{s}\"\n", .{path});
+            return error.TestUnexpectedResult;
+        };
+    }
+
+    // **The name is what this rule reads**, so a text name is not a picture
+    // even when the bytes might be one: that judgement belongs to the page's
+    // first-bytes check, and the manifest must not pre-empt it.
+    for ([_][]const u8{ "README.md", "notes.txt", "blob.wat", "a.out" }) |path| {
+        try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = path }));
+    }
+    // And a file with no extension at all is not claimed by this plugin.
+    for ([_][]const u8{ "LICENSE", "setup", ".gitignore" }) |path| {
+        try testing.expectEqual(Choice.none, refusal(&candidates, .{ .path = path }));
+    }
+
+    // The manifest's other claim. **The rule's MIME half is not fed by
+    // `openPreview` today** (it hands `previewFor` a path and nothing else,
+    // 3146's note); this measures the declaration the rule would answer a
+    // sniffing host with.
+    try testing.expectEqual(@as(usize, 1), p.mime.len);
+    try testing.expectEqualStrings("image/*", p.mime[0]);
+    try testing.expectEqualStrings(
+        "view-image",
+        pickKey(&candidates, .{ .path = "blob.bin", .mime = "image/png" }),
+    );
+}
+
+test "3151: the image-magic fixture and the shipped page name one table" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+
+    const read = struct {
+        fn f(io: std.Io, alloc: Allocator, path: []const u8) ![]u8 {
+            return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024)) catch |err| {
+                std.debug.print("cannot read {s} ({t}). Run `zig build test` from the repository root.\n", .{ path, err });
+                return error.ShippedPluginUnreadable;
+            };
+        }
+    }.f;
+
+    const fixture = try read(threaded.io(), a, "test/fixtures/image-magic.tsv");
+    const page = try read(threaded.io(), a, "plugins/view-image/page/index.html");
+
+    // **Both readers assert this number** (the fixture's own note): a table
+    // that has lost a row is not a table that answers the same.
+    try testing.expect(std.mem.indexOf(u8, fixture, "# rows: 18") != null);
+
+    const Entry = struct { kind: []const u8, pattern: []const u8 };
+    var positives: std.ArrayListUnmanaged(Entry) = .empty;
+    var negatives: usize = 0;
+    var rows: usize = 0;
+    var header: usize = 0;
+
+    var lines = std.mem.splitScalar(u8, fixture, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        const pattern = fields.next() orelse continue;
+        const kind = fields.next() orelse {
+            std.debug.print("fixture row has no kind: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        };
+        const head = fields.next() orelse {
+            std.debug.print("fixture row has no head_hex: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        };
+        const why = fields.next() orelse {
+            std.debug.print("fixture row has no why: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        };
+
+        // The column names are a row of prose, not a row of the table.
+        if (header == 0) {
+            try testing.expectEqualStrings("pattern", pattern);
+            try testing.expectEqualStrings("kind", kind);
+            header += 1;
+            continue;
+        }
+
+        rows += 1;
+        // No row may end in a tab trimmed into a two-column one, and no row
+        // may say why with nothing.
+        try testing.expect(why.len > 0);
+        try testing.expect(head.len > 0);
+
+        if (std.mem.eql(u8, pattern, "-")) {
+            try testing.expectEqualStrings("-", kind);
+            negatives += 1;
+            continue;
+        }
+        try testing.expect(kind.len > 0);
+        try positives.append(a, .{ .kind = kind, .pattern = pattern });
+    }
+
+    try testing.expectEqual(@as(usize, 1), header);
+    try testing.expectEqual(@as(usize, 18), rows);
+    try testing.expectEqual(@as(usize, 11), positives.items.len);
+    try testing.expectEqual(@as(usize, 7), negatives);
+
+    // The shipped page's own table, parsed out of the file the page runs --
+    // not a copy in this test.
+    const open_marker = "var MAGIC = [";
+    const open = std.mem.indexOf(u8, page, open_marker) orelse {
+        std.debug.print("the shipped page has no `{s}` block\n", .{open_marker});
+        return error.MissingMagicTable;
+    };
+    const from = open + open_marker.len;
+    const close = std.mem.indexOfPos(u8, page, from, "\n  ];") orelse {
+        std.debug.print("the page's MAGIC block has no closing `];`\n", .{});
+        return error.MissingMagicTable;
+    };
+
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    var body = std.mem.splitScalar(u8, page[from..close], '\n');
+    while (body.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        // Every entry is `["<kind>", "<pattern>"],`.
+        if (!std.mem.startsWith(u8, line, "[\"")) {
+            std.debug.print("a MAGIC line is not an entry: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        }
+        const cut = std.mem.indexOf(u8, line, "\", \"") orelse {
+            std.debug.print("a MAGIC line has no kind/pattern split: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        };
+        const kind = line[2..cut];
+        const rest = line[cut + 4 ..];
+        const end = std.mem.lastIndexOfScalar(u8, rest, '"') orelse {
+            std.debug.print("a MAGIC line has no closing quote: \"{s}\"\n", .{line});
+            return error.BadMagicRow;
+        };
+        try entries.append(a, .{ .kind = kind, .pattern = rest[0..end] });
+    }
+
+    try testing.expectEqual(positives.items.len, entries.items.len);
+    for (positives.items, entries.items, 0..) |want, got, i| {
+        testing.expectEqualStrings(want.pattern, got.pattern) catch {
+            std.debug.print("row {d}: the fixture and the page disagree about the pattern\n", .{i});
+            return error.TestUnexpectedResult;
+        };
+        testing.expectEqualStrings(want.kind, got.kind) catch {
+            std.debug.print("row {d}: the fixture and the page disagree about the kind\n", .{i});
+            return error.TestUnexpectedResult;
+        };
+    }
+}
