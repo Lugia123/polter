@@ -290,6 +290,21 @@ impl At {
         At { x: side_ox as f64 / scale + page.x, y: side_oy as f64 / scale + page.y, scale }
     }
 
+    /// **The page's origin back in device pixels** -- what the paint places
+    /// the page's own points from.
+    ///
+    /// **The paint and the hit must start from this one value** (task
+    /// 3164). The working-directories page used to draw from the right
+    /// side's origin and hit-test from this one, which is the same thing
+    /// only when the page's place in the side is zero: the page sits one
+    /// bar height down (`scene::terminal_rect`), so every row was drawn
+    /// ~32 points higher than it was hit, and a click on a row's centre
+    /// landed on the row above it. Drawing from `origin()` is what makes
+    /// the two the same origin by construction, not by two copies agreeing.
+    pub fn origin(&self) -> (i32, i32) {
+        ((self.x * self.scale).round() as i32, (self.y * self.scale).round() as i32)
+    }
+
     /// A panel point, in device pixels, in the page's own points.
     pub fn local(&self, px: i32, py: i32) -> (f64, f64) {
         (px as f64 / self.scale - self.x, py as f64 / self.scale - self.y)
@@ -829,6 +844,48 @@ mod tests {
         let v = View { page: &p, hover: None, scroll: 0.0, open_name: Some("a.txt"), open_said: Some("it is not in this working directory"), said: None };
         let (items, _) = build(&v, &DARK, 1000.0, 600.0, &tr_);
         assert!(items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "it is not in this working directory")));
+    }
+
+    /// **Every row is hit where it is drawn** (task 3164): the centre of the
+    /// N-th row comes back as the N-th row, and a point one pixel inside
+    /// its top or bottom edge comes back as the same row -- an error of one
+    /// row is not something the 3158 test could see.
+    ///
+    /// The page sits one bar height down its side; the origin the paint
+    /// uses and the origin the hit subtracts are the **same value**
+    /// (`At::origin`), which is the property, not two figures that agree.
+    #[test]
+    fn every_row_is_hit_where_it_is_drawn() {
+        let mut p = page(&["/w"]);
+        p.levels.keep("/w", workdirs::read_listing(&listing(&[("a", false), ("b", false), ("c", false), ("d", false)], 0)).unwrap());
+        let v = View { page: &p, hover: None, scroll: 0.0, open_name: None, open_said: None, said: None };
+        let (_, l) = build(&v, &DARK, 1000.0, 600.0, &tr);
+        assert!(l.rows.len() >= 5, "the tree has a root and its level");
+        let at = At::drawn(760, 0, 2.0, Rect { x: 1.0, y: 32.0, w: l.width, h: l.height });
+        // The page's top-left in the panel is the origin, and the origin is
+        // the page's (0,0).
+        let (ox, oy) = at.origin();
+        assert_eq!(at.local(ox, oy), (0.0, 0.0));
+        assert_eq!((ox, oy), (762, 64), "the side's 760 px + the page's 1 and 32 points, at scale 2");
+        // **From the second row down first** (task 3164's floor): an error
+        // of one row shows as "row N's centre is row N-1", which row 0
+        // cannot say -- a point a row above it is off the page. Row 0 is
+        // asserted after them.
+        let order = (1..l.rows.len()).chain(std::iter::once(0));
+        for i in order {
+            let row = &l.rows[i];
+            let cx = ox + ((row.rect.x + row.rect.w / 2.0) * at.scale).round() as i32;
+            let cy = oy + ((row.rect.y + row.rect.h / 2.0) * at.scale).round() as i32;
+            assert_eq!(
+                at.hit(&l, cx, cy).map(|r| r.key.clone()),
+                Some(row.key.clone()),
+                "row {i}'s centre hit {i}"
+            );
+            let top = oy + (row.rect.y * at.scale).round() as i32 + 1;
+            let bottom = oy + ((row.rect.y + row.rect.h) * at.scale).round() as i32 - 1;
+            assert_eq!(at.hit(&l, cx, top).map(|r| r.key.clone()), Some(row.key.clone()), "row {i}'s top edge");
+            assert_eq!(at.hit(&l, cx, bottom).map(|r| r.key.clone()), Some(row.key.clone()), "row {i}'s bottom edge");
+        }
     }
 
     /// **A point on the panel is read in the page's own points** (task 3158):

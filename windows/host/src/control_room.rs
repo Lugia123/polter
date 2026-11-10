@@ -1973,19 +1973,26 @@ unsafe fn paint_workdirs(hwnd: HWND, dc: HDC, at: Px, page: Rect, theme: &Theme)
         Some(workdirs_scene::build(&view, theme, page.w, page.h, &|s| tr(s)))
     });
     let Some((items, layout)) = built else { return };
-    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
-    unsafe { paint_items(dc, at, &items, &mut fonts, source::clock()) };
-    drop(fonts);
-    // **What the press will be measured against**: the page's origin in
-    // the panel's points, made from the same `at` the paint drew with --
-    // the one place both terms of the conversion are added (task 3158).
+    // **One origin, and everything starts from it** (tasks 3158 and 3164):
+    // where the page is in the panel -- the right side's origin **plus the
+    // page's place in that side** (`scene::terminal_rect`, one bar height
+    // down). The paint used to draw from the side's origin and hit-test
+    // from the page's, so every row was drawn ~32 points above where it
+    // was hit; a click on a row's centre opened the row above it.
     let at_page = workdirs_scene::At::drawn(at.ox, at.oy, scale, page);
+    let (ox, oy) = at_page.origin();
+    let page_at = Px { scale, ox, oy };
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    unsafe { paint_items(dc, page_at, &items, &mut fonts, source::clock()) };
+    drop(fonts);
     WORKDIRS.with(|w| {
         if let Some(x) = w.borrow_mut().as_mut() {
             x.drawn = Some((at_page, layout.clone()));
         }
     });
-    workdirs_show(hwnd, &at, &layout);
+    // The preview box is the page's own: the same origin, or the file is
+    // drawn a bar height off too.
+    workdirs_show(hwnd, &page_at, &layout);
     // **A list that grew shorter keeps the tree no further up than it can
     // be**: a directory folded, or a level that came back with fewer rows.
     let over = WORKDIRS.with(|w| {
