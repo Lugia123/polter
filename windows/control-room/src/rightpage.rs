@@ -1,6 +1,7 @@
-//! The right side's four pages and the tabs over them (task 2015, Q6;
+//! The right side's five pages and the tabs over them (task 2015, Q6;
 //! `polter-artifacts/1985/DESIGN-v2.md` §5–6, `polter-artifacts/2015/API.md`
-//! §4): Supervisor, Chat, Tasks, Performance.
+//! §4): Supervisor, Chat, Tasks, Performance, Workdirs -- **the fifth is
+//! task 3148's** and is the one macOS had and this host did not.
 //!
 //! **The tabs take the place of the supervisor frame's title bar**, as a
 //! stack's strip takes it on a pane (the macOS host's `PaneFrameView` stack
@@ -8,7 +9,7 @@
 //! `pane::BAR_HEIGHT`, so the supervisor's terminal stays exactly where
 //! `scene::terminal_rect` put it before there were pages. What the bar said
 //! at its right end -- the supervisor's state and "Let the control room take
-//! over?" -- goes to the strip's right end, on all four pages (API.md §6,
+//! over?" -- goes to the strip's right end, on all five pages (API.md §6,
 //! change log).
 //!
 //! The tabs are a stack's tabs without a close button or a plus: there is
@@ -34,6 +35,16 @@ pub mod msg {
     pub const CHAT: &str = n_("Chat");
     pub const TASKS: &str = n_("Tasks");
     pub const PERFORMANCE: &str = n_("Performance");
+    /// The working-directories tab (task 3148).
+    ///
+    /// ⚠️ **Not `n_`**: `po/zh_CN.po` has no entry for it, and the crate's
+    /// fixture test refuses a marked string the catalogue cannot translate.
+    /// The macOS host's own label (`ControlRoomPage.workdirs`) is in exactly
+    /// the same state -- its `String(localized: "Workdirs")` is absent from
+    /// that catalogue too -- so the tab reads English on both hosts until
+    /// the page's translation lands for both at once
+    /// (`workdirs_scene::msg` has the whole of it).
+    pub const WORKDIRS: &str = "Workdirs";
     /// On the chat page, after the chat's program ended: nothing is opened
     /// again until the person asks (group seq 223 -- a chat that ends as it
     /// starts would otherwise be opened again and again).
@@ -49,11 +60,15 @@ pub enum Page {
     Chat,
     Tasks,
     Performance,
+    /// The group's working directories: the roots, the file tree under them
+    /// and the file a row was clicked on (task 3148).
+    Workdirs,
 }
 
 impl Page {
     /// In the order the tabs stand.
-    pub const ALL: [Page; 4] = [Page::Supervisor, Page::Chat, Page::Tasks, Page::Performance];
+    pub const ALL: [Page; 5] =
+        [Page::Supervisor, Page::Chat, Page::Tasks, Page::Performance, Page::Workdirs];
 
     pub fn index(self) -> usize {
         match self {
@@ -61,6 +76,7 @@ impl Page {
             Page::Chat => 1,
             Page::Tasks => 2,
             Page::Performance => 3,
+            Page::Workdirs => 4,
         }
     }
 
@@ -71,6 +87,7 @@ impl Page {
             Page::Chat => msg::CHAT,
             Page::Tasks => msg::TASKS,
             Page::Performance => msg::PERFORMANCE,
+            Page::Workdirs => msg::WORKDIRS,
         }
     }
 
@@ -86,7 +103,7 @@ impl Page {
     /// supervisor's page gives the keys to its terminal its own way; the
     /// performance page has none.
     pub fn takes_the_keys(self) -> bool {
-        self == Page::Tasks
+        self == Page::Tasks || self == Page::Workdirs
     }
 }
 
@@ -98,7 +115,7 @@ pub fn mark(page: Page, level: Level, theme: &Theme, current: bool) -> Option<(M
     match page {
         Page::Supervisor => Some((Mark::Supervisor, label_style(theme, current).color)),
         Page::Performance => level_ink(theme, level).map(|ink| (Mark::Dot, ink.base)),
-        Page::Chat | Page::Tasks => None,
+        Page::Chat | Page::Tasks | Page::Workdirs => None,
     }
 }
 
@@ -164,7 +181,7 @@ impl Strip {
     }
 }
 
-/// Where the four tabs go over a right side `width` points wide, each
+/// Where the five tabs go over a right side `width` points wide, each
 /// wanting `wants[page.index()]` (`want`), with `current` in front.
 ///
 /// From inside the frame's border, `stack_tab::INSET` in; up to
@@ -172,7 +189,7 @@ impl Strip {
 /// widest of the others are cut to one common width, down to `LEAST`; the
 /// one in front is cut only when even that is not enough, and then to what
 /// there is.
-pub fn strip(width: f64, wants: [f64; 4], current: Page) -> Strip {
+pub fn strip(width: f64, wants: [f64; 5], current: Page) -> Strip {
     let left = pane::SUPERVISOR_BORDER;
     let right = (width - pane::SUPERVISOR_BORDER).max(left);
     let start = left + t::INSET;
@@ -253,7 +270,7 @@ pub struct View {
     pub page: Page,
     /// How wide each tab wants to be, by `Page::index`: the host measures
     /// each name in `label_style` and hands it to `want`.
-    pub wants: [f64; 4],
+    pub wants: [f64; 5],
     /// The group's `resource_level`.
     pub level: Level,
 }
@@ -408,17 +425,19 @@ mod tests {
     use super::*;
     use crate::look::DARK;
 
-    fn wants() -> [f64; 4] {
+    fn wants() -> [f64; 5] {
         // The design's Windows page: 总管 with its flag, then three plain
-        // names, the last with its dot.
-        [nominal_want("总管", true), nominal_want("群聊", false), nominal_want("任务", false), nominal_want("性能", true)]
+        // names, 性能 with its dot, and 工作目录 plain (task 3148).
+        [nominal_want("总管", true), nominal_want("群聊", false), nominal_want("任务", false), nominal_want("性能", true), nominal_want("工作目录", false)]
     }
 
-    /// Task 2142: the task page's tab hands it the keys; no other does.
+    /// Task 2142: the task page's tab hands it the keys; task 3148's tree
+    /// page is the second -- its ↑↓, Enter and its directory rows are its
+    /// own. No other page takes them.
     #[test]
-    fn choosing_the_task_page_gives_it_the_keys() {
+    fn choosing_a_page_with_keys_of_its_own_hands_them_to_it() {
         let taking: Vec<Page> = Page::ALL.into_iter().filter(|p| p.takes_the_keys()).collect();
-        assert_eq!(taking, vec![Page::Tasks]);
+        assert_eq!(taking, vec![Page::Tasks, Page::Workdirs]);
     }
 
     #[test]
@@ -427,19 +446,21 @@ mod tests {
     }
 
     #[test]
-    fn four_tabs_in_order_from_the_inset_each_as_wide_as_it_wants() {
+    fn five_tabs_in_order_from_the_inset_each_as_wide_as_it_wants() {
         let s = strip(900.0, wants(), Page::Supervisor);
         let pages: Vec<Page> = s.tabs.iter().map(|t| t.page).collect();
         assert_eq!(pages, Page::ALL.to_vec());
-        // 12 + 32 + 12 + 14 + 8 = 78 for the flagged; 12 + 32 + 12 = 56.
-        assert_eq!(s.tabs.iter().map(|t| t.rect.w).collect::<Vec<_>>(), vec![78.0, 56.0, 56.0, 78.0]);
+        // 12 + 32 + 12 + 14 + 8 = 78 for the flagged; 12 + 32 + 12 = 56
+        // for a plain name, and 12 + 64 + 12 = 88 for 工作目录's two cells a
+        // character.
+        assert_eq!(s.tabs.iter().map(|t| t.rect.w).collect::<Vec<_>>(), vec![78.0, 56.0, 56.0, 78.0, 88.0]);
         assert_eq!(s.tabs[0].rect.x, pane::SUPERVISOR_BORDER + t::INSET);
         for w in s.tabs.windows(2) {
             assert_eq!(w[0].rect.x + w[0].rect.w, w[1].rect.x);
         }
         assert!(s.tabs.iter().all(|t| t.rect.y == 4.0 && t.rect.h == 28.0 && !t.squeezed));
         // The status runs from the last tab plus its gap to the trailing edge.
-        let last = s.tabs[3].rect;
+        let last = s.tabs[4].rect;
         assert_eq!(s.status.x, last.x + last.w + t::STATUS_GAP);
         assert_eq!(s.status.x + s.status.w, 900.0 - pane::SUPERVISOR_BORDER - t::TRAILING);
     }
@@ -448,8 +469,9 @@ mod tests {
     fn separators_only_between_two_tabs_neither_in_front() {
         let s = strip(900.0, wants(), Page::Tasks);
         let sep: Vec<bool> = s.tabs.iter().map(|t| t.separator_before).collect();
-        // Supervisor|Chat yes; Chat|Tasks no (Tasks in front); Tasks|Perf no.
-        assert_eq!(sep, vec![false, true, false, false]);
+        // Supervisor|Chat yes; Chat|Tasks no (Tasks in front); Tasks|Perf no;
+        // Perf|Workdirs yes (neither is in front).
+        assert_eq!(sep, vec![false, true, false, false, true]);
         assert!(s.tabs[2].current && s.tabs.iter().filter(|t| t.current).count() == 1);
     }
 
@@ -468,17 +490,19 @@ mod tests {
     #[test]
     fn too_narrow_the_others_give_way_and_the_one_in_front_does_not() {
         let w = wants();
+        // **The four the front is not**: indices 0, 1, 2 and 4.
+        let others = |tabs: &[Tab]| -> Vec<Tab> { tabs.iter().filter(|t| t.page != Page::Performance).cloned().collect() };
         // Room for the front whole and the rest at less than they want.
-        let width = 2.0 * pane::SUPERVISOR_BORDER + t::INSET + t::TRAILING + w[3] + 3.0 * 50.0;
+        let width = 2.0 * pane::SUPERVISOR_BORDER + t::INSET + t::TRAILING + w[3] + 4.0 * 50.0;
         let s = strip(width, w, Page::Performance);
         assert_eq!(s.tabs[3].rect.w, w[3]);
         assert!(!s.tabs[3].squeezed);
-        assert!(s.tabs[..3].iter().all(|t| t.squeezed && t.rect.w >= LEAST));
-        let end = s.tabs[3].rect.x + s.tabs[3].rect.w;
+        assert!(others(&s.tabs).iter().all(|t| t.squeezed && t.rect.w >= LEAST));
+        let end = s.tabs[4].rect.x + s.tabs[4].rect.w;
         assert!(end <= width - pane::SUPERVISOR_BORDER - t::TRAILING + 1e-9);
         // Narrower than even that: the others at LEAST, the front cut to what is left.
-        let s = strip(2.0 * pane::SUPERVISOR_BORDER + t::INSET + t::TRAILING + 3.0 * LEAST + 30.0, w, Page::Performance);
-        assert!(s.tabs[..3].iter().all(|t| t.rect.w == LEAST));
+        let s = strip(2.0 * pane::SUPERVISOR_BORDER + t::INSET + t::TRAILING + 4.0 * LEAST + 30.0, w, Page::Performance);
+        assert!(others(&s.tabs).iter().all(|t| t.rect.w == LEAST));
         assert_eq!(s.tabs[3].rect.w, 30.0);
         assert_eq!(s.status.w, 0.0);
     }

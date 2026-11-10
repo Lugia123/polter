@@ -61,6 +61,8 @@ use polter_control_room::perf_scene::{self, Draw};
 use polter_control_room::pulse;
 use polter_control_room::{tasks, tasks_scene};
 use polter_control_room::rightpage::{self, Page};
+use polter_control_room::workdirs;
+use polter_control_room::workdirs_scene::{self, RowWhat};
 use polter_control_room::scene::{self, Align, Face, Item, Lit, Part, Piece, Side, Style, View};
 use polter_control_room::slide;
 use polter_control_room::snapshot::Shown;
@@ -396,7 +398,7 @@ pub(crate) fn shows_terminal() -> bool {
 /// level from the snapshot.
 fn page_view(hwnd: HWND, scale: f64, theme: &Theme, group: &str, level: polter_control_room::level::Level) -> rightpage::View {
     let page = page_of(group);
-    let mut wants = [0.0; 4];
+    let mut wants = [0.0; 5];
     let dc = unsafe { GetDC(Some(hwnd)) };
     for p in Page::ALL {
         let label = tr(p.label());
@@ -1397,6 +1399,604 @@ pub(crate) fn chat_group() -> Option<String> {
 /// Before a paint: when the chat that should be in front is not the one
 /// that is -- another group selected on its chat page -- the window is laid
 /// out again, which places it.
+
+// ------------------------------------------------ the working-directories page
+//
+// Task 3148, `#2140` W2. The page's rules are `polter_control_room::workdirs`
+// and where everything is is `workdirs_scene`; **what is here is the core's
+// answers asked for, and the file put in the preview slot** -- and that only.
+//
+// A level is asked for when the directory is opened and kept in the crate's
+// `Levels`, so a redraw never reads a directory; a level that could not be
+// read is kept as a refusal beside it and not asked for again (`Levels`
+// says why). The ticket is one per root (`workdirs::ROOT_SCOPE`) and minted
+// once; a file clicked in the workbench gets a ticket of its own on itself
+// (`workdirs::FILE_SCOPE`), and that ticket belongs to the preview slot
+// (`preview_page`) until another file replaces it or the page goes.
+
+struct Opened {
+    /// The file's own name, for the workbench's bar.
+    name: String,
+    token: String,
+    /// The core's `plugin` descriptor, handed to `preview_page::show`
+    /// untouched: this host does not decide which view a file gets.
+    plugin: Option<serde_json::Value>,
+    /// The box it was last shown in, in the panel's pixels. A repaint at the
+    /// same box does not ask again; a resize does.
+    rect: Option<(i32, i32, i32, i32)>,
+}
+
+/// What the working-directories page knows, for the group in front.
+struct Workdirs {
+    group: String,
+    page: workdirs::Page,
+    /// The page's answer has been asked for since it came in front.
+    asked: bool,
+    /// Why the last ask had no answer, said once until it changes.
+    said: Option<String>,
+    /// The person pressed on the page, or chose its tab: ↑↓ and Enter are
+    /// its, until they press on the list.
+    keys: bool,
+    scroll: f64,
+    /// The row the pointer is on.
+    hover: Option<String>,
+    /// Where the page was drawn: its origin **in the panel's points** and
+    /// the layout in the page's own. One value answers a press, a hover and
+    /// the wheel (task 3158).
+    drawn: Option<(workdirs_scene::At, workdirs_scene::Layout)>,
+    /// The file in the workbench, and the ticket that shows it.
+    open: Option<Opened>,
+    /// Why the last file pressed was not opened.
+    open_said: Option<String>,
+}
+
+thread_local! {
+    static WORKDIRS: RefCell<Option<Workdirs>> = const { RefCell::new(None) };
+    /// The working-directories tab was chosen: the page has the keys once it
+    /// is in front (as the task page's, task 2142).
+    static WORKDIRS_KEYS_COMING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The group whose working-directories page is in front, when one is.
+fn workdirs_group(hwnd: HWND) -> Option<String> {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    let group = selection()?;
+    if page_of(&group) != Page::Workdirs {
+        return None;
+    }
+    let pages = source::with(|data| match data {
+        Data::Ready(r) => r.list.row(&group).is_some_and(|row| rightpage::has_pages(&detail(), Some(row))),
+        Data::NotYet | Data::Unreadable(_) => false,
+    });
+    pages.then_some(group)
+}
+
+/// The page came in front, another group's did, or it went: asked once,
+/// and its preview let go when it is no longer the page's.
+fn workdirs_sync(hwnd: HWND) {
+    let Some(group) = workdirs_group(hwnd) else {
+        WORKDIRS_KEYS_COMING.with(|c| c.set(false));
+        let had = WORKDIRS.with(|w| w.borrow_mut().take());
+        if had.is_some() {
+            // **The file's ticket goes with the page**: a ticket is the
+            // core's capability, and one left behind is a live capability
+            // for a file no view is showing.
+            crate::preview_page::close(&crate::preview_page::SlotKey::workdir(hwnd));
+        }
+        return;
+    };
+    let (ask, changed) = WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        match w.as_mut() {
+            Some(x) if x.group == group => {
+                let ask = !x.asked;
+                x.asked = true;
+                (ask, false)
+            }
+            _ => {
+                *w = Some(Workdirs {
+                    group: group.clone(),
+                    page: workdirs::Page::new(&group),
+                    asked: true,
+                    said: None,
+                    keys: false,
+                    scroll: 0.0,
+                    hover: None,
+                    drawn: None,
+                    open: None,
+                    open_said: None,
+                });
+                (true, true)
+            }
+        }
+    });
+    if changed {
+        // Another group's file, or the first answer for this one: the old
+        // view is closed before anything is drawn under it.
+        crate::preview_page::close(&crate::preview_page::SlotKey::workdir(hwnd));
+    }
+    if WORKDIRS_KEYS_COMING.with(|c| c.replace(false)) {
+        WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.keys = true;
+            }
+        });
+    }
+    if ask {
+        workdirs_fetch(hwnd);
+    }
+}
+
+/// Ask the core for the page as it is set now, when it is in front; keep
+/// what it says. The levels of open directories are asked for after it.
+fn workdirs_fetch(hwnd: HWND) {
+    if workdirs_group(hwnd).is_none() {
+        return;
+    }
+    let Some(ask) = WORKDIRS.with(|w| w.borrow().as_ref().map(|x| workdirs::request(&x.group))) else { return };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let answer = source::page(&ask);
+    let mut kept = false;
+    WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(x) = w.as_mut() else { return };
+        x.asked = true;
+        match answer {
+            Ok(text) => match workdirs::read(&text) {
+                Ok(a) if a.group == x.group => {
+                    x.page.set_answer(a);
+                    x.said = None;
+                    kept = true;
+                }
+                // Another group's answer: not this page's to draw.
+                Ok(_) => {}
+                Err(f) => {
+                    let said = workdirs_failure_words(&f);
+                    if x.said.as_deref() != Some(said.as_str()) {
+                        wlogf!(frame, "[control-room] workdirs page of {:?}: no answer ({})", x.group, said);
+                        x.said = Some(said);
+                    }
+                }
+            },
+            Err(why) => {
+                if x.said.as_deref() != Some(why.as_str()) {
+                    wlogf!(frame, "[control-room] workdirs page of {:?}: no answer ({})", x.group, why);
+                    x.said = Some(why);
+                }
+            }
+        }
+    });
+    if kept {
+        workdirs_read_open();
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// Every open directory whose level nobody has asked for yet, in the order
+/// the page draws them: a root first, then what is open under it. Bounded by
+/// the rows there are -- each answer marks its directory asked, refused or
+/// not.
+fn workdirs_read_open() {
+    loop {
+        let next = WORKDIRS.with(|w| {
+            let w = w.borrow();
+            let x = w.as_ref()?;
+            for dir in x.page.dirs() {
+                if !x.page.tree.is_open(&dir.id) {
+                    continue;
+                }
+                if !x.page.levels.has_asked(&dir.path) {
+                    return Some((dir.id.clone(), dir.path.clone(), String::new()));
+                }
+                for node in x.page.rows(dir) {
+                    if node.is_dir && x.page.levels.is_open(&node.path) && !x.page.levels.has_asked(&node.path) {
+                        return Some((dir.id.clone(), node.path.clone(), node.rel.clone()));
+                    }
+                }
+            }
+            None
+        });
+        let Some((dir_id, path, rel)) = next else { break };
+        let answer = match workdirs_ticket(&dir_id) {
+            Ok(token) => crate::preview_page::ask_raw(&workdirs::listing_request(&token, &rel)),
+            Err(why) => Err(why),
+        };
+        WORKDIRS.with(|w| {
+            let mut w = w.borrow_mut();
+            let Some(x) = w.as_mut() else { return };
+            match answer {
+                Ok(text) => match workdirs::read_listing(&text) {
+                    Ok(level) => x.page.levels.keep(&path, level),
+                    Err(f) => x.page.levels.keep_failure(&path, f),
+                },
+                Err(why) => x.page.levels.keep_failure(&path, workdirs::Failure::Unavailable(why)),
+            }
+        });
+    }
+}
+
+/// The ticket a root's tree is listed with: the one already kept, or a fresh
+/// one (`.workdir` scope -- a tree shows what is *under* a directory, which a
+/// `.file` ticket would not reach). One per root and minted once.
+fn workdirs_ticket(dir_id: &str) -> Result<String, String> {
+    if let Some(token) = WORKDIRS.with(|w| {
+        w.borrow()
+            .as_ref()
+            .and_then(|x| x.page.levels.ticket(dir_id).map(str::to_string))
+    }) {
+        return Ok(token);
+    }
+    let root = WORKDIRS.with(|w| {
+        w.borrow()
+            .as_ref()
+            .and_then(|x| x.page.dir(dir_id).map(|d| d.path.clone()))
+    });
+    let Some(root) = root else {
+        return Err(crate::i18n::tr("Polter could not prepare the preview."));
+    };
+    let text = crate::preview_page::ask_raw(&workdirs::open_request(dir_id, &root, workdirs::ROOT_SCOPE))?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| crate::i18n::tr("Polter could not prepare the preview."))?;
+    if v.get("refused").is_some() {
+        // The core's own sentence for why no ticket was minted.
+        return Err(v
+            .get("why")
+            .and_then(|w| w.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::i18n::tr("The core is not answering")));
+    }
+    let Some(token) = v.get("token").and_then(|t| t.as_str()) else {
+        return Err(crate::i18n::tr("Polter could not prepare the preview."));
+    };
+    WORKDIRS.with(|w| {
+        if let Some(x) = w.borrow_mut().as_mut() {
+            x.page.levels.keep_ticket(dir_id, token);
+        }
+    });
+    Ok(token.to_string())
+}
+
+/// A row was pressed or Enter was on it: a root or a directory opens or
+/// shuts, a file is put in the workbench.
+fn workdirs_act(hwnd: HWND, key: &str, what: RowWhat) {
+    match what {
+        RowWhat::Root => WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.page.tree.toggle(key);
+            }
+        }),
+        RowWhat::Dir => WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.page.levels.toggle(key);
+            }
+        }),
+        RowWhat::File => workdirs_open_file(hwnd, key),
+        RowWhat::Note => {}
+    }
+    // A directory just opened has a level nobody has read: asked here, once.
+    workdirs_read_open();
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// A file was clicked: `files_open` on it, and the token and the core's
+/// plugin descriptor are put in the preview slot at the next paint (the
+/// paint that knows where the workbench is).
+fn workdirs_open_file(hwnd: HWND, path: &str) {
+    let found = WORKDIRS.with(|w| {
+        let w = w.borrow();
+        let x = w.as_ref()?;
+        let dir = workdirs::dir_holding(x.page.answer.as_ref()?, path)?;
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+        Some((dir.id.clone(), name))
+    });
+    let Some((dir_id, name)) = found else {
+        // **The last file's view goes with the failure**: a workbench that
+        // said why this file could not be opened while still showing the
+        // one before it would be two answers to one press.
+        crate::preview_page::close(&crate::preview_page::SlotKey::workdir(hwnd));
+        WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.open = None;
+                x.open_said = Some(crate::i18n::tr("The file is not in the group's working directory, or it is gone."));
+            }
+        });
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        return;
+    };
+    let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let text = crate::preview_page::ask_raw(&workdirs::open_request(&dir_id, path, workdirs::FILE_SCOPE));
+    let parsed = text.and_then(|t| {
+        serde_json::from_str::<serde_json::Value>(&t).map_err(|e| format!("the core's answer is not JSON: {e}"))
+    });
+    let mut opened = None;
+    let mut said = None;
+    match parsed {
+        Ok(v) if v.get("refused").is_some() => {
+            said = Some(
+                v.get("why")
+                    .and_then(|w| w.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| crate::i18n::tr(workdirs_scene::msg::NOT_OPENED)),
+            );
+        }
+        Ok(v) => match v.get("token").and_then(|t| t.as_str()) {
+            Some(token) => {
+                opened = Some(Opened {
+                    name,
+                    token: token.to_string(),
+                    plugin: v.get("plugin").cloned(),
+                    rect: None,
+                });
+            }
+            None => said = Some(crate::i18n::tr(workdirs_scene::msg::NOT_OPENED)),
+        },
+        Err(why) => {
+            wlogf!(frame, "[control-room] workdirs page: files_open gave no ticket: {why}");
+            said = Some(crate::i18n::tr(workdirs_scene::msg::NOT_OPENED));
+        }
+    }
+    // **The old view goes before the new one is decided**: a ticket that
+    // could not be minted must not leave the last file's page on screen
+    // under a new name.
+    crate::preview_page::close(&crate::preview_page::SlotKey::workdir(hwnd));
+    WORKDIRS.with(|w| {
+        if let Some(x) = w.borrow_mut().as_mut() {
+            x.open = opened;
+            x.open_said = said;
+        }
+    });
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// A press on the page: on the tree, the row acted on; anywhere else on the
+/// page, the keys. Whether it was on the page.
+fn workdirs_press(hwnd: HWND, x: i32, y: i32) -> bool {
+    let acted = WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(st) = w.as_mut() else { return None };
+        let Some((at_page, lay)) = st.drawn.as_ref() else {
+            st.keys = false;
+            return None;
+        };
+        // **The page takes the keys only where it is drawn.** A press
+        // anywhere else on the panel is the list's, and used to leave this
+        // page holding them (task 3158) because the box it checked was the
+        // right side's, not the page's.
+        if !at_page.holds(lay, x, y) {
+            st.keys = false;
+            return None;
+        }
+        st.keys = true;
+        let row = at_page.hit(lay, x, y)?;
+        let (key, what) = (row.key.clone(), row.what);
+        st.page.tree.select(Some(&key));
+        Some((key, what))
+    });
+    let Some((key, what)) = acted else { return false };
+    workdirs_act(hwnd, &key, what);
+    true
+}
+
+/// ↑↓ move among the rows the page draws, keeping the next row in sight;
+/// Enter opens or shuts the selected directory, or opens the selected file.
+/// Only once the page has the keys. Whether it took the key.
+fn workdirs_key(hwnd: HWND, key: u16) -> bool {
+    let (keys, drawn, selected) = WORKDIRS.with(|w| {
+        let w = w.borrow();
+        match w.as_ref() {
+            Some(x) => (x.keys, x.drawn.clone(), x.page.tree.selected().map(str::to_string)),
+            None => (false, None, None),
+        }
+    });
+    if !keys {
+        return false;
+    }
+    let Some((_, lay)) = drawn else { return false };
+    if key == VK_UP.0 || key == VK_DOWN.0 {
+        let rows: Vec<&workdirs_scene::RowAt> = lay.rows.iter().filter(|r| r.what != RowWhat::Note).collect();
+        if rows.is_empty() {
+            return true;
+        }
+        let at = selected.as_deref().and_then(|k| rows.iter().position(|r| r.key == k));
+        let next = match (at, key == VK_DOWN.0) {
+            (Some(i), true) => (i + 1).min(rows.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+            (None, true) => 0,
+            (None, false) => rows.len() - 1,
+        };
+        let key = rows[next].key.clone();
+        WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.page.tree.select(Some(&key));
+                x.scroll = lay.follow(&key, x.scroll);
+            }
+        });
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        return true;
+    }
+    if key == VK_RETURN.0 {
+        let Some(selected) = selected else { return true };
+        if let Some(row) = lay.row(&selected) {
+            let (k, what) = (row.key.clone(), row.what);
+            workdirs_act(hwnd, &k, what);
+        }
+        return true;
+    }
+    false
+}
+
+/// The pointer, at (x, y) in the panel's pixels or gone: which row it is on,
+/// drawn again when that changed.
+fn workdirs_hover(hwnd: HWND, at: Option<(i32, i32)>) {
+    let changed = WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(x) = w.as_mut() else { return false };
+        let now = match (at, x.drawn.as_ref()) {
+            // The same value the paint stored and the press asks: a hovered
+            // row and a pressed row are found the same way (task 3158).
+            (Some((px, py)), Some((at_page, lay))) => at_page.hit(lay, px, py).map(|r| r.key.clone()),
+            _ => None,
+        };
+        let changed = now != x.hover;
+        x.hover = now;
+        changed
+    });
+    if changed {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+fn workdirs_wheel(hwnd: HWND, x: i32, y: i32, delta: i32) -> bool {
+    let moved = WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(st) = w.as_mut() else { return None };
+        let (at_page, lay) = st.drawn.as_ref()?;
+        // **The page takes the wheel wherever it is in front** -- over the
+        // tree it scrolls it, over the other two columns it does nothing --
+        // so a notch over the workbench does not scroll the list on the
+        // left (the wheel's fall-through is the list's). The page's own
+        // points are `At`'s, the same ones the paint drew with.
+        if !at_page.holds(lay, x, y) {
+            return None;
+        }
+        let (px, py) = at_page.local(x, y);
+        let inside_tree = px >= lay.viewport.x
+            && px < lay.viewport.x + lay.viewport.w
+            && py >= lay.viewport.y
+            && py < lay.viewport.y + lay.viewport.h;
+        if inside_tree {
+            let by = polter_control_room::panestack::scroll(0, delta, WHEEL_ROWS * workdirs_scene::tile::TREE_ROW);
+            let to = (st.scroll + by).clamp(0.0, lay.max_scroll());
+            let moved = to != st.scroll;
+            st.scroll = to;
+            return Some(moved);
+        }
+        Some(false)
+    });
+    if moved == Some(true) {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    moved.is_some()
+}
+
+/// A refusal in a person's words: the core's own sentence where it wrote
+/// one, and this host's where it did not.
+fn workdirs_failure_words(f: &workdirs::Failure) -> String {
+    match f.why() {
+        Some(said) => said.to_string(),
+        None => crate::i18n::tr(workdirs_scene::msg::NOT_READ),
+    }
+}
+
+fn show_error_words(e: crate::preview_page::ShowError) -> String {
+    match e {
+        crate::preview_page::ShowError::Budget => crate::i18n::tr("No room for another preview."),
+        crate::preview_page::ShowError::AlreadyOwned => crate::i18n::tr("That preview is open in another slot."),
+        crate::preview_page::ShowError::Unsupported => crate::i18n::tr("No plugin can show this file."),
+    }
+}
+
+/// Put the file in the preview slot, at the workbench's box -- or say why it
+/// could not be. The same box at the next paint asks nothing; a resize asks
+/// again (the slot takes the new bounds).
+fn workdirs_show(hwnd: HWND, at: &Px, layout: &workdirs_scene::Layout) {
+    let Some((token, plugin, was)) = WORKDIRS.with(|w| {
+        let w = w.borrow();
+        let o = w.as_ref()?.open.as_ref()?;
+        Some((o.token.clone(), o.plugin.clone(), o.rect))
+    }) else {
+        return;
+    };
+    let target = at.rect(layout.body);
+    if target.right <= target.left || target.bottom <= target.top {
+        return;
+    }
+    let px = (target.left, target.top, target.right, target.bottom);
+    if was == Some(px) {
+        return;
+    }
+    match crate::preview_page::show(crate::preview_page::SlotKey::workdir(hwnd), target, &token, plugin.as_ref()) {
+        Ok(()) => WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                if let Some(o) = x.open.as_mut() {
+                    o.rect = Some(px);
+                }
+            }
+        }),
+        Err(e) => {
+            // **A ticket `show` refused is the caller's to close**, and it
+            // must not be left live: nothing else holds it.
+            crate::preview_page::close_unowned(&token);
+            WORKDIRS.with(|w| {
+                if let Some(x) = w.borrow_mut().as_mut() {
+                    x.open = None;
+                    x.open_said = Some(show_error_words(e));
+                }
+            });
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        }
+    }
+}
+
+/// The page, inside `page` of the right side `at`, when it is the page in
+/// front and there is an answer to draw.
+unsafe fn paint_workdirs(hwnd: HWND, dc: HDC, at: Px, page: Rect, theme: &Theme) {
+    if selection().map(|g| page_of(&g)) != Some(Page::Workdirs) {
+        WORKDIRS.with(|w| {
+            if let Some(x) = w.borrow_mut().as_mut() {
+                x.drawn = None;
+            }
+        });
+        return;
+    }
+    let scale = at.scale;
+    let built = WORKDIRS.with(|w| {
+        let w = w.borrow();
+        let x = w.as_ref()?;
+        let view = workdirs_scene::View {
+            page: &x.page,
+            hover: x.hover.as_deref(),
+            scroll: x.scroll,
+            open_name: x.open.as_ref().map(|o| o.name.as_str()),
+            open_said: x.open_said.as_deref(),
+            said: x.said.as_deref(),
+        };
+        Some(workdirs_scene::build(&view, theme, page.w, page.h, &|s| tr(s)))
+    });
+    let Some((items, layout)) = built else { return };
+    let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
+    unsafe { paint_items(dc, at, &items, &mut fonts, source::clock()) };
+    drop(fonts);
+    // **What the press will be measured against**: the page's origin in
+    // the panel's points, made from the same `at` the paint drew with --
+    // the one place both terms of the conversion are added (task 3158).
+    let at_page = workdirs_scene::At::drawn(at.ox, at.oy, scale, page);
+    WORKDIRS.with(|w| {
+        if let Some(x) = w.borrow_mut().as_mut() {
+            x.drawn = Some((at_page, layout.clone()));
+        }
+    });
+    workdirs_show(hwnd, &at, &layout);
+    // **A list that grew shorter keeps the tree no further up than it can
+    // be**: a directory folded, or a level that came back with fewer rows.
+    let over = WORKDIRS.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(x) = w.as_mut() else { return false };
+        let max = layout.max_scroll();
+        if x.scroll > max {
+            x.scroll = max;
+            true
+        } else {
+            false
+        }
+    });
+    if over {
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
 fn chat_sync(hwnd: HWND) {
     let want = chat_group();
     if !crate::chat_native::settled(&want) {
@@ -1434,6 +2034,7 @@ fn show_page(hwnd: HWND, page: Page) {
     // has the keys once it is in front (task 2142).
     if page.takes_the_keys() {
         TASKS_KEYS_COMING.with(|c| c.set(true));
+        WORKDIRS_KEYS_COMING.with(|c| c.set(page == Page::Workdirs));
     }
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     if !page.shows_terminal() && crate::tabs::keyboard_in_lent(frame) {
@@ -1611,6 +2212,8 @@ pub fn snapshot_changed() {
     sync_loan(hwnd);
     // A task may have moved: the task page asks again (API.md §2.2).
     tasks_fetch(hwnd);
+    // A group's working directories may have moved: its page asks again.
+    workdirs_fetch(hwnd);
     // A chat whose group is gone -- deleted, renamed, archived -- goes too.
     crate::chat_native::prune(|g| {
         source::with(|data| match data {
@@ -3548,7 +4151,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Over the performance page, the wheel scrolls it (task 2015).
             let mut at = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
             let _ = unsafe { ScreenToClient(hwnd, &mut at) };
-            if perf_wheel(hwnd, at.x, at.y, delta) || tasks_wheel(hwnd, at.x, at.y, delta) {
+            if perf_wheel(hwnd, at.x, at.y, delta) || tasks_wheel(hwnd, at.x, at.y, delta) || workdirs_wheel(hwnd, at.x, at.y, delta) {
                 return LRESULT(0);
             }
             let g = geometry(hwnd);
@@ -3612,17 +4215,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (x, y) = point(lp);
             perf_hover(hwnd, Some((x, y)));
             tasks_hover(hwnd, Some((x, y)));
+            workdirs_hover(hwnd, Some((x, y)));
             LRESULT(0)
         }
         windows::Win32::UI::Controls::WM_MOUSELEAVE => {
             perf_hover(hwnd, None);
             tasks_hover(hwnd, None);
+            workdirs_hover(hwnd, None);
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let key = wp.0 as u16;
             // The task page's own keys, once the person has pressed on it.
             if tasks_key(hwnd, key) {
+                return LRESULT(0);
+            }
+            // The working-directories page's own keys, once it has them.
+            if workdirs_key(hwnd, key) {
                 return LRESULT(0);
             }
             let step = if key == VK_UP.0 {
@@ -3755,6 +4364,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let _ = KillTimer(Some(hwnd), TIMER_PERF);
             }
             PERF.with(|p| *p.borrow_mut() = None);
+            // The working-directories page's own state and its preview go
+            // with the panel; the preview slot closes its ticket.
+            WORKDIRS.with(|w| *w.borrow_mut() = None);
+            crate::preview_page::close_all_for_parent(hwnd);
             // The chats are the control room's: they go with its panel.
             crate::chat_native::close_all();
             // Closed is not in front: nothing on it is in sight any more.
@@ -3982,6 +4595,9 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         return;
     }
     if tasks_press(hwnd, x, y) {
+        return;
+    }
+    if workdirs_press(hwnd, x, y) {
         return;
     }
     if notice_press(hwnd, x, y) {
@@ -4305,6 +4921,7 @@ fn paint(hwnd: HWND) {
     // stopped for what is in front now, and its first answer asked for.
     perf_sync(hwnd);
     tasks_sync(hwnd);
+    workdirs_sync(hwnd);
     chat_sync(hwnd);
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
@@ -4526,6 +5143,7 @@ fn paint(hwnd: HWND) {
             if let Some(page) = page_rect {
                 paint_perf(mem, at, page, theme);
                 paint_tasks(mem, at, page, theme);
+                paint_workdirs(hwnd, mem, at, page, theme);
             }
             // While the last session is looked for, its spinner turns
             // (task 1741).

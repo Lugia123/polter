@@ -23,9 +23,11 @@
 //! | [`level`] | how bad it is for a terminal or a group (task 2015), and the look's colours for each level |
 //! | [`perf`] | the performance page's data: the core's `resources` answer, read, and the curves kept between answers |
 //! | [`perf_scene`] | the performance page laid out and drawn: the overview, the history grid, a card a terminal |
-//! | [`rightpage`] | the right side's four pages: the tabs over it, which is pressed, where a page goes |
+//! | [`rightpage`] | the right side's five pages: the tabs over it, which is pressed, where a page goes |
 //! | [`tasks`] | the task page's data: the core's `tasks` answer, read |
 //! | [`tasks_scene`] | the task page laid out and drawn: the goal, the tasks, the open one's detail, the keys |
+//! | [`workdirs`] | the working-directories page's data: the core's `workdirs` answer and one level of a directory, read, and the tree the person opens |
+//! | [`workdirs_scene`] | the working-directories page laid out and drawn: the activity bar, the sidebar and the workbench |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
 //! | [`pane`] | which frame a pane of a split terminal tab wears, where it and the terminal in it go, and what it draws |
 //! | [`pane_color`] | the colour a person gives a pane: its value in the core's enum, its name, its three looks |
@@ -96,6 +98,8 @@ pub mod tabstrip;
 pub mod tasks;
 pub mod tasks_scene;
 pub mod toast;
+pub mod workdirs;
+pub mod workdirs_scene;
 
 #[cfg(test)]
 mod fixture_tests;

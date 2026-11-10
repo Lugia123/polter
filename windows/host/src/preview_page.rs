@@ -32,18 +32,19 @@
 //! `plugin_page.rs`; the script aliases it to `window.polter` so a plugin
 //! author writes one thing for both hosts.
 
-// ⚠️ **A file-level allow, and it is a statement about this task and not a
-// habit.** Everything here is reached by `show`/`hide`, and nothing calls
-// them yet: putting a preview in a pane, in the right side's page and in the
-// workdirs page is M2/W2 (#2140), one task later. The evidence that this is
-// reachability and not decay is that `cargo check` reports all 22 items as
-// `never used` **including `serve`, `ask_core` and `BRIDGE`** -- the three
-// that carry this task's whole behaviour -- so an allow that hid a real
-// mistake would hide those too. Measured 2026-11-01 by the test seat from the
-// build's own diagnostics (`windows/host/src/preview_page.rs`, 22 of 29).
+// ⚠️ **A file-level allow, and it is a statement about this file and not a
+// habit.** When it was written nothing called `show`/`hide`: putting a
+// preview in the workdirs page was M2/W2 (#2140), one task later, and the
+// evidence that the allow was about reachability rather than decay was that
+// `cargo check` reported all 22 items as `never used` **including `serve`,
+// `ask_core` and `BRIDGE`** -- the three that carry the file's whole
+// behaviour (measured 2026-11-01, 22 of 29).
 //
-// **What removes it**: the M2/W2 call sites. Then the compiler goes back to
-// saying which of these is still unused, and that answer will mean something.
+// **Task 3148 is that M2/W2 call site** -- the workdirs page shows one
+// preview in `SlotKey::workdir` and closes it when the page goes -- so the
+// allow now covers what is still genuinely unused (the chat's own paths are
+// in `chat_native.rs`), and the compiler's account of what is left is worth
+// reading: run `cargo check` and the `never used` list is shorter than 22.
 // `windows/host/src/ffi.rs` carries the same allow for the same shape of
 // reason (declarations that belong together, consumers a task behind).
 #![allow(dead_code)]
@@ -128,8 +129,12 @@ pub enum ShowError {
     /// Another slot already owns this ticket; this one refuses rather
     /// than share or steal it.
     AlreadyOwned,
-    /// The core chose a renderer this host cannot mount yet (a plugin page)
-    /// or no usable plugin at all. **No raw-file fallback.**
+    /// The core said a **matched** plugin shows this file and named a
+    /// `render` this host has no page for, or a `page` with no location.
+    /// **No raw-file fallback**: the file could be drawn, and drawing it
+    /// would say "the plugin is fine" about a page that is not there. A
+    /// file *no* plugin claims is not this case -- it is the file itself
+    /// (task 3148, `show`'s header).
     Unsupported,
 }
 
@@ -344,6 +349,23 @@ fn close_preview(slot: &mut Preview) {
 /// Show the file behind `token` in `rect` for `key`. **The token and plugin
 /// description must come from the core's reference answer**; this function
 /// cannot turn a path into either.
+///
+/// # What a file with no plugin on it is
+///
+/// **The file itself, in the view's own frame** (task 3148; the macOS
+/// host's `.file`). The whole of that path was already here: with no page
+/// assets the view is navigated to `entry_url(token)` -- `polter-file://
+/// <token>/` -- and every request goes back to the core's `files_resolve`
+/// for the ticket's own `rel`, which answers with the real path and this
+/// host reads it with `polter_preview_route::content_type`'s type. So
+/// "no plugin answers for this file" is **not a refusal any more**; it is
+/// the preview a file had before plugins could claim one.
+///
+/// **A `matched` plugin whose `render` this host has no page for is still
+/// refused**, and deliberately: the file is there and could be drawn, and
+/// drawing it would be exactly the silent fallback the macOS host's
+/// `.unavailable` exists to prevent -- "the plugin is broken" and "the
+/// plugin is fine, its page is here" would draw the same picture.
 pub fn show(
     key: SlotKey,
     rect: RECT,
@@ -351,31 +373,38 @@ pub fn show(
     plugin: Option<&serde_json::Value>,
 ) -> Result<(), ShowError> {
     let parent = key.parent();
-    // **The core says what kind of view this is.** Only a matched
-    // `render:"browser"` is served the ticket's own file; a plugin page is
-    // not implemented here yet, and none/disabled/unsupported have no page.
-    let plugin = plugin.filter(|p| p.get("status").and_then(|s| s.as_str()) == Some("matched"));
-    let Some(plugin) = plugin else {
-        return Err(ShowError::Unsupported);
-    };
-    let render = plugin.get("render").and_then(|r| r.as_str());
-    let page_assets = match render {
-        Some("browser") => None,
-        Some("page") => {
-            let dir = plugin
-                .get("plugin_dir")
-                .and_then(|d| d.as_str())
-                .ok_or(ShowError::Unsupported)?;
-            let page = plugin
-                .get("page")
-                .and_then(|p| p.as_str())
-                .ok_or(ShowError::Unsupported)?;
-            Some(PageAssets {
-                dir: dir.to_owned(),
-                page: page.to_owned(),
-            })
-        }
-        _ => return Err(ShowError::Unsupported),
+    // **The core says what kind of view this is.** A matched plugin names
+    // its page; every other answer -- `status:"none"`, a plugin asked for by
+    // name that was not found or is off, or a core from before the field --
+    // is the file itself. Which of those it was is the core's to say and is
+    // not a difference this host draws: a file nothing claimed is the file.
+    let matched = plugin.filter(|p| p.get("status").and_then(|s| s.as_str()) == Some("matched"));
+    let page_assets = match matched {
+        None => None,
+        // **A `render` that is there and is not `page` is the file itself**
+        // (`browser`, or a tag this build has no page for): the macOS host's
+        // `pageLocation(of:)` answers `.notAPagePlugin` for exactly that, and
+        // its `.browser` is the file too. **A `render` that is not there at
+        // all is a refusal** -- the core did not say how the file is shown,
+        // and a host that guessed would be deciding it (`.renderUnknown`).
+        Some(plugin) => match plugin.get("render").and_then(|r| r.as_str()) {
+            None | Some("") => return Err(ShowError::Unsupported),
+            Some("page") => {
+                let dir = plugin
+                    .get("plugin_dir")
+                    .and_then(|d| d.as_str())
+                    .ok_or(ShowError::Unsupported)?;
+                let page = plugin
+                    .get("page")
+                    .and_then(|p| p.as_str())
+                    .ok_or(ShowError::Unsupported)?;
+                Some(PageAssets {
+                    dir: dir.to_owned(),
+                    page: page.to_owned(),
+                })
+            }
+            Some(_) => None,
+        },
     };
     // **One ticket, one owner.** A second slot gets an explicit refusal
     // and the owning slot is not touched; the caller may mint another
@@ -1152,13 +1181,19 @@ const BRIDGE: &str = r#"(function () {
   });
 })();"#;
 
-/// **The core's answer, and the only place a path is decided.**
+/// One `files_*` request, as the text the socket would carry, and the
+/// core's answer **as it wrote it** -- a refusal included -- or why there
+/// is no answer at all.
 ///
-/// `rel` is what the page asked for, already through
-/// `polter_preview_route::resolve`; the ticket is the one this view is
-/// showing. The request goes out as the text the socket would carry, so the
-/// host and an agent's door cannot disagree about what a ticket does.
-fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+/// **The one door to `ghostty_app_files`** (task 3148). The preview's own
+/// page and the working-directories page both come through here, so the
+/// text a ticket is listed with and the text it is resolved with are built
+/// the same way. This level says only whether the core answered; **what it
+/// said is the caller's to read**, because the two callers read a refusal
+/// differently: a preview wants the sentence, and the workdirs page wants
+/// the code and the reason as well (`workdirs::read_listing`, whose three
+/// branches are the point).
+pub(crate) fn ask_raw(request: &str) -> Result<String, String> {
     let Some(api) = crate::api_opt() else {
         return Err("the core is not running".into());
     };
@@ -1169,7 +1204,6 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
     if app.is_null() {
         return Err("the core is not running".into());
     }
-    let request = serde_json::json!({ "method": method, "params": params }).to_string();
     let need = unsafe {
         ask(
             app,
@@ -1182,9 +1216,7 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
     if need == 0 {
         // Zero is this door's "that is not one of the five": named rather
         // than read as an empty answer.
-        return Err(format!(
-            "{method} is not a request the core answers for a host"
-        ));
+        return Err("it is not a request the core answers for a host".into());
     }
     let mut buf = vec![0u8; need + 1];
     let wrote = unsafe {
@@ -1199,8 +1231,13 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
     if wrote == 0 || wrote > need {
         return Err("it changed size between asking and reading".into());
     }
-    let text =
-        String::from_utf8(buf[..wrote].to_vec()).map_err(|_| "it is not UTF-8".to_string())?;
+    String::from_utf8(buf[..wrote].to_vec()).map_err(|_| "it is not UTF-8".to_string())
+}
+
+/// `ask_raw`, parsed, with the core's refusal turned into an `Err` that
+/// carries its sentence -- for callers that want the answer itself.
+pub(crate) fn ask_text(request: &str) -> Result<serde_json::Value, String> {
+    let text = ask_raw(request)?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("the core's answer is not JSON: {e}"))?;
     // `{"refused":...}` is the core's no, in the one shape it refuses in.
@@ -1212,6 +1249,16 @@ fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value
             .to_string());
     }
     Ok(value)
+}
+
+/// `ask_text` for one of the two calls this file's own page makes, built
+/// from a method and its parameters.
+///
+/// `rel` is what the page asked for, already through
+/// `polter_preview_route::resolve`; the ticket is the one this view is
+/// showing.
+fn ask_core(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    ask_text(&serde_json::json!({ "method": method, "params": params }).to_string())
 }
 
 /// Serve one request the page made over `polter-file://`.

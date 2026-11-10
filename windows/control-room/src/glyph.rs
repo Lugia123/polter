@@ -66,6 +66,19 @@ pub enum Mark {
     /// glyphs' artboard, as the design's `dot_svg` draws it (r 4 about the
     /// middle).
     Dot,
+    /// A shut directory's twisty, pointing right (task 3148, the working-
+    /// directories page; the design's `TW_SHUT`).
+    CaretShut,
+    /// The same open, pointing down (`TW_OPEN`).
+    CaretOpen,
+    /// A folder, shut (`files4.css`'s tree icon). **An approximation of the
+    /// design's path**, on the same artboard: the outline that is drawn is
+    /// this host's own, and the macOS host draws the design's `path`.
+    Folder,
+    /// A folder whose rows follow it.
+    FolderOpen,
+    /// A file: a page with its corner folded.
+    File,
 }
 
 pub fn mark(mark: Mark) -> Vec<Shape> {
@@ -80,6 +93,26 @@ pub fn mark(mark: Mark) -> Vec<Shape> {
             cut(Outline::Polygon(vec![(5.1, 3.2), (9.4, 3.2), (8.2, 5.0), (9.4, 6.8), (5.1, 6.8)])),
         ],
         Mark::Dot => vec![full(Outline::Ellipse(3.0, 3.0, 8.0, 8.0))],
+        // The two twisties: a triangle pointing right or down, centred on
+        // the artboard.
+        Mark::CaretShut => vec![full(Outline::Polygon(vec![(4.6, 2.6), (9.8, 7.0), (4.6, 11.4)]))],
+        Mark::CaretOpen => vec![full(Outline::Polygon(vec![(2.6, 4.6), (11.4, 4.6), (7.0, 9.8)]))],
+        // The folder: a tab and a body. Two shapes and not an outline with
+        // a hole -- what a host fills is what it is given.
+        Mark::Folder => vec![
+            full(Outline::RoundRect(1.5, 3.4, 5.4, 2.4, 0.7)),
+            full(Outline::RoundRect(1.5, 4.6, 11.0, 7.0, 1.2)),
+        ],
+        Mark::FolderOpen => vec![
+            full(Outline::RoundRect(1.5, 2.8, 5.4, 2.4, 0.7)),
+            full(Outline::RoundRect(2.2, 4.4, 10.3, 7.2, 1.2)),
+        ],
+        // A page with its corner turned down: the body, and the corner cut
+        // out of it.
+        Mark::File => vec![
+            full(Outline::RoundRect(3.0, 1.6, 8.0, 10.8, 1.1)),
+            cut(Outline::Polygon(vec![(8.4, 1.6), (11.0, 4.2), (8.4, 4.2)])),
+        ],
         Mark::Pinned => vec![
             // The head, the body widening to the plate, and the needle.
             full(Outline::RoundRect(4.0, 1.0, 6.0, 2.2, 1.0)),
