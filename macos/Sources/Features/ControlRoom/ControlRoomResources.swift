@@ -47,6 +47,7 @@ enum ControlRoomResources {
         }
         var text: Text
         var pressure_tone: Level?
+        var physicalBytes: UInt64?
     }
 
     struct Cell: Decodable, Equatable {
@@ -66,6 +67,7 @@ enum ControlRoomResources {
         var name: String
         var cells: [Level]
         var hover: [Hover]
+        var loadFractions: [Double?] = []
     }
 
     struct SpanWords: Decodable, Equatable {
@@ -131,6 +133,10 @@ enum ControlRoomResources {
         /// `[ms, bytes]`: all of them in a `full` answer, the new ones
         /// otherwise (`Curves`).
         var points: [[UInt64]]
+        var loadCap: String?
+        var loadFraction: Double?
+        var memoryWarnFractions: [Double] = []
+        var stoppedAtMs: UInt64?
     }
 
     struct Answer: Decodable, Equatable {
@@ -149,6 +155,15 @@ enum ControlRoomResources {
         /// something else -- by path; none of it is drawn
         /// (`ControlRoomAnswerReader`). The page writes it down.
         var missing: [String] = []
+    }
+
+    static func colorEvent(_ level: Level) -> ControlRoomPerfColor.Event {
+        switch level {
+        case .killed: .stopped
+        case .warn1: .warn1
+        case .warn2, .warn3, .warn4, .withheld: .warn2
+        case .none, .ok: .none
+        }
     }
 
     enum DecodeError: Error, Equatable {
@@ -180,7 +195,8 @@ enum ControlRoomResources {
             let (label, mem, memOf, swap, pressure) = (nullable("label"), nullable("mem"), nullable("mem_of"), nullable("swap"), nullable("pressure"))
             machine = Machine(text: .init(label: label, mem: mem, mem_of: memOf, swap: swap, pressure: pressure,
                                           panes: t.map { r.text($0, tp, "panes") } ?? "", day: t.map { r.text($0, tp, "day") } ?? ""),
-                              pressure_tone: r.nullableNamed(m, "machine", "pressure_tone", as: Level.self))
+                              pressure_tone: r.nullableNamed(m, "machine", "pressure_tone", as: Level.self),
+                              physicalBytes: (m["physical_bytes"] as? NSNumber)?.uint64Value)
         } else {
             machine = Machine(text: .init(label: nil, mem: nil, mem_of: nil, swap: nil, pressure: nil, panes: "", day: ""), pressure_tone: nil)
         }
@@ -252,7 +268,11 @@ enum ControlRoomResources {
                     badge: nullableToned(r, v, path, "badge"),
                     tone: r.named(v, path, "tone", as: Level.self) ?? .none,
                     dial: dial, lines: lines, foot: foot,
-                    line_at: r.nullableInt(v, path, "line_at"), points: points)
+                    line_at: r.nullableInt(v, path, "line_at"), points: points,
+                    loadCap: v["load_cap"] as? String,
+                    loadFraction: (v["load_fraction"] as? NSNumber)?.doubleValue,
+                    memoryWarnFractions: (v["memory_warn_fractions"] as? [Double]) ?? [],
+                    stoppedAtMs: (v["stopped_at_ms"] as? NSNumber)?.uint64Value)
     }
 
     /// The grid. Without its span or its count of cells it has no rows, no
@@ -317,7 +337,7 @@ enum ControlRoomResources {
                 }
                 return Hover(cell: Int(cell), lines: lines)
             }
-            return Pane(id: r.text(row, p, "id"), name: r.text(row, p, "name"), cells: rowCells, hover: hover)
+            return Pane(id: r.text(row, p, "id"), name: r.text(row, p, "name"), cells: rowCells, hover: hover, loadFractions: (row["load_fractions"] as? [Any] ?? []).map { ($0 as? NSNumber)?.doubleValue })
         }
         return Grid(span: span, title: title, subtitle: subtitle, spans: spans, legend: legend, cells: cells, axis: axis, panes: panes)
     }

@@ -74,6 +74,7 @@ pub mod pane_color;
 pub mod level;
 pub mod perf;
 pub mod perf_scene;
+pub mod perf_color;
 pub mod project_link;
 pub mod project_mark;
 pub mod project_notice;

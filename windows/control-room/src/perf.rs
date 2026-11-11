@@ -40,6 +40,11 @@ impl Span {
     }
 }
 
+fn number(v: &Value) -> Option<f64> {
+    match v { Value::Int(n) => Some(*n as f64), Value::Float(n) if n.is_finite() => Some(*n), _ => None }
+}
+fn integer(v: &Value) -> Option<u64> { if let Value::Int(n) = v { Some(*n) } else { None } }
+
 /// Words in a tone: `{"tone": …, "text": …}`, the tone none where the core
 /// gives none.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +70,7 @@ pub struct Machine {
     pub panes: String,
     pub day: String,
     pub pressure_tone: Option<Level>,
+    pub physical_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +78,7 @@ pub struct GridPane {
     pub id: String,
     pub name: String,
     pub cells: Vec<Level>,
+    pub load_fractions: Vec<Option<f64>>,
     /// The cells that say something when the pointer is on them.
     pub hover: Vec<(usize, Vec<Toned>)>,
 }
@@ -123,6 +130,10 @@ pub struct Card {
     /// `[ms, bytes]`: all of them when the answer is `full`, the new ones
     /// otherwise (`Curves`).
     pub points: Vec<(u64, u64)>,
+    pub load_fraction: Option<f64>,
+    pub load_cap: Option<String>,
+    pub memory_warn_fractions: Vec<f64>,
+    pub stopped_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,6 +234,10 @@ fn card(r: &mut Reader, v: &Value, path: &str) -> Option<Card> {
         foot,
         line_at: r.nullable_int(v, path, "line_at"),
         points,
+        load_cap: v.get("load_cap").and_then(|v| if let Value::Str(s) = v { Some(s.clone()) } else { None }),
+        load_fraction: v.get("load_fraction").and_then(number),
+        memory_warn_fractions: match v.get("memory_warn_fractions") { Some(Value::Arr(a)) => a.iter().filter_map(number).collect(), _ => Vec::new() },
+        stopped_at_ms: v.get("stopped_at_ms").and_then(integer),
         id,
     })
 }
@@ -305,7 +320,7 @@ fn grid(r: &mut Reader, v: &Value, path: &str) -> Grid {
             let lines = r.list(h, &ep, "lines").iter().enumerate().map(|(j, l)| toned(r, l, &at(&linp, j))).collect();
             Some((cell, lines))
         }).collect();
-        Some(GridPane { id: r.text(row, &p, "id"), name: r.text(row, &p, "name"), cells: row_cells, hover })
+        Some(GridPane { id: r.text(row, &p, "id"), name: r.text(row, &p, "name"), cells: row_cells, hover, load_fractions: match row.get("load_fractions") { Some(Value::Arr(a)) => a.iter().map(number).collect(), _ => Vec::new() } })
     }).collect();
     Grid { span, title, subtitle, spans, legend, cells, axis, panes }
 }
@@ -337,9 +352,9 @@ pub fn decode_value(v: &Value) -> Res<Resources> {
                 Some(mt) => (r.text(mt, tp, "panes"), r.text(mt, tp, "day")),
                 None => (String::new(), String::new()),
             };
-            Machine { label, mem, mem_of, swap, pressure, panes, day, pressure_tone: r.nullable_level(m, "machine", "pressure_tone") }
+            Machine { label, mem, mem_of, swap, pressure, panes, day, pressure_tone: r.nullable_level(m, "machine", "pressure_tone"), physical_bytes: m.get("physical_bytes").and_then(integer) }
         }
-        None => Machine { label: None, mem: None, mem_of: None, swap: None, pressure: None, panes: String::new(), day: String::new(), pressure_tone: None },
+        None => Machine { label: None, mem: None, mem_of: None, swap: None, pressure: None, panes: String::new(), day: String::new(), pressure_tone: None, physical_bytes: None },
     };
     let grid = match r.obj(v, "", "grid") {
         Some(g) => grid(&mut r, g, "grid"),

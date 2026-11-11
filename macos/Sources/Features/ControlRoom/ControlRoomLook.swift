@@ -981,6 +981,37 @@ enum ControlRoomLook {
         static let tabEdge: Double = 1.5
     }
 
+    enum PerfLoad {
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let l0: Double = 0.7
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let l1: Double = 0.76
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let c0: Double = 0.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let c1: Double = 0.12
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let hue: Double = 250.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let power: Double = 0.5
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let priorityNone: Double = 0.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let priorityWarn1: Double = 1.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let priorityWarn2: Double = 2.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let priorityStopped: Double = 3.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let windowsSegments: Double = 256.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let macSegments: Double = 64.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let legendWidth: Double = 144.0
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        static let legendHeight: Double = 12.0
+    }
+
     /// One terminal's card on the performance page (task 2015): head, body, foot, one grid for every card and every state, so nothing moves with what is in it.
     enum PerfCard {
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
@@ -1604,6 +1635,22 @@ enum ControlRoomLook {
         /// The highlight card's hairline, inside its accent ring.
         /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
         var highlightCardEdge: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfPageGround: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfText: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfMuted: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfLoadAbsent: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfLoadNoSample: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfEventWarn1: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfEventWarn2: RGBA
+        /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+        var perfEventStopped: RGBA
         /// Performance page, a level (`tone`) the core hands over: no reading -- an empty cell of the grid. Light: undesigned.
         /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
         var levelNone: RGBA
@@ -1843,6 +1890,14 @@ enum ControlRoomLook {
         highlightScrim: RGBA(r: 30, g: 32, b: 36, a: 0.46),
         highlightCard: RGBA(r: 255, g: 255, b: 255, a: 0.96),
         highlightCardEdge: RGBA(r: 0, g: 0, b: 0, a: 0.12),
+        perfPageGround: RGBA(r: 252, g: 253, b: 255, a: 1.0),
+        perfText: RGBA(r: 32, g: 34, b: 35, a: 1.0),
+        perfMuted: RGBA(r: 84, g: 85, b: 87, a: 1.0),
+        perfLoadAbsent: RGBA(r: 158, g: 158, b: 158, a: 1.0),
+        perfLoadNoSample: RGBA(r: 50, g: 57, b: 64, a: 1.0),
+        perfEventWarn1: RGBA(r: 232, g: 193, b: 90, a: 1.0),
+        perfEventWarn2: RGBA(r: 240, g: 138, b: 75, a: 1.0),
+        perfEventStopped: RGBA(r: 252, g: 79, b: 78, a: 1.0),
         levelNone: RGBA(r: 0, g: 0, b: 0, a: 0.05),
         levelOk: RGBA(r: 0, g: 0, b: 0, a: 0.14),
         levelOkArc: RGBA(r: 84, g: 85, b: 87, a: 1.0),
@@ -1988,6 +2043,14 @@ enum ControlRoomLook {
         highlightScrim: RGBA(r: 0, g: 0, b: 0, a: 0.58),
         highlightCard: RGBA(r: 40, g: 44, b: 52, a: 0.97),
         highlightCardEdge: RGBA(r: 255, g: 255, b: 255, a: 0.14),
+        perfPageGround: RGBA(r: 22, g: 27, b: 32, a: 1.0),
+        perfText: RGBA(r: 235, g: 239, b: 244, a: 1.0),
+        perfMuted: RGBA(r: 165, g: 172, b: 178, a: 1.0),
+        perfLoadAbsent: RGBA(r: 158, g: 158, b: 158, a: 1.0),
+        perfLoadNoSample: RGBA(r: 50, g: 57, b: 64, a: 1.0),
+        perfEventWarn1: RGBA(r: 232, g: 193, b: 90, a: 1.0),
+        perfEventWarn2: RGBA(r: 240, g: 138, b: 75, a: 1.0),
+        perfEventStopped: RGBA(r: 252, g: 79, b: 78, a: 1.0),
         levelNone: RGBA(r: 255, g: 255, b: 255, a: 0.035),
         levelOk: RGBA(r: 255, g: 255, b: 255, a: 0.14),
         levelOkArc: RGBA(r: 222, g: 225, b: 232, a: 1.0),
@@ -2015,11 +2078,11 @@ enum ControlRoomLook {
         levelKilledText: RGBA(r: 255, g: 123, b: 133, a: 1.0),
         levelKilledEdge: RGBA(r: 252, g: 79, b: 78, a: 0.55),
         levelKilledBadge: RGBA(r: 252, g: 79, b: 78, a: 0.15),
-        perfDialTrack: RGBA(r: 255, g: 255, b: 255, a: 0.08),
+        perfDialTrack: RGBA(r: 110, g: 117, b: 125, a: 1.0),
         perfCurve: RGBA(r: 180, g: 184, b: 187, a: 1.0),
         perfCurveFill: RGBA(r: 255, g: 255, b: 255, a: 0.06),
-        perfCard: RGBA(r: 255, g: 255, b: 255, a: 0.04),
-        perfCardEdge: RGBA(r: 255, g: 255, b: 255, a: 0.1),
+        perfCard: RGBA(r: 38, g: 44, b: 51, a: 1.0),
+        perfCardEdge: RGBA(r: 68, g: 75, b: 82, a: 1.0),
         segSupervisor: RGBA(r: 255, g: 255, b: 255, a: 0.62),
         segWorkers: RGBA(r: 255, g: 255, b: 255, a: 0.3),
         segYours: RGBA(r: 255, g: 255, b: 255, a: 0.16),

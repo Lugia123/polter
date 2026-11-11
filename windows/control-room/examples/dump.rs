@@ -251,6 +251,21 @@ impl ProjectLinkCases {
 }
 
 fn main() {
+    for index in 0..=4 {
+        let c = polter_control_room::perf_color::load(index as f64 / 4.0);
+        println!("perf-load p={} rgb={},{},{}", index*25,c.r,c.g,c.b);
+    }
+    for (name,count) in [("mac",polter_control_room::look::perf_load::MAC_SEGMENTS as usize),("win",polter_control_room::look::perf_load::WINDOWS_SEGMENTS as usize)] {
+        for index in 0..(if name == "mac" { count+1 } else { count }) {
+            let p=if name=="mac" { index as f64/count as f64 } else { (index as f64+0.5)/count as f64 };
+            let c=polter_control_room::perf_color::load(p);
+            println!("perf-band {} i={} rgb={},{},{}",name,index,c.r,c.g,c.b);
+        }
+    }
+    for event in [polter_control_room::perf_color::Event::None, polter_control_room::perf_color::Event::Warn1, polter_control_room::perf_color::Event::Warn2, polter_control_room::perf_color::Event::Stopped] {
+        let c = polter_control_room::perf_color::paint(None,event,&polter_control_room::look::DARK);
+        println!("perf-event rank={} rgb={},{},{}",event.priority() as u32,c.r,c.g,c.b);
+    }
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         eprintln!("usage: dump <snapshot.json> <height>");

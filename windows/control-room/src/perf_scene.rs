@@ -15,10 +15,11 @@
 //! through `Measure`.
 
 use crate::layout::Rect;
+use crate::perf_color::{self, Event};
 use crate::level::{level_ink, Level};
 use crate::look::{font, group_strip as gs, perf_card as c, perf_grid as g, perf_page as p, Rgba, Theme};
 use crate::overall::{self, Group};
-use crate::perf::{Card, Curves, Resources, Span, Toned};
+use crate::perf::{Card, Curves, Resources, Span};
 use crate::scene::{self, Align, Face, Item, Part, Piece, Side, Style};
 
 /// **Not in the look yet**: the least and the most a history cell and the
@@ -180,7 +181,7 @@ pub fn span_style(theme: &Theme, on: bool) -> Style {
         size: font::BODY,
         weight: if on { font::WEIGHT_EMPHASIS } else { font::WEIGHT_BODY },
         face: Face::Ui,
-        color: if on { theme.text } else { theme.text_secondary },
+        color: if on { theme.perf_text } else { theme.perf_muted },
     }
 }
 
@@ -494,11 +495,8 @@ fn toned_style(theme: &Theme, tone: Option<Level>, none: Rgba) -> Style {
 
 /// A grid cell's colour on `ground`.
 fn cell_color(theme: &Theme, level: Level, ground: Rgba) -> Rgba {
-    match level {
-        Level::None => scene::over(ground, theme.level_none, 1.0),
-        Level::Ok => scene::over(ground, theme.level_ok, 1.0),
-        other => level_ink(theme, other).map_or(ground, |ink| ink.base),
-    }
+    if level == Level::None { return theme.perf_load_absent; }
+    scene::over(ground, perf_color::paint(None, perf_color::event(level), theme), 1.0)
 }
 
 /// The page under `at`, with `hovered` -- `(row, cell)` -- lit and its
@@ -515,19 +513,19 @@ pub fn build(
     group: Option<&Group>,
     tr: &dyn Fn(&str) -> String,
 ) -> Vec<Draw> {
-    let ground = theme.terminal_background;
+    let ground = theme.perf_page_ground;
     let panel = scene::over(ground, theme.perf_card, 1.0);
     let panel_edge = scene::over(panel, theme.perf_card_edge, scene::hairline(scale).1);
-    let mut out = Vec::new();
+    let mut out = vec![Draw::Item(Item::Fill { rect: Rect { x:0.0,y:0.0,w:at.width,h:at.content_height }, color: ground })];
 
     // The overview.
     out.push(Draw::Item(Item::Round { rect: at.summary, radius: c::RADIUS_WINDOWS, color: panel, edge: Some(panel_edge) }));
     let m = &r.machine;
     let top_end = at.spans.first().map_or(at.top.x + at.top.w, |(_, s)| s.x - p::MACHINE_ITEM_GAP);
     // The items, whole, as many as fit (`machine_item::DROP_ORDER`).
-    let secondary = l3(theme.text_secondary);
-    let big = Style { size: c::FONT_BIG, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.text };
-    let pressure_style = toned_style(theme, m.pressure_tone, theme.text_secondary);
+    let secondary = l3(theme.perf_muted);
+    let big = Style { size: c::FONT_BIG, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.perf_text };
+    let pressure_style = toned_style(theme, m.pressure_tone, theme.perf_muted);
     let none = String::new();
     let label = m.label.as_ref().unwrap_or(&none);
     let swap = m.swap.as_ref().unwrap_or(&none);
@@ -580,50 +578,61 @@ pub fn build(
         if on {
             // Under the one in front a short rule; no grey ground (the
             // user's rule: "选中不用灰底").
-            out.push(Draw::Item(Item::Fill { rect: Rect { y: rect.y + rect.h - p::SEG_RULE, h: p::SEG_RULE, ..*rect }, color: theme.text }));
+            out.push(Draw::Item(Item::Fill { rect: Rect { y: rect.y + rect.h - p::SEG_RULE, h: p::SEG_RULE, ..*rect }, color: theme.perf_text }));
         }
     }
 
     // The grid's heading: the title and what a cell is on the left, the
     // legend on the right -- each whole or not at all: the subtitle goes
     // first, then the legend (group seq 263).
-    let title_w = width_of(&r.grid.title, &strong(theme.text));
+    let title_w = width_of(&r.grid.title, &strong(theme.perf_text));
     let subtitle_w = width_of(&r.grid.subtitle, &secondary);
-    let legend_w: f64 = r.grid.legend.iter().map(|(_, w)| g::LABEL_GAP + g::LEGEND_SWATCH + g::LEGEND_GAP + width_of(w, &secondary)).sum();
+    let load_band = r.machine.physical_bytes.is_some_and(|n| n > 0);
+    let legend_w: f64 = r.grid.legend.iter().map(|(l,w)| if *l == Level::Ok && load_band {
+        g::LABEL_GAP + width_of("0%",&secondary) + g::LEGEND_GAP + crate::look::perf_load::LEGEND_WIDTH + g::LEGEND_GAP + width_of("100%",&secondary)
+    } else { g::LABEL_GAP + g::LEGEND_SWATCH + g::LEGEND_GAP + width_of(w,&secondary) }).sum();
     let head_keep = keep_by_priority(&[title_w, subtitle_w, legend_w], &[0.0, g::LABEL_GAP, 0.0], &[1, 2], at.grid_head.w);
     let mut legend_x = at.grid_head.x + at.grid_head.w;
     let mut legend = Vec::new();
     for (level, words_) in r.grid.legend.iter().rev().filter(|_| head_keep[2]) {
-        let w = measure(words_, &l3(theme.text_secondary));
-        legend_x -= w;
-        legend.push(text(Rect { x: legend_x, y: at.grid_head.y, w, h: at.grid_head.h }, words_, l3(theme.text_secondary), Align::Left));
-        legend_x -= g::LEGEND_GAP + g::LEGEND_SWATCH;
-        let sw = Rect { x: legend_x, y: at.grid_head.y + (at.grid_head.h - g::LEGEND_SWATCH) / 2.0, w: g::LEGEND_SWATCH, h: g::LEGEND_SWATCH };
-        legend.push(Draw::Item(Item::Round { rect: sw, radius: g::CELL_RADIUS, color: cell_color(theme, *level, panel), edge: None }));
+        if *level == Level::Ok && load_band {
+            let w = width_of("100%", &secondary);
+            legend_x -= w;
+            legend.push(text(Rect{x:legend_x,y:at.grid_head.y,w,h:at.grid_head.h},"100%",l3(theme.perf_muted),Align::Left));
+            legend_x -= g::LEGEND_GAP + crate::look::perf_load::LEGEND_WIDTH;
+            let sw=Rect{x:legend_x,y:at.grid_head.y+(at.grid_head.h-g::LEGEND_SWATCH)/2.0,w:crate::look::perf_load::LEGEND_WIDTH,h:g::LEGEND_SWATCH};
+            legend.extend(legend_swatch(*level,sw,theme,panel,scale));
+            let w=width_of("0%",&secondary);
+            legend_x -= g::LEGEND_GAP+w;
+            legend.push(text(Rect{x:legend_x,y:at.grid_head.y,w,h:at.grid_head.h},"0%",l3(theme.perf_muted),Align::Left));
+        } else {
+            let w=width_of(words_,&secondary);
+            legend_x -= w;
+            legend.push(text(Rect{x:legend_x,y:at.grid_head.y,w,h:at.grid_head.h},words_,l3(theme.perf_muted),Align::Left));
+            legend_x -= g::LEGEND_GAP+g::LEGEND_SWATCH;
+            let sw=Rect{x:legend_x,y:at.grid_head.y+(at.grid_head.h-g::LEGEND_SWATCH)/2.0,w:g::LEGEND_SWATCH,h:g::LEGEND_SWATCH};
+            legend.push(Draw::Item(Item::Round{rect:sw,radius:g::CELL_RADIUS,color:cell_color(theme,*level,panel),edge:None}));
+        }
         legend_x -= g::LABEL_GAP;
     }
     out.push(line(
         Rect { w: (legend_x - at.grid_head.x).max(0.0), ..at.grid_head },
         if head_keep[1] {
-            vec![words(&r.grid.title, strong(theme.text), Side::Lead, 0.0), words(&r.grid.subtitle, l3(theme.text_secondary), Side::Lead, g::LABEL_GAP)]
+            vec![words(&r.grid.title, strong(theme.perf_text), Side::Lead, 0.0), words(&r.grid.subtitle, l3(theme.perf_muted), Side::Lead, g::LABEL_GAP)]
         } else {
-            vec![words(&r.grid.title, strong(theme.text), Side::Lead, 0.0)]
+            vec![words(&r.grid.title, strong(theme.perf_text), Side::Lead, 0.0)]
         },
     ));
     out.extend(legend);
 
     for (i, row) in r.grid.panes.iter().enumerate() {
         let lit = hovered.is_some_and(|(hr, _)| hr == i);
-        let name_style = Style { face: Face::Mono, ..l3(if lit { theme.text } else { theme.text_secondary }) };
+        let name_style = Style { face: Face::Mono, ..l3(if lit { theme.perf_text } else { theme.perf_muted }) };
         out.push(text(at.row_rect(i), &row.name, name_style, Align::Left));
         for (k, level) in row.cells.iter().enumerate() {
             let Some(cell) = at.cell_rect(i, k) else { continue };
-            let edge = if hovered == Some((i, k)) {
-                Some(theme.text)
-            } else {
-                (*level == Level::Killed).then(|| level_ink(theme, Level::Killed).map(|ink| scene::over(panel, ink.edge, 1.0))).flatten()
-            };
-            out.push(Draw::Item(Item::Round { rect: cell, radius: g::CELL_RADIUS, color: cell_color(theme, *level, panel), edge }));
+            let edge = None;
+            out.push(Draw::Item(Item::Round { rect: cell, radius: g::CELL_RADIUS, color: if *level == Level::None { theme.perf_load_no_sample } else { scene::over(panel, perf_color::paint(row.load_fractions.get(k).copied().flatten(), perf_color::event(*level), theme), 1.0) }, edge }));
         }
     }
     // Earlier cells than there is room for: a faint mark at the left of the
@@ -634,17 +643,17 @@ pub fn build(
         let mid = (top + bottom) / 2.0;
         let cx = at.cells_x + at.cells.lead - g::LABEL_GAP / 2.0;
         let h = 4.0;
-        out.push(Draw::Stroke { points: vec![(cx + h / 2.0, mid - h), (cx - h / 2.0, mid), (cx + h / 2.0, mid + h)], width: 1.0, color: theme.text_tertiary, dash: None });
+        out.push(Draw::Stroke { points: vec![(cx + h / 2.0, mid - h), (cx - h / 2.0, mid), (cx + h / 2.0, mid + h)], width: 1.0, color: theme.perf_muted, dash: None });
     }
     // The axis: the first word from its cell's left, the last ending at
     // its cell's right, the rest centred on theirs.
     // Only the words of drawn cells, on the same cells' places.
     // None nearer another than the label gap (`axis_places`).
     let marks: Vec<(f64, &String)> = r.grid.axis.iter().filter_map(|(cell, w)| at.cells.offset(*cell).map(|dx| (at.cells_x + dx, w))).collect();
-    let widths: Vec<(f64, f64)> = marks.iter().map(|(left, words_)| (*left, measure(words_, &l3(theme.text_tertiary)))).collect();
+    let widths: Vec<(f64, f64)> = marks.iter().map(|(left, words_)| (*left, measure(words_, &l3(theme.perf_muted)))).collect();
     for ((x, (_, words_)), (_, w)) in axis_places(&widths, at.cells.size, g::LABEL_GAP).into_iter().zip(&marks).zip(&widths) {
         if let Some(x) = x {
-            out.push(text(Rect { x, w: *w, ..at.axis }, words_, l3(theme.text_tertiary), Align::Left));
+            out.push(text(Rect { x, w: *w, ..at.axis }, words_, l3(theme.perf_muted), Align::Left));
         }
     }
 
@@ -671,7 +680,7 @@ pub fn build(
         out.extend(draw_strip(g, rect, theme, scale, measure, tr));
     }
     for (card, rect) in r.cards.iter().zip(&at.cards) {
-        out.extend(build_card(card, curves.points(&card.id), *rect, r.now_ms, curve_span(r), theme, scale, measure));
+        out.extend(build_card(card, curves.points(&card.id), *rect, r.now_ms, curve_span(r), theme, scale, measure, r.machine.physical_bytes));
     }
 
     if let Some((row, cell)) = hovered {
@@ -700,7 +709,7 @@ fn draw_strip(
     let (left_w, card_w, bar_w) = strip_columns(rect.w);
     let left = Rect { w: left_w, ..rect };
     let card = Rect { x: rect.x + left_w + gs::GAP, w: card_w, ..rect };
-    let ground = theme.terminal_background;
+    let ground = theme.perf_page_ground;
     let panel = scene::over(ground, theme.perf_card, 1.0);
     let edge = scene::over(panel, theme.perf_card_edge, scene::hairline(scale).1);
     let warn = group.own.growth.rising;
@@ -714,8 +723,8 @@ fn draw_strip(
     out.push(Draw::Item(Item::Line {
         rect: Rect { x: ix, y, w: iw, h: gs::HEAD_HEIGHT },
         parts: vec![
-            words(&tr(overall::msg::TITLE), strong(theme.text), Side::Lead, 0.0),
-            words(&tr(overall::msg::SUBTITLE), l3(theme.text_secondary), Side::Lead, gs::GAP),
+            words(&tr(overall::msg::TITLE), strong(theme.perf_text), Side::Lead, 0.0),
+            words(&tr(overall::msg::SUBTITLE), l3(theme.perf_muted), Side::Lead, gs::GAP),
         ],
     }));
     y += gs::HEAD_HEIGHT + gs::BAR_TOP;
@@ -748,8 +757,8 @@ fn draw_strip(
     }
     // ---- the legend, on the lines the look reserves
     y += gs::BAR_HEIGHT + gs::LEGEND_TOP;
-    let name_style = l3(theme.text_secondary);
-    let value_style = strong(theme.text);
+    let name_style = l3(theme.perf_muted);
+    let value_style = strong(theme.perf_text);
     let entries: [(String, String, Rgba, bool); 4] = [
         (tr(overall::msg::SUPERVISOR), overall::size(group.parts.supervisor_mib), theme.seg_supervisor, false),
         (tr(overall::msg::WORKERS), overall::size(group.parts.workers_mib), theme.seg_workers, false),
@@ -797,7 +806,7 @@ fn draw_strip(
     out.push(text(
         Rect { x: cx, y: cy, w: cw, h: gs::TAG_HEIGHT },
         &tr(overall::msg::GROUP_ITSELF),
-        strong(theme.text),
+        strong(theme.perf_text),
         Align::Left,
     ));
     if warn {
@@ -812,12 +821,12 @@ fn draw_strip(
         out.push(text(tag_rect, &tag, tag_style, Align::Centre));
     }
     cy += gs::HEAD_HEIGHT.max(gs::TAG_HEIGHT) + gs::CARD_LINE_GAP;
-    let big = Style { size: c::FONT_VALUE, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.text };
+    let big = Style { size: c::FONT_VALUE, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.perf_text };
     // The direction mark is the core's verdict; the words after it are the
     // translator's (`%@ an hour`, with the rate already signed).
     let mark = if warn { overall::RISING_MARK } else { "→" };
     let rate = format!("{} {}", mark, overall::sentence(&tr(overall::msg::AN_HOUR), &[overall::rate(group.own.growth.slope_mib_per_h)]));
-    let rate_style = l3(if warn { theme.level_warn2_text } else { theme.text_secondary });
+    let rate_style = l3(if warn { theme.level_warn2_text } else { theme.perf_muted });
     out.push(Draw::Item(Item::Line {
         rect: Rect { x: cx, y: cy, w: cw, h: gs::CARD_VALUE_HEIGHT },
         parts: vec![
@@ -913,31 +922,19 @@ pub fn card_grid(card: Rect) -> CardGrid {
     }
 }
 
-fn build_card(card: &Card, points: &[(u64, u64)], rect: Rect, now_ms: u64, span_ms: u64, theme: &Theme, scale: f64, measure: Measure) -> Vec<Draw> {
-    let ground = theme.terminal_background;
+fn build_card(card: &Card, points: &[(u64, u64)], rect: Rect, now_ms: u64, span_ms: u64, theme: &Theme, scale: f64, measure: Measure, physical: Option<u64>) -> Vec<Draw> {
+    let ground = theme.perf_page_ground;
     let bg = scene::over(ground, theme.perf_card, 1.0);
-    let ink = level_ink(theme, card.tone);
-    let edge = match ink {
-        Some(i) => scene::over(bg, i.edge, 1.0),
-        None => scene::over(bg, theme.perf_card_edge, scene::hairline(scale).1),
-    };
+    let edge = scene::over(bg, theme.perf_card_edge, scene::hairline(scale).1);
+    let load_color = card.load_fraction.map(perf_color::load).unwrap_or(theme.perf_text);
     let cg = card_grid(rect);
     let mut out = vec![Draw::Item(Item::Round { rect, radius: c::RADIUS_WINDOWS, color: bg, edge: Some(edge) })];
 
-    // The head: the name, its role, and at the right end the badge.
-    let mut head_w = cg.head.w;
-    if let Some(badge) = &card.badge {
-        let style = toned_style(theme, badge.tone, theme.text_secondary);
-        let w = measure(&badge.text, &style) + 2.0 * c::BADGE_PAD_X;
-        let b = Rect { x: cg.head.x + cg.head.w - w, y: cg.head.y + (cg.head.h - c::BADGE_HEIGHT) / 2.0, w, h: c::BADGE_HEIGHT };
-        let ground = badge.tone.and_then(|l| level_ink(theme, l)).map_or(bg, |i| scene::over(bg, i.badge, 1.0));
-        out.push(Draw::Item(Item::Round { rect: b, radius: c::BADGE_RADIUS, color: ground, edge: None }));
-        out.push(text(b, &badge.text, style, Align::Centre));
-        head_w -= w + c::BADGE_PAD_X;
-    }
-    let mut head = vec![words(&card.name, Style { face: Face::Mono, ..strong(theme.text) }, Side::Lead, 0.0)];
+    // v8: name and role only; the event number belongs to ordinary row text.
+    let head_w = cg.head.w;
+    let mut head = vec![words(&card.name, Style { face: Face::Mono, ..strong(theme.perf_text) }, Side::Lead, 0.0)];
     if let Some(role) = &card.role {
-        head.push(words(role, l3(theme.text_tertiary), Side::Lead, c::BADGE_PAD_X));
+        head.push(words(role, l3(theme.perf_muted), Side::Lead, c::BADGE_PAD_X));
     }
     out.push(line(Rect { w: head_w.max(0.0), ..cg.head }, head));
 
@@ -950,41 +947,27 @@ fn build_card(card: &Card, points: &[(u64, u64)], rect: Rect, now_ms: u64, span_
         let from = c::DIAL_START_DEGREES;
         let sweep = c::DIAL_OPEN_DEGREES;
         out.push(Draw::Arc { centre, radius: c::DIAL_RADIUS, from, sweep, width: c::DIAL_STROKE, color: scene::over(bg, theme.perf_dial_track, 1.0) });
-        let fill = dial.fraction.clamp(0.0, 1.0);
+        let fill = card.load_fraction.unwrap_or(dial.fraction).clamp(0.0, 1.0);
         if fill > 0.0 {
-            let color = ink.map_or(theme.level_ok_arc, |i| i.base);
+            let color = scene::over(bg, perf_color::paint(card.load_fraction, perf_color::event(card.tone), theme), 1.0);
             out.push(Draw::Arc { centre, radius: c::DIAL_RADIUS, from, sweep: sweep * fill, width: c::DIAL_STROKE, color });
-        }
-        let mut ticks: Vec<(f64, Rgba)> = dial
-            .ticks
-            .iter()
-            .enumerate()
-            .filter_map(|(i, t)| level_ink(theme, if i == 0 { Level::Warn1 } else { Level::Warn2 }).map(|ink| (*t, ink.base)))
-            .collect();
-        if card.line_at.is_some() {
-            if let Some(k) = level_ink(theme, Level::Killed) {
-                ticks.push((1.0, k.base));
-            }
-        }
-        for (t, color) in ticks {
-            let a = from + sweep * t.clamp(0.0, 1.0);
-            out.push(Draw::Stroke { points: vec![on_circle(centre, c::DIAL_TICK_INNER, a), on_circle(centre, c::DIAL_TICK_OUTER, a)], width: c::DIAL_TICK_STROKE, color, dash: None });
         }
         let big_style = Style {
             size: c::FONT_BIG,
             weight: font::WEIGHT_EMPHASIS,
             face: Face::Ui,
-            color: if card.tone == Level::Killed { ink.map_or(theme.text, |i| i.text) } else { theme.text },
+            color: load_color,
         };
-        let unit_style = l3(theme.text_secondary);
-        let (wb, wu) = (measure(&dial.big, &big_style), measure(&dial.unit, &unit_style));
+        let unit_style = l3(theme.perf_muted);
+        let big = card.load_fraction.map(|p| if p < 0.1 { format!("{:.1}",p*100.0) } else { format!("{:.0}",p*100.0) }).unwrap_or_else(|| dial.big.clone());
+        let (wb, wu) = (measure(&big, &big_style), measure(&dial.unit, &unit_style));
         let start = cg.dial.x + (c::DIAL - (wb + 1.0 + wu)) / 2.0;
         // The big number's line, a 28-point line in the dial's middle; the unit
         // on its baseline.
         let big_y = centre.1 - 14.0;
-        out.push(text(Rect { x: start, y: big_y, w: wb, h: 28.0 }, &dial.big, big_style, Align::Left));
+        out.push(text(Rect { x: start, y: big_y, w: wb, h: 28.0 }, &big, big_style, Align::Left));
         out.push(text(Rect { x: start + wb + 1.0, y: big_y + 8.0, w: wu, h: 20.0 }, &dial.unit, unit_style, Align::Left));
-        out.push(text(cg.cap, &dial.cap, l3(theme.text_tertiary), Align::Centre));
+        out.push(text(cg.cap, card.load_cap.as_deref().unwrap_or(&dial.cap), l3(theme.perf_muted), Align::Centre));
     }
 
     // The four lines; one with nothing to say is left empty, and nothing
@@ -993,17 +976,16 @@ fn build_card(card: &Card, points: &[(u64, u64)], rect: Rect, now_ms: u64, span_
         out.push(line(
             cg.r1,
             vec![
-                words(value, Style { size: c::FONT_VALUE, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.text }, Side::Lead, 0.0),
-                words(rest, l3(theme.text_tertiary), Side::Rest, 4.0),
+                words(value, Style { size: c::FONT_VALUE, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: load_color }, Side::Lead, 0.0),
+                words(rest, l3(theme.perf_muted), Side::Rest, 4.0),
             ],
         ));
     }
-    let said = |t: &Option<Toned>, rect: Rect, none: Rgba| t.as_ref().map(|t| text(rect, &t.text, toned_style(theme, t.tone, none), Align::Left));
-    out.extend(said(&card.r2, cg.r2, theme.text_tertiary));
-    out.extend(said(&card.r3, cg.r3, theme.text_secondary));
-    out.extend(curve(points, card.line_at, cg.r4, now_ms, span_ms, bg, theme));
+    out.extend(card.r2.as_ref().map(|t| text(cg.r2, &t.text, l3(load_color), Align::Left)));
+    out.extend(card.badge.as_ref().or(card.r3.as_ref()).map(|t| text(cg.r3, &t.text, l3(theme.perf_muted), Align::Left)));
+    out.extend(colored_curve(card, points, cg.r4, now_ms, span_ms, physical, theme));
 
-    out.push(line(cg.foot, vec![words(&card.foot.0, l3(theme.text_tertiary), Side::Rest, 0.0), words(&card.foot.1, l3(theme.text_tertiary), Side::Trail, 0.0)]));
+    out.push(line(cg.foot, vec![words(&card.foot.0, l3(theme.perf_muted), Side::Rest, 0.0), words(&card.foot.1, l3(theme.perf_muted), Side::Trail, 0.0)]));
     out
 }
 
@@ -1045,6 +1027,35 @@ pub fn curve(points: &[(u64, u64)], line_at: Option<u64>, rect: Rect, now_ms: u6
     out
 }
 
+/// No glyphs or event edges in a legend swatch. Segment boundaries are
+/// snapped once to device pixels so adjacent rectangles share their edge.
+pub fn legend_swatch(level: Level, rect: Rect, theme: &Theme, ground: Rgba, scale: f64) -> Vec<Draw> {
+    if level != Level::Ok { return vec![Draw::Item(Item::Round { rect, radius: g::CELL_RADIUS, color: cell_color(theme, level, ground), edge: None })]; }
+    let n = crate::look::perf_load::WINDOWS_SEGMENTS as usize;
+    let scale = scale.max(1.0);
+    (0..n).map(|j| {
+        let left = ((rect.x + rect.w*j as f64/n as f64)*scale).round()/scale;
+        let right = ((rect.x + rect.w*(j+1) as f64/n as f64)*scale).round()/scale;
+        Draw::Item(Item::Fill { rect: Rect { x:left, w:right-left, ..rect }, color: perf_color::load((j as f64+0.5)/n as f64) })
+    }).collect()
+}
+
+fn colored_curve(card: &Card, points: &[(u64,u64)], rect: Rect, now: u64, span: u64, physical: Option<u64>, theme: &Theme) -> Vec<Draw> {
+    let shown: Vec<_> = points.iter().copied().filter(|p| p.0 >= now.saturating_sub(span) && p.0 <= now).collect();
+    let old = curve(&shown, card.line_at, rect, now, span, theme.perf_card, theme);
+    let line = old.iter().find_map(|d| if let Draw::Stroke { points, dash: None, .. } = d { Some(points) } else { None });
+    let Some(line) = line else { return Vec::new() };
+    let stopped_index = card.stopped_at_ms.and_then(|stop| shown.iter().rposition(|p| p.0 <= stop && p.1 > 0));
+    line.windows(2).enumerate().map(|(j, pair)| {
+        let fraction = physical.filter(|p| *p > 0).map(|p| shown[j+1].1 as f64/p as f64);
+        let stopped = stopped_index == Some(j+1);
+        let inferred = fraction.map(|p| perf_color::curve_event(p, &card.memory_warn_fractions, stopped)).unwrap_or(Event::None);
+        let current = if j+2==line.len() && card.tone!=Level::Killed { perf_color::event(card.tone) } else { Event::None };
+        let event = perf_color::highest(&[inferred,current]);
+        Draw::Stroke { points: pair.to_vec(), width:c::CURVE_STROKE, color:scene::over(theme.perf_card,perf_color::paint(fraction,event,theme),1.0), dash:None }
+    }).collect()
+}
+
 /// What the core says of `(row, cell)`, in a box at the cell's left, its
 /// first line level with the cell (ui-v3: "放在那一格左边、同一高度"). None
 /// for a cell it says nothing of.
@@ -1052,7 +1063,7 @@ pub fn build_tip(r: &Resources, at: &Layout, row: usize, cell: usize, theme: &Th
     let Some(lines) = r.grid.panes.get(row).and_then(|rw| rw.hover.iter().find(|(c, _)| *c == cell)).map(|(_, l)| l) else {
         return Vec::new();
     };
-    let styles: Vec<Style> = lines.iter().map(|l| toned_style(theme, l.tone, theme.text)).collect();
+    let styles: Vec<Style> = lines.iter().map(|l| toned_style(theme, l.tone, theme.perf_text)).collect();
     let w = lines.iter().zip(&styles).map(|(l, s)| measure(&l.text, s)).fold(0.0, f64::max) + 2.0 * g::TIP_PAD_X;
     let h = lines.len() as f64 * g::TIP_LINE_HEIGHT + 2.0 * g::TIP_PAD_Y;
     let Some(c) = at.cell_rect(row, cell) else { return Vec::new() };
@@ -1078,6 +1089,25 @@ mod tests {
 
     /// Every field that may be null, null (API.md §2.0): the page is drawn
     /// without those items -- no empty words handed on, every card there.
+    #[test]
+    fn v8_3178_event_cells_are_solid_and_card_heads_have_no_badge_geometry() {
+        let (mut r, at) = page(1040.0);
+        let k=at.cells.first;
+        r.grid.panes[0].cells[k]=Level::Killed;
+        let cell=at.cell_rect(0,k).unwrap();
+        let d=build(&r,&Curves::default(),&at,&DARK,1.0,None,&nominal,None,&same);
+        let color=items(&d).into_iter().find_map(|item| match item {
+            Item::Round{rect,color,edge,..} if *rect==cell => {
+                assert!(edge.is_none(),"3178 an interrupted history cell is a solid fill without an event edge"); Some(*color)
+            }, _=>None
+        }).expect("3178 the real scene draws the event cell");
+        assert_eq!(color,DARK.perf_event_stopped);
+        for card in &at.cards {
+            let head=card_grid(*card).head;
+            assert!(!items(&d).into_iter().any(|item| matches!(item,Item::Round{rect,..} if rect.x>=head.x && rect.y>=head.y && rect.x+rect.w<=head.x+head.w && rect.y+rect.h<=head.y+head.h)),"3178 card status uses plain row text, never badge geometry in the head");
+        }
+    }
+
     #[test]
     fn a_page_with_every_nullable_field_null_is_drawn_without_those_items() {
         let r = decode(NULLS).unwrap();
@@ -1444,14 +1474,14 @@ mod tests {
         let sweep_of = |i: usize| arcs[2 * i + 1].1;
         assert!((sweep_of(1) - 240.0 * r.cards[1].dial.as_ref().unwrap().fraction).abs() < 1e-9);
         assert_eq!(sweep_of(3), 240.0);
-        // Ticks: a card with a kill line has its two warnings and the line;
+        // v8: warning ticks are not drawn, even when the legacy dial has them.
         // one without has none.
         let ticks_in = |card: Rect| {
             d.iter()
                 .filter(|d| matches!(d, Draw::Stroke { points, dash: None, .. } if points.len() == 2 && points[0].0 >= card.x && points[0].0 <= card.x + card.w && points[0].1 >= card.y && points[0].1 <= card.y + card.h))
                 .count()
         };
-        assert_eq!(ticks_in(at.cards[1]), 3);
+        assert_eq!(ticks_in(at.cards[1]), 0);
         assert_eq!(ticks_in(at.cards[0]), 0);
     }
 

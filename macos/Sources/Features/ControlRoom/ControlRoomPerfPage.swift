@@ -284,7 +284,7 @@ struct ControlRoomPerfPage: View {
             .onAppear { feed.width = proxy.size.width }
             .onChange(of: proxy.size.width) { feed.width = $0 }
         }
-        .background(theme.terminalBackground.color)
+        .background(theme.perfPageGround.color)
         .onAppear {
             feed.start(group: group)
             if showsStrip {
@@ -323,7 +323,7 @@ struct ControlRoomPerfPage: View {
                 let r = at.rowRect(i)
                 Text(pane.name)
                     .font(.system(size: CGFloat(Look.Font.body), design: .monospaced))
-                    .foregroundStyle(feed.hovered?.row == i ? theme.text.color : theme.textSecondary.color)
+                    .foregroundStyle(feed.hovered?.row == i ? theme.perfText.color : theme.perfMuted.color)
                     .lineLimit(1).truncationMode(.tail)
                     .frame(width: r.width, height: r.height, alignment: .leading)
                     .offset(x: r.minX, y: r.minY)
@@ -338,7 +338,7 @@ struct ControlRoomPerfPage: View {
             ForEach(Array(marks.enumerated()), id: \.offset) { i, mark in
                 if let x = places[i] {
                     Text(mark.text)
-                        .foregroundStyle(theme.textTertiary.color)
+                        .foregroundStyle(theme.perfMuted.color)
                         .lineLimit(1)
                         .fixedSize()
                         .frame(height: at.axis.height)
@@ -357,7 +357,7 @@ struct ControlRoomPerfPage: View {
                 }
                 Text(a.now_line).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .foregroundStyle(theme.textSecondary.color)
+            .foregroundStyle(theme.perfMuted.color)
             .lineLimit(1)
             .frame(width: at.cardsHead.width, height: at.cardsHead.height)
             .offset(x: at.cardsHead.minX, y: at.cardsHead.minY)
@@ -372,7 +372,7 @@ struct ControlRoomPerfPage: View {
             }
             ForEach(Array(zip(a.cards, at.cards).enumerated()), id: \.offset) { _, pair in
                 ControlRoomPerfCard(card: pair.0, points: feed.curves.points(pair.0.id), nowMs: a.now_ms,
-                                    spanMs: Res.curveSpan(a), theme: theme)
+                                    spanMs: Res.curveSpan(a), theme: theme, physicalBytes: a.machine.physicalBytes)
                     .frame(width: pair.1.width, height: pair.1.height)
                     .offset(x: pair.1.minX, y: pair.1.minY)
             }
@@ -417,12 +417,12 @@ struct ControlRoomPerfPage: View {
                     Button { feed.pick(s.span) } label: {
                         Text(s.text)
                             .fontWeight(on ? .semibold : .regular)
-                            .foregroundStyle(on ? theme.text.color : theme.textSecondary.color)
+                            .foregroundStyle(on ? theme.perfText.color : theme.perfMuted.color)
                             .frame(height: CGFloat(Page.segHeight))
                             .overlay(alignment: .bottom) {
                                 // A short rule under the one in front; no grey ground.
                                 if on {
-                                    theme.text.color.frame(height: CGFloat(Page.segRule))
+                                    theme.perfText.color.frame(height: CGFloat(Page.segRule))
                                 }
                             }
                     }
@@ -437,20 +437,20 @@ struct ControlRoomPerfPage: View {
         let m = a.machine.text
         return HStack(spacing: CGFloat(Page.machineItemGap)) {
             HStack(alignment: .firstTextBaseline, spacing: CGFloat(Page.summaryPadX) / 2) {
-                if kept.contains(.label), let label = m.label { Text(label).foregroundStyle(theme.textSecondary.color) }
+                if kept.contains(.label), let label = m.label { Text(label).foregroundStyle(theme.perfMuted.color) }
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     if let mem = m.mem {
-                        Text(mem).font(.system(size: CGFloat(Card.fontBig), weight: .semibold)).foregroundStyle(theme.text.color)
+                        Text(mem).font(.system(size: CGFloat(Card.fontBig), weight: .semibold)).foregroundStyle(theme.perfText.color)
                     }
-                    if let of = m.mem_of { Text(of).foregroundStyle(theme.textSecondary.color) }
+                    if let of = m.mem_of { Text(of).foregroundStyle(theme.perfMuted.color) }
                 }
             }
-            if kept.contains(.swap), let swap = m.swap { Text(swap).foregroundStyle(theme.textSecondary.color) }
+            if kept.contains(.swap), let swap = m.swap { Text(swap).foregroundStyle(theme.perfMuted.color) }
             if kept.contains(.pressure), let pressure = m.pressure {
-                Text(pressure).foregroundStyle(a.machine.pressure_tone?.ink(theme)?.text.color ?? theme.textSecondary.color)
+                Text(pressure).foregroundStyle(a.machine.pressure_tone?.ink(theme)?.text.color ?? theme.perfMuted.color)
             }
-            if kept.contains(.panes) { Text(m.panes).foregroundStyle(theme.textSecondary.color) }
-            if kept.contains(.day) { Text(m.day).foregroundStyle(theme.textSecondary.color) }
+            if kept.contains(.panes) { Text(m.panes).foregroundStyle(theme.perfMuted.color) }
+            if kept.contains(.day) { Text(m.day).foregroundStyle(theme.perfMuted.color) }
         }
         .lineLimit(1)
         .fixedSize()
@@ -469,18 +469,24 @@ struct ControlRoomPerfPage: View {
 
     private func gridHeadLine(_ a: Res.Answer, subtitle: Bool, legend: Bool, theme: Look.Theme) -> some View {
         HStack(spacing: CGFloat(Grid.labelGap)) {
-            Text(a.grid.title).fontWeight(.semibold).foregroundStyle(theme.text.color).fixedSize()
+            Text(a.grid.title).fontWeight(.semibold).foregroundStyle(theme.perfText.color).fixedSize()
             if subtitle {
-                Text(a.grid.subtitle).foregroundStyle(theme.textSecondary.color).fixedSize()
+                Text(a.grid.subtitle).foregroundStyle(theme.perfMuted.color).fixedSize()
             }
             Spacer(minLength: 0)
             if legend {
                 ForEach(Array(a.grid.legend.enumerated()), id: \.offset) { _, entry in
                     HStack(spacing: CGFloat(Grid.legendGap)) {
-                        RoundedRectangle(cornerRadius: CGFloat(Grid.cellRadius))
-                            .fill(cellColor(entry.tone, theme: theme))
-                            .frame(width: CGFloat(Grid.legendSwatch), height: CGFloat(Grid.legendSwatch))
-                        Text(entry.text).foregroundStyle(theme.textSecondary.color).fixedSize()
+                        if entry.tone == .ok && (a.machine.physicalBytes ?? 0) > 0 {
+                            Text(0.0, format: .percent).foregroundStyle(theme.perfMuted.color)
+                            loadSwatch()
+                            Text(1.0, format: .percent).foregroundStyle(theme.perfMuted.color)
+                        } else {
+                            RoundedRectangle(cornerRadius: CGFloat(Grid.cellRadius))
+                                .fill(cellColor(entry.tone, theme: theme))
+                                .frame(width: CGFloat(Grid.legendSwatch), height: CGFloat(Grid.legendSwatch))
+                            Text(entry.text).foregroundStyle(theme.perfMuted.color).fixedSize()
+                        }
                     }
                 }
             }
@@ -488,12 +494,18 @@ struct ControlRoomPerfPage: View {
         .lineLimit(1)
     }
 
+    /// Geometry only: labels belong beside this view, never in it.
+    private func loadSwatch() -> some View {
+        LinearGradient(stops: (0...Int(Look.PerfLoad.macSegments)).map { index in
+            let p = Double(index) / Look.PerfLoad.macSegments
+            return .init(color: ControlRoomPerfColor.load(p).color, location: p)
+        }, startPoint: .leading, endPoint: .trailing)
+        .frame(width: CGFloat(Look.PerfLoad.legendWidth), height: CGFloat(Look.PerfLoad.legendHeight))
+    }
+
     private func cellColor(_ level: Res.Level, theme: Look.Theme) -> Color {
-        switch level {
-        case .none: theme.levelNone.color
-        case .ok: theme.levelOk.color
-        default: level.ink(theme)?.base.color ?? theme.levelNone.color
-        }
+        if level == .none { return theme.perfLoadAbsent.color }
+        return ControlRoomPerfColor.paint(nil, event: Res.colorEvent(level), theme: theme).color
     }
 
     /// The cells: one canvas, so a week's grid is not hundreds of views.
@@ -505,7 +517,6 @@ struct ControlRoomPerfPage: View {
     /// it is now a new canvas whenever its cells are laid out differently
     /// (`.id`), and the line it writes as it draws is what it drew.
     private func cells(_ a: Res.Answer, at: PerfLayout, theme: Look.Theme) -> some View {
-        let hovered = feed.hovered
         let drawn = at.drawnCells()
         let key = "\(at.span.rawValue) \(at.cells.count) from \(at.cells.first) at \(at.cells.size)"
         return Canvas { ctx, _ in
@@ -514,12 +525,10 @@ struct ControlRoomPerfPage: View {
                     let i = d.row, k = d.cell, r = d.rect
                     guard let level = a.grid.panes[safe: i]?.cells[safe: k] else { continue }
                     let shape = Path(roundedRect: r, cornerRadius: CGFloat(Grid.cellRadius))
-                    ctx.fill(shape, with: .color(cellColor(level, theme: theme)))
-                    if hovered?.row == i && hovered?.cell == k {
-                        ctx.stroke(shape, with: .color(theme.text.color), lineWidth: 1)
-                    } else if level == .killed, let ink = level.ink(theme) {
-                        ctx.stroke(shape, with: .color(ink.edge.color), lineWidth: 1)
-                    }
+                    let load = a.grid.panes[i].loadFractions[safe: k] ?? nil
+                    let color = level == .none ? theme.perfLoadNoSample.color : ControlRoomPerfColor.paint(load, event: Res.colorEvent(level), theme: theme).color
+                    ctx.fill(shape, with: .color(color))
+
             }
             // Earlier cells than there is room for: a faint mark at the
             // left of the first drawn -- no words of the host's own.
@@ -530,7 +539,7 @@ struct ControlRoomPerfPage: View {
                 mark.move(to: CGPoint(x: cx + 2, y: mid - 4))
                 mark.addLine(to: CGPoint(x: cx - 2, y: mid))
                 mark.addLine(to: CGPoint(x: cx + 2, y: mid + 4))
-                ctx.stroke(mark, with: .color(theme.textTertiary.color), lineWidth: 1)
+                ctx.stroke(mark, with: .color(theme.perfMuted.color), lineWidth: 1)
             }
         }
         .allowsHitTesting(false)
@@ -545,7 +554,7 @@ struct ControlRoomPerfPage: View {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(line.text)
                     .fontWeight(line.tone?.ink(theme) != nil ? .semibold : .regular)
-                    .foregroundStyle(line.tone?.ink(theme)?.text.color ?? theme.text.color)
+                    .foregroundStyle(line.tone?.ink(theme)?.text.color ?? theme.perfText.color)
                     .lineLimit(1)
                     .frame(height: CGFloat(Grid.tipLineHeight))
             }
@@ -574,105 +583,83 @@ struct ControlRoomPerfCard: View {
     var nowMs: UInt64
     var spanMs: UInt64
     var theme: Look.Theme
+    var physicalBytes: UInt64?
 
     var body: some View {
         let frame = CGRect(x: 0, y: 0, width: CGFloat(Card.width), height: CGFloat(Card.height))
         let g = PerfLayout.cardGrid(frame)
-        let ink = card.tone.ink(theme)
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: CGFloat(Card.radiusMac), style: .continuous)
                 .fill(theme.perfCard.color)
                 .overlay(RoundedRectangle(cornerRadius: CGFloat(Card.radiusMac), style: .continuous)
-                    .strokeBorder(ink?.edge.color ?? theme.perfCardEdge.color, lineWidth: ink == nil ? CGFloat(Look.Line.hairline) : 1))
-            head(ink: ink).place(g.head)
+                    .strokeBorder(theme.perfCardEdge.color, lineWidth: CGFloat(Look.Line.hairline)))
+            head().place(g.head)
             // Only when the core said how full it is (`ControlRoomResources.readCard`).
             if let d = card.dial {
-                dial(d, g, ink: ink)
-                Text(d.cap).foregroundStyle(theme.textTertiary.color).lineLimit(1)
+                dial(d, g)
+                Text(card.loadCap ?? d.cap).foregroundStyle(theme.perfMuted.color).lineLimit(1)
                     .frame(width: g.cap.width, height: g.cap.height).place(g.cap)
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if let r1 = card.lines.r1 {
-                    Text(r1.value).font(.system(size: CGFloat(Card.fontValue), weight: .semibold)).foregroundStyle(theme.text.color)
-                    Text(r1.rest).foregroundStyle(theme.textTertiary.color)
+                    Text(r1.value).font(.system(size: CGFloat(Card.fontValue), weight: .semibold)).foregroundStyle(loadColor)
+                    Text(r1.rest).foregroundStyle(theme.perfMuted.color)
                 }
             }
             .lineLimit(1)
             .frame(width: g.r1.width, height: g.r1.height, alignment: .leading).place(g.r1)
-            toned(card.lines.r2, none: theme.textTertiary).frame(width: g.r2.width, height: g.r2.height, alignment: .leading).place(g.r2)
-            toned(card.lines.r3, none: theme.textSecondary).frame(width: g.r3.width, height: g.r3.height, alignment: .leading).place(g.r3)
+            toned(card.lines.r2, none: theme.perfMuted, color: loadColor).frame(width: g.r2.width, height: g.r2.height, alignment: .leading).place(g.r2)
+            toned(card.badge ?? card.lines.r3, none: theme.perfMuted).frame(width: g.r3.width, height: g.r3.height, alignment: .leading).place(g.r3)
             curve(g.r4)
             HStack {
                 Text(card.foot.left).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
                 if !card.foot.right.isEmpty { Text(card.foot.right).lineLimit(1).fixedSize() }
             }
-            .foregroundStyle(theme.textTertiary.color)
+            .foregroundStyle(theme.perfMuted.color)
             .monospacedDigit()
             .frame(width: g.foot.width, height: g.foot.height).place(g.foot)
         }
         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
     }
 
-    private func head(ink: Res.Level.Ink?) -> some View {
+    private func head() -> some View {
         HStack(spacing: CGFloat(Card.badgePadX)) {
             Text(card.name).font(.system(size: CGFloat(Look.Font.body), weight: .semibold, design: .monospaced))
-                .foregroundStyle(theme.text.color).lineLimit(1).truncationMode(.middle)
-            if let role = card.role { Text(role).foregroundStyle(theme.textTertiary.color).lineLimit(1).fixedSize() }
+                .foregroundStyle(theme.perfText.color).lineLimit(1).truncationMode(.middle)
+            if let role = card.role { Text(role).foregroundStyle(theme.perfMuted.color).lineLimit(1).fixedSize() }
             Spacer(minLength: 0)
-            if let badge = card.badge {
-                let bi = badge.tone?.ink(theme)
-                Text(badge.text).fontWeight(.semibold)
-                    .foregroundStyle(bi?.text.color ?? theme.textSecondary.color)
-                    .padding(.horizontal, CGFloat(Card.badgePadX))
-                    .frame(height: CGFloat(Card.badgeHeight))
-                    .background(RoundedRectangle(cornerRadius: CGFloat(Card.badgeRadius)).fill(bi?.badge.color ?? .clear))
-                    .fixedSize()
-            }
+
         }
         .frame(width: CGFloat(Card.width - 2 * Card.padX), height: CGFloat(Card.head))
     }
 
-    private func toned(_ t: Res.Toned?, none: Look.RGBA) -> some View {
-        let ink = t?.tone?.ink(theme)
+    private func toned(_ t: Res.Toned?, none: Look.RGBA, color: Color? = nil) -> some View {
         return Text(t?.text ?? "")
-            .fontWeight(ink != nil ? .semibold : .regular)
-            .foregroundStyle(ink?.text.color ?? none.color)
+            .foregroundStyle(color ?? none.color)
             .lineLimit(1).truncationMode(.tail)
     }
 
-    private func dial(_ d: Res.Dial, _ g: PerfLayout.CardGrid, ink: Res.Level.Ink?) -> some View {
+    private func dial(_ d: Res.Dial, _ g: PerfLayout.CardGrid) -> some View {
         let centre = CGPoint(x: g.dial.midX, y: g.dial.midY)
         let radius = CGFloat(Card.dialRadius)
         let from = Card.dialStartDegrees, sweep = Card.dialOpenDegrees
-        let fill = min(max(d.fraction, 0), 1)
+        let fill = min(max(card.loadFraction ?? d.fraction, 0), 1)
         func arc(_ to: Double) -> Path {
             // Increasing angles, drawn clockwise on the screen (y down).
             Path { p in p.addArc(center: centre, radius: radius, startAngle: .degrees(from), endAngle: .degrees(from + to), clockwise: false) }
         }
         let stroke = StrokeStyle(lineWidth: CGFloat(Card.dialStroke), lineCap: .round)
-        var ticks: [(Double, Look.RGBA)] = d.ticks.enumerated().compactMap { i, t in
-            (i == 0 ? Res.Level.warn1 : Res.Level.warn2).ink(theme).map { (t, $0.base) }
-        }
-        if card.line_at != nil, let k = Res.Level.killed.ink(theme) { ticks.append((1, k.base)) }
         let bigFace = Font.system(size: CGFloat(Card.fontBig), weight: .semibold)
         return ZStack(alignment: .topLeading) {
             arc(sweep).stroke(theme.perfDialTrack.color, style: stroke)
             if fill > 0 {
-                arc(sweep * fill).stroke((ink?.base ?? theme.levelOkArc).color, style: stroke)
-            }
-            ForEach(Array(ticks.enumerated()), id: \.offset) { _, tick in
-                let a = from + sweep * min(max(tick.0, 0), 1)
-                Path { p in
-                    p.move(to: PerfLayout.onCircle(centre, radius: CGFloat(Card.dialTickInner), degrees: a))
-                    p.addLine(to: PerfLayout.onCircle(centre, radius: CGFloat(Card.dialTickOuter), degrees: a))
-                }
-                .stroke(tick.1.color, style: StrokeStyle(lineWidth: CGFloat(Card.dialTickStroke), lineCap: .round))
+                arc(sweep * fill).stroke(ControlRoomPerfColor.paint(card.loadFraction, event: Res.colorEvent(card.tone), theme: theme).color, style: stroke)
             }
             HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text(d.big).font(bigFace)
-                    .foregroundStyle(card.tone == .killed ? (ink?.text ?? theme.text).color : theme.text.color)
-                Text(d.unit).foregroundStyle(theme.textSecondary.color)
+                Text(card.loadFraction.map { ($0 * 100).formatted(.number.precision(.fractionLength($0 < 0.1 ? 1 : 0))) } ?? d.big).font(bigFace)
+                    .foregroundStyle(loadColor)
+                Text(d.unit).foregroundStyle(theme.perfMuted.color)
             }
             .frame(width: g.dial.width, height: 28)
             .place(CGRect(x: g.dial.minX, y: centre.y - 14, width: g.dial.width, height: 28))
@@ -680,27 +667,33 @@ struct ControlRoomPerfCard: View {
         .monospacedDigit()
     }
 
+    private var loadColor: Color {
+        card.loadFraction.map { ControlRoomPerfColor.load($0).color } ?? theme.perfText.color
+    }
+
     private func curve(_ rect: CGRect) -> some View {
-        let c = Res.curve(points, lineAt: card.line_at, rect: rect, now: nowMs, span: spanMs)
-        return ZStack(alignment: .topLeading) {
-            if c.line.count >= 2 {
-                Path { p in
-                    p.addLines(c.line)
-                    p.addLine(to: CGPoint(x: c.line[c.line.count - 1].x, y: rect.maxY))
-                    p.addLine(to: CGPoint(x: c.line[0].x, y: rect.maxY))
-                    p.closeSubpath()
-                }
-                .fill(theme.perfCurveFill.color)
-                Path { p in p.addLines(c.line) }
-                    .stroke(theme.perfCurve.color, style: StrokeStyle(lineWidth: CGFloat(Card.curveStroke), lineCap: .round, lineJoin: .round))
-            }
-            if let y = c.killY, let k = Res.Level.killed.ink(theme) {
-                Path { p in p.move(to: CGPoint(x: rect.minX, y: y)); p.addLine(to: CGPoint(x: rect.maxX, y: y)) }
-                    .stroke(k.base.color, style: StrokeStyle(lineWidth: CGFloat(Card.lineStroke), dash: [CGFloat(Card.curveDash), CGFloat(Card.curveGap)]))
+        let shown = points.filter { $0.0 >= (nowMs > spanMs ? nowMs - spanMs : 0) && $0.0 <= nowMs }
+        let c = Res.curve(shown, lineAt: card.line_at, rect: rect, now: nowMs, span: spanMs)
+        let stoppedIndex = card.stoppedAtMs.flatMap { stop in
+            shown.lastIndex { $0.0 <= stop && $0.1 > 0 }
+        }
+        return Canvas { ctx, _ in
+            guard c.line.count >= 2 else { return }
+            for index in 1..<c.line.count {
+                let p = physicalBytes.flatMap { $0 > 0 ? Double(shown[index].1) / Double($0) : nil }
+                let stopped = stoppedIndex == index
+                let inferred = p.map { ControlRoomPerfColor.curveEvent($0, warnings: card.memoryWarnFractions, stopped: stopped) } ?? .none
+                let current = index == c.line.count - 1 && card.tone != .killed ? Res.colorEvent(card.tone) : .none
+                let event = ControlRoomPerfColor.highest([inferred, current])
+                let color = ControlRoomPerfColor.paint(p, event: event, theme: theme)
+                var path = Path()
+                path.addLines([c.line[index - 1], c.line[index]])
+                ctx.stroke(path, with: .color(color.color), lineWidth: CGFloat(Card.curveStroke))
             }
         }
         .allowsHitTesting(false)
     }
+
 }
 
 private extension View {

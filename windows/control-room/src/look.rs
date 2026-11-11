@@ -980,6 +980,37 @@ pub mod highlight {
     pub const TAB_EDGE: f64 = 1.5;
 }
 
+pub mod perf_load {
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const L0: f64 = 0.7;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const L1: f64 = 0.76;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const C0: f64 = 0.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const C1: f64 = 0.12;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const HUE: f64 = 250.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const POWER: f64 = 0.5;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const PRIORITY_NONE: f64 = 0.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const PRIORITY_WARN1: f64 = 1.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const PRIORITY_WARN2: f64 = 2.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const PRIORITY_STOPPED: f64 = 3.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const WINDOWS_SEGMENTS: f64 = 256.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const MAC_SEGMENTS: f64 = 64.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const LEGEND_WIDTH: f64 = 144.0;
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub const LEGEND_HEIGHT: f64 = 12.0;
+}
+
 /// One terminal's card on the performance page (task 2015): head, body, foot, one grid for every card and every state, so nothing moves with what is in it.
 pub mod perf_card {
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
@@ -1604,6 +1635,22 @@ pub struct Theme {
     /// The highlight card's hairline, inside its accent ring.
     /// Source: highlight-v1 (task 1652), src/build.py; the breathing and the tab reminder as the user ruled on 2026-10-18 (task 1689).
     pub highlight_card_edge: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_page_ground: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_text: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_muted: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_load_absent: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_load_no_sample: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_event_warn1: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_event_warn2: Rgba,
+    /// Source: design 3177/v8 metrics.md and CHANGES.md: continuous OKLCH load, solid priority events, 256 Windows legend segments.
+    pub perf_event_stopped: Rgba,
     /// Performance page, a level (`tone`) the core hands over: no reading -- an empty cell of the grid. Light: undesigned.
     /// Source: design #1985 ui-v4 (task 1985), the performance page as the user ruled it: CHANGES.md's grid, src/perf2-palette.css `body.dir-b` (palette B, dark only), src/perf3.css; the page's spacing read from that css (task 2039, seq 149).
     pub level_none: Rgba,
@@ -1843,6 +1890,14 @@ pub const LIGHT: Theme = Theme {
     highlight_scrim: Rgba { r: 30, g: 32, b: 36, a: 0.46 },
     highlight_card: Rgba { r: 255, g: 255, b: 255, a: 0.96 },
     highlight_card_edge: Rgba { r: 0, g: 0, b: 0, a: 0.12 },
+    perf_page_ground: Rgba { r: 252, g: 253, b: 255, a: 1.0 },
+    perf_text: Rgba { r: 32, g: 34, b: 35, a: 1.0 },
+    perf_muted: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
+    perf_load_absent: Rgba { r: 158, g: 158, b: 158, a: 1.0 },
+    perf_load_no_sample: Rgba { r: 50, g: 57, b: 64, a: 1.0 },
+    perf_event_warn1: Rgba { r: 232, g: 193, b: 90, a: 1.0 },
+    perf_event_warn2: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    perf_event_stopped: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
     level_none: Rgba { r: 0, g: 0, b: 0, a: 0.05 },
     level_ok: Rgba { r: 0, g: 0, b: 0, a: 0.14 },
     level_ok_arc: Rgba { r: 84, g: 85, b: 87, a: 1.0 },
@@ -1988,6 +2043,14 @@ pub const DARK: Theme = Theme {
     highlight_scrim: Rgba { r: 0, g: 0, b: 0, a: 0.58 },
     highlight_card: Rgba { r: 40, g: 44, b: 52, a: 0.97 },
     highlight_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
+    perf_page_ground: Rgba { r: 22, g: 27, b: 32, a: 1.0 },
+    perf_text: Rgba { r: 235, g: 239, b: 244, a: 1.0 },
+    perf_muted: Rgba { r: 165, g: 172, b: 178, a: 1.0 },
+    perf_load_absent: Rgba { r: 158, g: 158, b: 158, a: 1.0 },
+    perf_load_no_sample: Rgba { r: 50, g: 57, b: 64, a: 1.0 },
+    perf_event_warn1: Rgba { r: 232, g: 193, b: 90, a: 1.0 },
+    perf_event_warn2: Rgba { r: 240, g: 138, b: 75, a: 1.0 },
+    perf_event_stopped: Rgba { r: 252, g: 79, b: 78, a: 1.0 },
     level_none: Rgba { r: 255, g: 255, b: 255, a: 0.035 },
     level_ok: Rgba { r: 255, g: 255, b: 255, a: 0.14 },
     level_ok_arc: Rgba { r: 222, g: 225, b: 232, a: 1.0 },
@@ -2015,11 +2078,11 @@ pub const DARK: Theme = Theme {
     level_killed_text: Rgba { r: 255, g: 123, b: 133, a: 1.0 },
     level_killed_edge: Rgba { r: 252, g: 79, b: 78, a: 0.55 },
     level_killed_badge: Rgba { r: 252, g: 79, b: 78, a: 0.15 },
-    perf_dial_track: Rgba { r: 255, g: 255, b: 255, a: 0.08 },
+    perf_dial_track: Rgba { r: 110, g: 117, b: 125, a: 1.0 },
     perf_curve: Rgba { r: 180, g: 184, b: 187, a: 1.0 },
     perf_curve_fill: Rgba { r: 255, g: 255, b: 255, a: 0.06 },
-    perf_card: Rgba { r: 255, g: 255, b: 255, a: 0.04 },
-    perf_card_edge: Rgba { r: 255, g: 255, b: 255, a: 0.1 },
+    perf_card: Rgba { r: 38, g: 44, b: 51, a: 1.0 },
+    perf_card_edge: Rgba { r: 68, g: 75, b: 82, a: 1.0 },
     seg_supervisor: Rgba { r: 255, g: 255, b: 255, a: 0.62 },
     seg_workers: Rgba { r: 255, g: 255, b: 255, a: 0.3 },
     seg_yours: Rgba { r: 255, g: 255, b: 255, a: 0.16 },

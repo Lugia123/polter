@@ -197,6 +197,7 @@ SWIFT_SOURCES = [
     "macos/Sources/Features/ControlRoom/ControlRoomList.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomPageLayout.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomLook.swift",
+    "macos/Sources/Features/ControlRoom/ControlRoomPerfColor.swift",
     "macos/Sources/Features/ControlRoom/PreviewLayout.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomActions.swift",
     "macos/Sources/Features/ControlRoom/ControlRoomRules.swift",
@@ -283,6 +284,23 @@ func row(_ section: String, _ r: ControlRoomList.Row) {
     }
 }
 
+// 3178: compare real production colour functions, not only generated values.
+for index in 0...4 {
+    let c = ControlRoomPerfColor.load(Double(index) / 4)
+    print("perf-load p=\(index * 25) rgb=\(c.r),\(c.g),\(c.b)")
+}
+for (name, count) in [("mac", Int(ControlRoomLook.PerfLoad.macSegments)), ("win", Int(ControlRoomLook.PerfLoad.windowsSegments))] {
+    let range = name == "mac" ? 0...count : 0...(count - 1)
+    for index in range {
+        let p = name == "mac" ? Double(index) / Double(count) : (Double(index) + 0.5) / Double(count)
+        let c = ControlRoomPerfColor.load(p)
+        print("perf-band \(name) i=\(index) rgb=\(c.r),\(c.g),\(c.b)")
+    }
+}
+for event in ControlRoomPerfColor.Event.allCases {
+    let c = ControlRoomPerfColor.paint(nil, event: event, theme: ControlRoomLook.dark)
+    print("perf-event rank=\(Int(event.priority)) rgb=\(c.r),\(c.g),\(c.b)")
+}
 let args = CommandLine.arguments
 guard args.count == 3, let height = Double(args[2]) else {
     FileHandle.standardError.write(Data("usage: dump <snapshot.json> <height>\n".utf8))
@@ -1279,6 +1297,40 @@ def self_test():
     return None
 
 
+def perf_band_error(mac_text, win_text):
+    # Production RGBs, not a second implementation of the colour function.
+    # Model the mac 65-stop continuous sRGB band and the 256 Windows fills.
+    import math
+    def palette(text, kind):
+        rx = re.compile(r"^perf-band " + kind + r" i=(\d+) rgb=(\d+),(\d+),(\d+)$", re.M)
+        return [tuple(map(int, m[1:])) for m in rx.findall(text)]
+    mac = palette(mac_text, "mac")
+    win = palette(win_text, "win")
+    if len(mac) != 65 or len(win) != 256:
+        raise ValueError("3178 expected 65 mac control points and 256 Windows rectangles")
+    def lab(rgb):
+        def linear(v):
+            v /= 255
+            return v / 12.92 if v <= .04045 else ((v + .055) / 1.055) ** 2.4
+        r, g, b = map(linear, rgb)
+        l = (.4122214708*r + .5363325363*g + .0514459929*b) ** (1/3)
+        m = (.2119034982*r + .6806995451*g + .1073969566*b) ** (1/3)
+        s = (.0883024619*r + .2817188376*g + .6299787005*b) ** (1/3)
+        return (.2104542553*l + .793617785*m - .0040720468*s,
+                1.9779984951*l - 2.428592205*m + .4505937099*s,
+                .0259040371*l + .7827717662*m - .808675766*s)
+    worst = 0
+    for i in range(10001):
+        p = i / 10000
+        position = p * 64
+        j = min(int(position), 63)
+        t = position - j
+        continuous = tuple(a*(1-t)+b*t for a,b in zip(mac[j],mac[j+1]))
+        rectangle = win[min(int(p*256),255)]
+        worst = max(worst,100*math.dist(lab(continuous),lab(rectangle)))
+    return worst
+
+
 def run(cmd, cwd, env=None):
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
 
@@ -1311,7 +1363,7 @@ def main():
     work = tempfile.mkdtemp(prefix="control-room-agree-")
     try:
         # -- Windows: the crate ------------------------------------------------
-        env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(work, "cargo"))
+        env = dict(os.environ, CARGO_BUILD_JOBS="4", CARGO_TARGET_DIR=os.path.join(work, "cargo"))
         cmd = ["cargo", "run", "-q", "-p", "polter-control-room", "--example", "dump"]
         win = run(cmd + ["--offline", "--", fixture, HEIGHT], os.path.join(ROOT, "windows"), env)
         if win.returncode != 0 and "offline" in win.stderr:
@@ -1341,7 +1393,7 @@ def main():
             f.write(MAIN)
         for p in SWIFT_SOURCES:
             os.symlink(os.path.join(ROOT, p), os.path.join(src, os.path.basename(p)))
-        built = run(["swift", "build", "-c", "debug"], os.path.join(work, "pkg"))
+        built = run(["swift", "build", "-j", "4", "-c", "debug"], os.path.join(work, "pkg"))
         if built.returncode != 0:
             print("FAIL: the macOS side did not build:")
             print((built.stdout + built.stderr).strip()[-3000:])
@@ -1370,6 +1422,16 @@ def main():
             print(f"    Windows: {y}")
         return 1
 
+    error = perf_band_error(mac.stdout, win.stdout)
+    samples = re.findall(r"^perf-load p=(\d+) rgb=(\d+,\d+,\d+)$", mac.stdout, re.M)
+    if samples != [("0","158,158,158"),("25","139,171,205"),("50","130,176,224"),("75","122,180,238"),("100","115,182,250")]:
+        print("FAIL: 3178 sqrt load samples differ from the v8 reference")
+        return 1
+    print("3178 production RGB samples: " + "; ".join(p + "%=" + rgb for p,rgb in samples))
+    print(f"3178 production-RGB band model: max DeltaEOK*100={error:.3f}, 10001 samples; mac65 sRGB interpolation vs win256 midpoint fills; excludes device rasterization and GUI pixels")
+    if error > 0.7:
+        print("FAIL: 3178 Windows 256-fill approximation exceeds DeltaEOK*100 0.7")
+        return 1
     print(f"compared {n} lines: the macOS host and the Windows host agree")
     print(f"RULE: a stack tab's nominal width on macOS is Windows' less close_gap + close_button "
           f"= {room:g} (the close button is at the left on macOS, task 1642); checked on every such line")

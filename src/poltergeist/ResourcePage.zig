@@ -320,6 +320,7 @@ const Out = struct {
             day: []const u8,
         },
         pressure_tone: ?Tone,
+        physical_bytes: ?u64,
     },
     now_line: []const u8,
     now_note: []const u8,
@@ -349,6 +350,7 @@ const Row = struct {
     id: []const u8,
     name: []const u8,
     cells: []const Tone,
+    load_fractions: []const ?f64 = &.{},
     hover: []const HoverNote,
 
     /// What this row says of one cell, or null when it has no line for it.
@@ -366,6 +368,10 @@ const Card = struct {
     role: ?[]const u8,
     badge: ?Text,
     tone: Tone,
+    load_fraction: ?f64,
+    load_cap: ?[]const u8,
+    memory_warn_fractions: []const f64,
+    stopped_at_ms: ?i64,
     dial: struct {
         fraction: f64,
         ticks: []const f64,
@@ -427,6 +433,7 @@ pub fn render(arena: Allocator, in: In) Allocator.Error![]u8 {
                 .panes = try fill(arena, tr(words.panes), &.{try num(arena, in.panes.len)}),
                 .day = try fill(arena, tr(words.day), &.{ try num(arena, in.kills_24h), try num(arena, in.warns_24h) }),
             },
+            .physical_bytes = m.phys,
             .pressure_tone = if (m.pressure) |p| switch (p) {
                 4 => .killed,
                 2 => .warn1,
@@ -459,6 +466,10 @@ fn card(arena: Allocator, in: In, p: Pane) Allocator.Error!Card {
         try ticks.append(arena, @as(f64, @floatFromInt(w.resolve(phys))) / @as(f64, @floatFromInt(k)));
     };
 
+    var memory_warn_fractions: std.ArrayListUnmanaged(f64) = .empty;
+    if (phys > 0) for (p.lim.memory.warns()) |w| {
+        try memory_warn_fractions.append(arena, @as(f64, @floatFromInt(w.resolve(phys))) / @as(f64, @floatFromInt(phys)));
+    };
     const recent = p.recent;
     const trend: ?Recent.Trend = if (recent) |r| r.trend() else null;
 
@@ -523,6 +534,10 @@ fn card(arena: Allocator, in: In, p: Pane) Allocator.Error!Card {
             .none, .ok => null,
         },
         .tone = tone,
+        .load_fraction = if (phys == 0 or (u == null and killed == null)) null else @as(f64, @floatFromInt(shown)) / @as(f64, @floatFromInt(phys)),
+        .load_cap = if (phys > 0) try fill(arena, tr(words.cap_machine), &.{try bytes(arena, phys)}) else null,
+        .memory_warn_fractions = memory_warn_fractions.items,
+        .stopped_at_ms = if (killed) |k| k.at_ms else null,
         .dial = .{
             .fraction = fraction,
             .ticks = ticks.items,
@@ -622,12 +637,17 @@ fn rowOut(arena: Allocator, in: In, id: u64, name: []const u8) Allocator.Error!R
     const n = g.span.cells();
     const tones = try arena.alloc(Tone, n);
     @memset(tones, .none);
+    const loads = try arena.alloc(?f64, n);
+    @memset(loads, null);
     var hover: std.ArrayListUnmanaged(HoverNote) = .empty;
     const row = for (g.rows) |r| {
         if (r.pane == id) break r;
     } else null;
     if (row) |r| for (r.cells, 0..) |cell, i| {
         tones[i] = toneOf(cell.level);
+        if (cell.level != null) if (in.machine.phys) |phys| {
+            if (phys > 0) loads[i] = @as(f64, @floatFromInt(cell.mem)) / @as(f64, @floatFromInt(phys));
+        };
         if (cell.level == null) continue;
         const at = g.start_ms + @as(i64, @intCast(i)) * g.cellMs();
         var lines: std.ArrayListUnmanaged(Line) = .empty;
@@ -656,7 +676,7 @@ fn rowOut(arena: Allocator, in: In, id: u64, name: []const u8) Allocator.Error!R
         }
         try hover.append(arena, .{ .cell = i, .lines = lines.items });
     };
-    return .{ .id = try hex(arena, id), .name = name, .cells = tones, .hover = hover.items };
+    return .{ .id = try hex(arena, id), .name = name, .cells = tones, .load_fractions = loads, .hover = hover.items };
 }
 
 /// The rows of one agent session read as one row (task 2234).
@@ -699,18 +719,27 @@ fn mergeSessions(arena: Allocator, in: In, rows: []const Row) Allocator.Error![]
 
     for (order.items) |key| {
         var cells: []Tone = &.{};
+        var loads: []?f64 = &.{};
         // Which row each cell's colour came from, by index into `rows`.
         var from: std.ArrayListUnmanaged(usize) = .empty;
         for (rows, 0..) |r, i| {
             if (rowKey(s, r.id, idOf(r.id)) != key) continue;
             if (cells.len == 0) {
                 cells = try arena.dupe(Tone, r.cells);
+                loads = try arena.alloc(?f64, cells.len);
+                @memset(loads, null);
                 try from.appendNTimes(arena, i, cells.len);
             } else for (r.cells, 0..) |t, c| {
                 if (@intFromEnum(t) > @intFromEnum(cells[c])) {
                     cells[c] = t;
                     from.items[c] = i;
                 }
+            }
+        }
+        for (rows) |r| {
+            if (rowKey(s, r.id, idOf(r.id)) != key) continue;
+            for (r.load_fractions, 0..) |fraction, c| {
+                if (fraction) |v| loads[c] = if (loads[c]) |old| @max(old, v) else v;
             }
         }
         // The hover follows the colour it sits on (task 2234, the
@@ -733,7 +762,7 @@ fn mergeSessions(arena: Allocator, in: In, rows: []const Row) Allocator.Error![]
             if (want orelse fallback) |h| try hover.append(arena, h);
         }
         const win = newest.get(key).?;
-        try out.append(arena, .{ .id = win.id, .name = win.name, .cells = cells, .hover = hover.items });
+        try out.append(arena, .{ .id = win.id, .name = win.name, .cells = cells, .load_fractions = loads, .hover = hover.items });
     }
     return out.items;
 }
@@ -1277,4 +1306,30 @@ test "2015: every sentence of the performance page is in po/zh_CN.po" {
         };
         try testing.expect(said.len > 0);
     }
+}
+
+test "3178: physical load is additive and never changes the legacy kill-line dial" {
+    const usage: ledger.Usage = .{ .id = 0x7, .mem = 4 * gib, .procs = 1 };
+    const l = try lim("{\"memory\":{\"warn\":[\"2G\",\"3G\"],\"kill\":\"8G\"}}");
+    const panes = [_]Pane{.{ .id = 0x7, .name = "load", .role = .worker, .usage = usage, .lim = l, .level = .warn2, .recent = null, .killed = null }};
+    const history = try std.fmt.allocPrint(testing.allocator, "{{\"t\":\"slot\",\"pane\":\"0x7\",\"at\":{d},\"level\":\"warn2\",\"mem\":{d},\"procs\":1}}\n", .{ noon, 4 * gib });
+    defer testing.allocator.free(history);
+    var grid = try Grid.build(testing.allocator, .day, noon, plus8, history, &.{});
+    defer grid.deinit(testing.allocator);
+    var in = baseIn(&panes, &grid);
+    var got = try rendered(in);
+    defer got.deinit();
+    try testing.expectEqual(@as(f64, 0.5), got.card(0).get("dial").?.object.get("fraction").?.float);
+    try testing.expectEqual(@as(f64, 0.125), got.card(0).get("load_fraction").?.float);
+    try testing.expectEqual(@as(i64, 32 * gib), got.root.object.get("machine").?.object.get("physical_bytes").?.integer);
+    const loads = got.root.object.get("grid").?.object.get("panes").?.array.items[0].object.get("load_fractions").?.array.items;
+    const has_load = for (loads) |v| {
+        if (v == .float and v.float == 0.125) break true;
+    } else false;
+    try testing.expect(has_load); // 3178: history carries actual physical-memory load, not only a tone.
+    in.machine.phys = null;
+    var unknown = try rendered(in);
+    defer unknown.deinit();
+    try expectNull(unknown.card(0), "load_fraction");
+    try expectNull(unknown.root.object.get("machine").?.object, "physical_bytes");
 }

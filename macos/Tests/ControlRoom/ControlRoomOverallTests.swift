@@ -1447,3 +1447,49 @@ private func expectClose(_ a: CGFloat, _ b: CGFloat, _ tolerance: CGFloat = 0.01
 }
 
 private func same<T: Equatable>(_ a: T, _ b: T) -> Bool { a == b }
+
+struct PerfColor3178Tests {
+    typealias Palette = ControlRoomPerfColor
+    @Test func sqrtSamplesAndMonotonic3178() {
+        let expected: [[UInt8]] = [[158, 158, 158], [139, 171, 205], [130, 176, 224], [122, 180, 238], [115, 182, 250]]
+        for (index, rgb) in expected.enumerated() {
+            let c = Palette.load(Double(index) / 4)
+            #expect([c.r, c.g, c.b] == rgb, "3178 sqrt load colour at quarter sample")
+        }
+        var previous = Palette.load(0)
+        for index in 1...1000 {
+            let c = Palette.load(Double(index) / 1000)
+            #expect(c.r <= previous.r && c.b >= previous.b)
+            previous = c
+        }
+    }
+    @Test func oldReplyUsesLegacyGrey3178() throws {
+        let old = try ControlRoomOverallTests.performanceDay()
+        #expect(old.machine.physicalBytes == nil)
+        #expect(old.grid.panes.allSatisfy { $0.loadFractions.isEmpty })
+        #expect(old.cards.allSatisfy { $0.loadFraction == nil })
+        #expect(Palette.paint(nil, event: .none, theme: ControlRoomLook.dark) == ControlRoomLook.dark.levelOk)
+    }
+    @Test func newFieldsDoNotChangeLegacyDial3178() throws {
+        let file = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("windows/control-room/testdata/resources-day.json")
+        let original = try String(contentsOf: file, encoding: .utf8)
+        let text = original.replacingOccurrences(of: "\"machine\": {", with: "\"machine\": {\"physical_bytes\":34359738368, ")
+            .replacingOccurrences(of: "\"line_at\": null", with: "\"load_fraction\":0.25, \"load_cap\":\"physical\", \"line_at\": null")
+            .replacingOccurrences(of: "\"cells\": [", with: "\"load_fractions\":[0.25], \"cells\": [")
+        let old = try ControlRoomResources.decode(Data(original.utf8))
+        let new = try ControlRoomResources.decode(Data(text.utf8))
+        #expect(new.machine.physicalBytes == 34359738368)
+        #expect(new.cards[0].loadFraction == 0.25)
+        #expect(new.cards[0].dial == old.cards[0].dial)
+        #expect(new.grid.panes[0].loadFractions[0] == 0.25)
+    }
+    @Test func eventsChooseHighestNotFirst3178() {
+        #expect(Palette.highest([.warn1, .warn2, .stopped]) == .stopped, "3178 interrupted beats crossed warning 2")
+        #expect(Palette.curveEvent(0.6, warnings: [0.25, 0.5], stopped: false) == .warn2)
+        #expect(Palette.curveEvent(0.3, warnings: [0.25, 0.5], stopped: false) == .warn1)
+        #expect(Palette.curveEvent(0.6, warnings: [0.25, 0.5], stopped: true) == .stopped)
+    }
+}
