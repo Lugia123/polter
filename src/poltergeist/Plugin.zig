@@ -1112,10 +1112,34 @@ pub const StartupSays = struct {
     };
 
     /// The declared text of the question that is up, or null when none is.
+    ///
+    /// **A sentence is not a question because it is on the screen** (task
+    /// 3168). An agent that writes "Do you want to use this API key?每次都
+    /// 自动过去了…" into its own transcript is not asking it, and calling
+    /// that a question locked the terminal for ever: every line Polter had
+    /// to type there -- a notice, a wake-up -- was refused with
+    /// `StartupQuestionOnScreen`, and the screen would never change by
+    /// itself. So the match has to be **inside the question's own box**: an
+    /// option row -- a cursor (`❯ > › → ▸ »`) with a label after it --
+    /// within `startup_box_rows` of the sentence. The API-key box puts its
+    /// options one row below the question, agy's trust box four, Codex's
+    /// two forms four, and the incident's prose four or five above a bare
+    /// `❯ ` prompt.
+    ///
+    /// **What counts is the box, not the declaration.** Two narrower rules
+    /// were tried and are wrong in the other direction: requiring the
+    /// *answer's* own row turns Claude Code's box, cursor already moved to
+    /// `❯ Yes`, into "no question" -- and text typed at a box a return
+    /// still answers is worse than the lock. A border line alone is not an
+    /// anchor either: the input box under an agent's transcript is drawn
+    /// with one. See `inStartupBox` for the one case this cannot tell
+    /// apart.
     pub fn blockSaid(self: StartupSays, screen: []const u8) ?[]const u8 {
         const tail = bottomRows(screen, ScreenSays.rows);
         for (self.blocks) |text| {
-            if (containsWrapped(tail, text)) return text;
+            const at = wrappedAt(tail, text) orelse continue;
+            if (!inStartupBox(tail, at)) continue;
+            return text;
         }
         return null;
     }
@@ -1144,10 +1168,11 @@ pub const StartupSays = struct {
     }
 
     pub fn verdict(self: StartupSays, screen: []const u8) Verdict {
+        // **The same question `blockSaid` answers**, so a line of an
+        // agent's own prose does not make a ready terminal look blocked
+        // (task 3168): one rule, not a second one that can drift.
+        if (self.blockSaid(screen) != null) return .blocked;
         const tail = bottomRows(screen, ScreenSays.rows);
-        for (self.blocks) |text| {
-            if (containsWrapped(tail, text)) return .blocked;
-        }
         for (self.ready_says) |text| {
             if (containsWrapped(tail, text)) return .ready;
         }
@@ -1318,11 +1343,19 @@ pub fn startupAskFor(manifests: []const Manifest, cli: []const u8, screen: []con
 /// Only for `StartupSays`: an approval box wraps too, but whether Codex's
 /// and Claude Code's do in a narrow split is to be measured first.
 fn containsWrapped(hay: []const u8, needle: []const u8) bool {
+    return wrappedAt(hay, needle) != null;
+}
+
+/// Where the whitespace-insensitive match of `needle` in `hay` starts, or
+/// null. The body `containsWrapped` has always had, with the position kept:
+/// whether a match is **inside a box** is asked of the bytes around it
+/// (task 3168).
+fn wrappedAt(hay: []const u8, needle: []const u8) ?usize {
     var n_len: usize = 0;
     for (needle) |c| {
         if (!isBlank(c)) n_len += 1;
     }
-    if (n_len == 0) return false;
+    if (n_len == 0) return null;
     var start: usize = 0;
     while (start < hay.len) : (start += 1) {
         if (isBlank(hay[start])) continue;
@@ -1337,9 +1370,86 @@ fn containsWrapped(hay: []const u8, needle: []const u8) bool {
             n += 1;
             matched += 1;
         }
-        if (matched == n_len) return true;
+        if (matched == n_len) return start;
+    }
+    return null;
+}
+
+/// How many rows from a declared question's own row a box's option row may
+/// be and still be that question's box. Measured against the shipped boxes:
+/// Claude Code's API-key box puts its options one row below the question,
+/// Codex's two forms four, agy's trust box four -- and an agent's prose
+/// above its input prompt is four or five.
+const startup_box_rows = 5;
+
+/// Whether the match at `at` in `tail` is inside a question box rather than
+/// in prose that happens to name the question (task 3168).
+///
+/// The anchor is an **option row** within `startup_box_rows`: a cursor
+/// glyph (`❯ > › → ▸ »`) followed by a label. That is what a box has and
+/// prose does not, and a cursor with nothing after it (`❯ `) -- the
+/// prompt the incident's sentence sat above -- is not one.
+///
+/// ⚠️ **The one case this cannot tell apart**: an idle CLI whose input
+/// line carries a label (`› Ask Codex to do anything`) has the same shape
+/// as an option row, so prose naming a declared question within
+/// `startup_box_rows` above that line would still anchor. Narrowing it
+/// with the declaration's answers was measured and rejected: it also
+/// un-anchors real boxes whose cursor has moved, and a return typed into a
+/// real box answers it. What settles this one is a screen reading of that
+/// CLI's idle input; until then the map's `ready_says` lines are the other
+/// half of the defence.
+fn inStartupBox(tail: []const u8, at: usize) bool {
+    var rows: [ScreenSays.rows + 2][]const u8 = undefined;
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |row| {
+        if (count == rows.len) break;
+        rows[count] = row;
+        count += 1;
+    }
+    if (count == 0) return false;
+
+    var want: usize = 0;
+    for (tail[0..at]) |c| {
+        if (c == '\n') want += 1;
+    }
+    const low = want -| startup_box_rows;
+    const high = @min(count - 1, want + startup_box_rows);
+
+    var i = low;
+    while (i <= high) : (i += 1) {
+        if (choiceLabel(rows[i]) != null) return true;
     }
     return false;
+}
+
+fn leadingBlanks(row: []const u8) usize {
+    var n: usize = 0;
+    while (n < row.len and (row[n] == ' ' or row[n] == '\t')) n += 1;
+    return n;
+}
+
+fn trimRow(row: []const u8) []const u8 {
+    return std.mem.trim(u8, row, " \t\r");
+}
+
+/// The cursor glyph a row starts with after its indent, if any.
+fn cursorGlyph(row: []const u8) ?[]const u8 {
+    const t = row[leadingBlanks(row)..];
+    const glyphs = [_][]const u8{ "❯", "›", ">", "→", "▸", "»" };
+    for (glyphs) |g| {
+        if (std.mem.startsWith(u8, t, g)) return g;
+    }
+    return null;
+}
+
+/// The label after a row's cursor glyph, or null when the row is a cursor
+/// and nothing else -- an input prompt.
+fn choiceLabel(row: []const u8) ?[]const u8 {
+    const g = cursorGlyph(row) orelse return null;
+    const label = std.mem.trimStart(u8, row[leadingBlanks(row) + g.len ..], " \t");
+    return if (label.len == 0) null else label;
 }
 
 fn isBlank(c: u8) bool {
@@ -7220,4 +7330,121 @@ test "3156: the shipped list names view-markdown" {
     // And the image plugin beside it, so the list is read as the list rather
     // than as a substring of something else.
     try testing.expect(std.mem.indexOf(u8, list, "\"view-image\"") != null);
+}
+
+// ---- 3168: a sentence on the screen is not a question --------------------
+//
+// The incident these two tests are written from: a supervisor's own
+// transcript said "Do you want to use this API key?每次都自动过去了…", four
+// or five rows above its input prompt. `blockSaid` matched the sentence,
+// every line Polter owed that terminal was refused with
+// `StartupQuestionOnScreen`, and the terminal never spoke again. The
+// judgement is now the **box** the sentence is in (an option row near it),
+// not the sentence alone.
+
+/// The manager's screen, reconstructed from the incident: its own prose
+/// above an empty input prompt, with the prompt's rule just below -- a
+/// border alone must not anchor the sentence.
+const agent_own_words =
+    \\⏺ workers 启动时的 Do you want to use this API key?每次都自动过去了，因为
+    \\  launch 时箭头已经默认到允许，所以那句提问我从来没看见过。
+    \\
+    \\⏺ 今天的活干完了，等你回来。
+    \\
+    \\❯ 
+    \\────────────────────────────
+    \\  ⏵⏵ bypass permissions on
+;
+
+/// The same defect in Codex's words: the transcript names two declared
+/// blocks, the idle input below them says "Ask Codex…" and has no second
+/// option beside it.
+const codex_own_words =
+    \\⏺ The box asked Do you trust the contents of this directory? and I said yes.
+    \\⏺ It also mentioned Update available! but nothing came of it.
+    \\
+    \\⏺ Then the work went on for a while, in the usual way.
+    \\⏺ More of the same.
+    \\⏺ And still more.
+    \\⏺ A last line of the day.
+    \\
+    \\› Ask Codex to do anything
+    \\  ? for shortcuts
+;
+
+fn startupManifest(a: Allocator, key: []const u8, json: []const u8) !Manifest {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, json, .{});
+    return .{ .key = key, .exec = "p", .startup_says = try startupSaysOf(a, key, parsed.object) };
+}
+
+test "3168: an agent's own words are not a startup question" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const all = [_]Manifest{
+        try startupManifest(a, "claude-code", @embedFile("plugin_claude_code_json")),
+        try startupManifest(a, "codex", @embedFile("plugin_codex_json")),
+        try startupManifest(a, "antigravity", @embedFile("plugin_antigravity_json")),
+    };
+
+    // The incident, word for word: the declared sentence is on the screen,
+    // and no box is.
+    try testing.expect(all[0].startup_says.blockSaid(agent_own_words) == null);
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "claude-code", agent_own_words));
+    // And the same screen is a ready terminal, not a blocked one -- the
+    // verdict a start waits on reads the same rule.
+    try testing.expectEqual(StartupSays.Verdict.neither, all[0].startup_says.verdict(agent_own_words));
+
+    // A block with no answer declared, said in prose beside an idle input.
+    try testing.expect(all[1].startup_says.blockSaid(codex_own_words) == null);
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "codex", codex_own_words));
+
+    // The sentence alone, with nothing around it, is still not a question.
+    try testing.expect(all[0].startup_says.blockSaid("Do you want to use this API key?\n") == null);
+}
+
+test "3168: a real box is still a question, and the answer is still found" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const all = [_]Manifest{
+        try startupManifest(a, "claude-code", @embedFile("plugin_claude_code_json")),
+        try startupManifest(a, "codex", @embedFile("plugin_codex_json")),
+        try startupManifest(a, "antigravity", @embedFile("plugin_antigravity_json")),
+    };
+
+    // Claude Code's API-key box: the answer row is the cursor's own row,
+    // so the keys are a sequence.
+    try testing.expectEqualStrings(
+        "Do you want to use this API key?",
+        all[0].startup_says.blockSaid(api_key_box_at_no).?,
+    );
+    const at_no = switch (startupAskFor(&all, "claude-code", api_key_box_at_no)) {
+        .key => |answer| answer,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings("arrow_up", at_no.keys[0]);
+    try testing.expectEqualStrings("enter", at_no.keys[1]);
+
+    // **The same box with the cursor moved** is still a question, and one
+    // the plugin declares no answer for -- a numbered or accompanied option
+    // row is what anchors it, not the answer's text.
+    try testing.expectEqualStrings(
+        "Do you want to use this API key?",
+        all[0].startup_says.blockSaid(api_key_box_at_yes).?,
+    );
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "claude-code", api_key_box_at_yes));
+
+    // A box with no answer declared at all: numbered options anchor it.
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "codex", codex_166_sandbox_box));
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "codex", codex_166_update_box));
+
+    // And agy's trust box, whose options are not numbered: the row without
+    // the cursor beside it is the anchor.
+    switch (startupAskFor(&all, "antigravity", trust_box_with_answer)) {
+        .key => |answer| try testing.expectEqualStrings("enter", answer.keys[0]),
+        else => return error.TestUnexpectedResult,
+    }
 }
