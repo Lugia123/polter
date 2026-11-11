@@ -52,6 +52,46 @@ enum PreviewSlot {
         "control-room-workdirs/" + group
     }
 
+    /// File tabs remember paths, not live web views or tickets. The one
+    /// workdirs cell is reopened on selection, keeping preview memory bounded.
+    struct Workbench: Equatable {
+        struct File: Equatable, Identifiable {
+            var workdirId: String
+            var path: String
+            var rel: String
+            var id: String { path }
+
+            /// Keep both the root and filename visible, including Unicode paths.
+            func title(limit: Int = 32) -> String {
+                guard limit > 0 else { return "" }
+                guard path.count > limit else { return path }
+                let head = (limit - 1) / 2
+                return String(path.prefix(head)) + "…" + String(path.suffix(limit - head - 1))
+            }
+        }
+
+        private(set) var files: [File] = []
+        private(set) var selected: String?
+        var current: File? { files.first { $0.id == selected } }
+
+        mutating func open(_ file: File) {
+            if let index = files.firstIndex(where: { $0.id == file.id }) {
+                files[index] = file
+            } else {
+                files.append(file)
+            }
+            selected = file.id
+        }
+
+        mutating func close(_ path: String) {
+            guard let index = files.firstIndex(where: { $0.id == path }) else { return }
+            files.remove(at: index)
+            guard selected == path else { return }
+            // Prefer the tab to the right; at the end use the left neighbour.
+            selected = files.isEmpty ? nil : files[min(index, files.count - 1)].id
+        }
+    }
+
     /// What one cell's preview is doing.
     struct State: Equatable {
         /// The preview is open in this cell.
@@ -103,6 +143,13 @@ enum PreviewSlot {
     /// lives; a store is the whole of the memory.
     struct Store: Equatable {
         private var states: [String: State] = [:]
+        private var workbenches: [String: Workbench] = [:]
+
+        func workbench(_ key: String) -> Workbench { workbenches[key] ?? Workbench() }
+
+        mutating func setWorkbench(_ key: String, _ tabs: Workbench) {
+            workbenches[key] = tabs
+        }
 
         init() {}
 
@@ -211,7 +258,8 @@ enum PreviewSlot {
         /// nothing to give back", which is not a failure and not a token.
         @discardableResult
         mutating func forget(_ key: String) -> String {
-            states.removeValue(forKey: key)?.token ?? ""
+            workbenches.removeValue(forKey: key)
+            return states.removeValue(forKey: key)?.token ?? ""
         }
 
         /// Where a cell `cellW` wide puts the terminal and the preview.

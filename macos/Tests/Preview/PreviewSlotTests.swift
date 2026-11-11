@@ -193,3 +193,87 @@ struct PreviewSlotTests {
         #expect(store.forget("cell") == "")
     }
 }
+
+/// 3175: the file list survives page recreation in the per-group Store;
+/// only its current path is opened in the one live preview cell.
+struct WorkbenchTabs3175Tests {
+    typealias Tabs = PreviewSlot.Workbench
+
+    private func file(_ name: String) -> Tabs.File {
+        .init(workdirId: "root", path: "/root/" + name, rel: name)
+    }
+
+    @Test func openingAndReopeningDoNotDuplicateOrReorder3175() {
+        var tabs = Tabs()
+        tabs.open(file("a.txt"))
+        tabs.open(file("b.txt"))
+        tabs.open(file("a.txt"))
+        #expect(tabs.files.map(\.rel) == ["a.txt", "b.txt"])
+        #expect(tabs.current == file("a.txt"))
+        tabs.open(.init(workdirId: "other", path: "/other/a.txt", rel: "a.txt"))
+        #expect(tabs.files.count == 3)
+        #expect(tabs.current?.path == "/other/a.txt")
+    }
+
+    @Test func closingCurrentMiddleSelectsRightNeighbour3175() {
+        var tabs = Tabs()
+        for name in ["a", "b", "c", "d"] { tabs.open(file(name)) }
+        tabs.open(file("b"))
+        tabs.close(file("b").id)
+        #expect(tabs.current == file("c"), "3175 closing the current middle tab selects its right neighbour, not the first tab")
+        #expect(tabs.files.map(\.rel) == ["a", "c", "d"])
+    }
+
+    @Test func closingCurrentEndSelectsLeftNeighbour3175() {
+        var tabs = Tabs()
+        for name in ["a", "b", "c", "d"] { tabs.open(file(name)) }
+        tabs.close(file("d").id)
+        #expect(tabs.current == file("c"), "3175 closing the final-position tab selects its left neighbour")
+    }
+
+    @Test func closingBehindAndUnknownKeepSelection3175() {
+        var tabs = Tabs()
+        for name in ["a", "b", "c"] { tabs.open(file(name)) }
+        tabs.close(file("a").id)
+        #expect(tabs.current == file("c"))
+        let before = tabs
+        tabs.close("/missing")
+        #expect(tabs == before)
+    }
+
+    @Test func closingLastReturnsToEmpty3175() {
+        var tabs = Tabs()
+        tabs.open(file("a"))
+        tabs.close(file("a").id)
+        #expect(tabs.files.isEmpty)
+        #expect(tabs.selected == nil)
+        #expect(tabs.current == nil)
+        tabs.open(file("b"))
+        #expect(tabs.current == file("b"))
+    }
+
+    @Test func pathsKeepBothEndsWithMiddleEllipsis3175() {
+        let long = Tabs.File(workdirId: "root", path: "/root/very/long/path/file.txt", rel: "file.txt")
+        #expect(long.title(limit: 17) == "/root/ve…file.txt")
+        #expect(file("a").title() == "/root/a")
+        #expect(long.title(limit: 1) == "…")
+        #expect(long.title(limit: 0).isEmpty)
+        let unicode = Tabs.File(workdirId: "root", path: "/根目录/很长的路径/文档.txt", rel: "文档.txt")
+        #expect(unicode.title(limit: 9) == "/根目录….txt")
+    }
+
+    @Test func storesKeepGroupsAndChatIndependent3175() {
+        var store = PreviewSlot.Store()
+        let first = PreviewSlot.workdirsKey(group: "one")
+        let second = PreviewSlot.workdirsKey(group: "two")
+        let chat = PreviewSlot.chatSidebarKey(group: "one")
+        var tabs = store.workbench(first)
+        tabs.open(file("a"))
+        store.setWorkbench(first, tabs)
+        #expect(store.workbench(first).current == file("a"))
+        #expect(store.workbench(second).files.isEmpty)
+        #expect(store.workbench(chat).files.isEmpty)
+        store.forget(first)
+        #expect(store.workbench(first).files.isEmpty)
+    }
+}

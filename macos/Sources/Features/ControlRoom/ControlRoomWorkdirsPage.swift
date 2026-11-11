@@ -1371,23 +1371,70 @@ struct ControlRoomWorkdirsPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The workbench's bar: the file across it. Preview status belongs to
-    /// the preview page (3174).
+    private var workbench: PreviewSlot.Workbench { ghostty.previewStore.workbench(cell) }
+
+    /// The stack strip's tab shape, font, ground and close button, over one
+    /// reusable preview slot. Only the selected file has a live preview.
     private var workHead: some View {
-        HStack(spacing: Tile.headGap) {
-            Text(workbenchTitle)
-                .font(.system(size: Tile.wordsSize))
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
+        ScrollViewReader { scroll in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .bottom, spacing: 0) {
+                    if workbench.files.isEmpty {
+                        Text(Tile.workbench)
+                            .font(PaneStackStripView.nameFont(current: false).swiftUI)
+                            .foregroundStyle(theme.textSecondary.color)
+                            .padding(.horizontal, CGFloat(Look.StackTab.paddingX))
+                    }
+                    ForEach(workbench.files) { file in
+                        workTab(file)
+                            .id(file.id)
+                    }
+                }
+                .padding(.horizontal, CGFloat(Look.StackTab.inset))
+                .padding(.top, CGFloat(Look.StackTab.stripHeight - Look.StackTab.height))
+            }
+            .onChange(of: workbench.selected) { selected in
+                if let selected { scroll.scrollTo(selected) }
+            }
+            .onAppear {
+                if let selected = workbench.selected { scroll.scrollTo(selected) }
+            }
         }
-        .padding(.leading, Tile.headPadX)
-        .padding(.trailing, Tile.headPadRightX)
-        .frame(height: Tile.workHeadHeight)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(theme.line.color).frame(height: CGFloat(Look.Line.hairline))
+        .frame(height: CGFloat(Look.StackTab.stripHeight))
+        .background(theme.workerBand.color)
+        .zIndex(1)
+    }
+
+    private func workTab(_ file: PreviewSlot.Workbench.File) -> some View {
+        let current = workbench.selected == file.id
+        return HStack(spacing: CGFloat(Look.StackTab.gap)) {
+            Button { select(file) } label: {
+                Text(file.title())
+                    .font(PaneStackStripView.nameFont(current: current).swiftUI)
+                    .foregroundStyle(current ? theme.text.color : theme.textSecondary.color)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(file.path)
+            .accessibilityAddTraits(current ? [.isSelected] : [])
+            PolterCloseCircleButton { close(file) }
+                .help(String(localized: "Close Tab"))
+                .accessibilityLabel(String(localized: "Close Tab"))
         }
+        .padding(.horizontal, CGFloat(Look.StackTab.paddingX))
+        .frame(width: CGFloat(Look.StackTab.minWidth * 2), height: CGFloat(Look.StackTab.height))
+        .background {
+            if current {
+                PaneStackTabShape(corner: CGFloat(Look.StackTab.cornerRadius),
+                                  foot: CGFloat(Look.StackTab.reverseArcRadius),
+                                  below: CGFloat(Look.StackTab.overlapBelow))
+                    .fill(theme.terminalBackground.color)
+            }
+        }
+        .help(file.path)
     }
 
     /// Where the file's lines go, and -- with none picked -- the one thing
@@ -1443,12 +1490,6 @@ struct ControlRoomWorkdirsPage: View {
         .overlay(alignment: .top) {
             Rectangle().fill(theme.line.color).frame(height: CGFloat(Look.Line.hairline))
         }
-    }
-
-    /// What the bar says: the file the slot holds, or the word for none.
-    private var workbenchTitle: String {
-        let rel = ghostty.previewStore.state(cell).rel
-        return rel.isEmpty ? Tile.workbench : rel
     }
 
     // MARK: - Asking the core
@@ -1563,20 +1604,42 @@ struct ControlRoomWorkdirsPage: View {
             refusal = ControlRoomWorkdirs.noDirectory
             return
         }
-        switch PreviewTicket.open(source, workdirId: dir.id, path: node.path) {
+        select(.init(workdirId: dir.id, path: node.path, rel: node.rel))
+    }
+
+    private func select(_ file: PreviewSlot.Workbench.File) {
+        // Clicking the current tab keeps its scroll position and its ticket.
+        if workbench.selected == file.id && !ghostty.previewStore.state(cell).token.isEmpty { return }
+        var tabs = workbench
+        tabs.open(file)
+        ghostty.previewStore.setWorkbench(cell, tabs)
+        let oldToken = ghostty.previewStore.state(cell).token
+        switch PreviewTicket.open(source, workdirId: file.workdirId, path: file.path) {
         case .success(let answer):
             refusal = nil
-            // **`answer.presentation`, not an optional plugin page.** A plugin
-            // that claims the file with a page the host cannot locate is
-            // `.unavailable` and is drawn as itself -- never as the file,
-            // which is what nil used to mean (task 2779 S7B).
             ghostty.previewStore.setFile(
-                cell, rel: node.rel, token: answer.token, presentation: answer.presentation)
+                cell, rel: file.rel, token: answer.token, presentation: answer.presentation)
             ghostty.previewStore.set(cell, open: true)
         case .failure(let why):
             refusal = ticketWords(why)
             ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
         }
+        // A tab keeps only the path. The preview being replaced releases
+        // its ticket, and PreviewBody's token identity releases its web view.
+        _ = PreviewTicket.close(source, token: oldToken)
+    }
+
+    private func close(_ file: PreviewSlot.Workbench.File) {
+        var tabs = workbench
+        let previous = tabs.selected
+        tabs.close(file.id)
+        ghostty.previewStore.setWorkbench(cell, tabs)
+        guard previous != tabs.selected else { return }
+        let oldToken = ghostty.previewStore.state(cell).token
+        ghostty.previewStore.setFile(cell, rel: "", token: "", presentation: .file)
+        _ = PreviewTicket.close(source, token: oldToken)
+        refusal = nil
+        if let next = tabs.current { select(next) }
     }
 
     private func open(_ hit: Search.Hit) {
