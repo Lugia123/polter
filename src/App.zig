@@ -3216,7 +3216,7 @@ fn startLineTry(self: *App, id: poltergeistpkg.Bus.Id, line: []const u8) polterg
         return .gone;
     };
     const said: ?bool = if (agent.hooks == .live) agent.state == .ended else null;
-    const screen = poltergeistRead(self, self.alloc, id, 0) catch return .refused;
+    const screen = poltergeistReadActive(self, self.alloc, id, 0) catch return .refused;
     defer self.alloc.free(screen);
     if (!says.firstTurnOver(said, screen)) return .refused;
     const typed = surface.typePoltergeistNotice(line) catch |err| {
@@ -8776,6 +8776,8 @@ fn startRoleInAs(
     self.refreshPoltergeistTabs();
     if (self.terminal_meta) |*m| m.role(id, self.poltergeistWallMs(), choice.key);
 
+    // A reused launch pane may still be looking at history (3173).
+    _ = try surface.performBindingAction(.scroll_to_bottom);
     try surface.typePoltergeistTextAs(line, true, who);
     // A supervisor's launch line is a line that supervisor submitted there
     // (`Bus.noteTypedBy`, task 1971): what puts the agent in the group the
@@ -9967,7 +9969,7 @@ fn startupQuestionText(self: *App, id: poltergeistpkg.Bus.Id) ?[]const u8 {
     self.ensurePlugins();
     const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return null;
     if (says.blocks.len == 0) return null;
-    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+    const screen = poltergeistReadActive(self, self.alloc, id, 0) catch |err| {
         log.debug("poltergeist: could not read a starting CLI for a question id={x} err={}", .{ id, err });
         return null;
     };
@@ -9998,13 +10000,17 @@ fn startupAsk(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.Plugin.Start
     const agent = self.poltergeist.agentOf(id);
     const cli = if (self.personas.launchOf(id)) |l| l.choice.cli else agent.cli.get() orelse return .none;
     self.ensurePlugins();
-    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+    const screen = poltergeistReadActive(self, self.alloc, id, 0) catch |err| {
         log.debug("poltergeist: could not read a starting CLI for an answer id={x} err={}", .{ id, err });
         return .none;
     };
     defer self.alloc.free(screen);
+    return startupAskOnScreen(self.poltergeist_says, cli, screen);
+}
+
+fn startupAskOnScreen(manifests: []const poltergeistpkg.Plugin.Manifest, cli: []const u8, screen: []const u8) poltergeistpkg.Plugin.StartupAsk {
     return poltergeistpkg.Plugin.startupAskFor(
-        self.poltergeist_says,
+        manifests,
         cli,
         scrollback.sinceRestored(screen, scrollback.boundaryWording()),
     );
@@ -11814,6 +11820,32 @@ fn poltergeistRead(
     return screenCopy(alloc, text.text);
 }
 
+/// Startup detection follows the CLI's active rows, independently of the
+/// person's scroll position. terminal_read deliberately remains a viewport read.
+fn poltergeistReadActive(
+    ctx: *anyopaque,
+    alloc: Allocator,
+    id: poltergeistpkg.Bus.Id,
+    lines: u16,
+) anyerror![]const u8 {
+    _ = lines;
+    const self: *App = @ptrCast(@alignCast(ctx));
+    const surface = self.findSurfaceByID(id) orelse return error.NoSuchTerminal;
+    surface.renderer_state.mutex.lockUncancelable(global.io());
+    defer surface.renderer_state.mutex.unlock(global.io());
+    const screen = surface.io.terminal.screens.active;
+    return screenCopy(alloc, try screen.selectionString(alloc, .{
+        .sel = startupActiveSelection(screen),
+        .trim = false,
+    }));
+}
+
+fn startupActiveSelection(screen: *terminal.Screen) terminal.Selection {
+    const tl = screen.pages.getTopLeft(.active);
+    const br = screen.pages.getBottomRight(.active) orelse tl;
+    return .init(tl, br, false);
+}
+
 /// What a read hands back: the text at exactly its own length, the
 /// selection's own copy freed. The selection's carries a 0 after it
 /// (`[:0]const u8`), and the callers free what they get as `[]const u8`:
@@ -12961,12 +12993,12 @@ fn startupReachRaw(self: *App, id: poltergeistpkg.Bus.Id) poltergeistpkg.rpc.Sta
     const cli = agent.cli.get() orelse return .none;
     self.ensurePlugins();
     const says = poltergeistpkg.Plugin.startupFor(self.poltergeist_says, cli) orelse return .none;
-    const screen = poltergeistRead(self, self.alloc, id, 0) catch |err| {
+    const screen = poltergeistReadActive(self, self.alloc, id, 0) catch |err| {
         log.debug("poltergeist: could not read a starting CLI id={x} err={}", .{ id, err });
         return .none;
     };
     defer self.alloc.free(screen);
-    return switch (says.verdict(screen)) {
+    return switch (says.verdict(scrollback.sinceRestored(screen, scrollback.boundaryWording()))) {
         .blocked => .blocked,
         .ready => if (says.ready_without_agent) .ready else .none,
         .neither => .none,
@@ -22409,4 +22441,56 @@ test "2976 production door fails only the ambiguous unpersisted compaction inter
     try t.expectEqualStrings("ready", ready.get("state").?.string);
     try t.expectEqual(@as(usize, 1), ready.get("results").?.array.items.len);
     try t.expectEqualStrings("needle four", ready.get("results").?.array.items[0].object.get("message").?.object.get("text").?.string);
+}
+
+test "3173: PageList active selection ignores a viewport scrolled to top" {
+    const a = std.testing.allocator;
+    var screen = try terminal.Screen.init(std.testing.io, a, .{ .cols = 40, .rows = 2, .max_scrollback_bytes = 10000 });
+    defer screen.deinit();
+    try screen.testWriteString("top one\ntop two\nbottom one\nbottom two");
+    screen.pages.scroll(.top);
+    const viewport = try screen.dumpStringAlloc(a, .{ .viewport = .{} });
+    defer a.free(viewport);
+    try std.testing.expectEqualStrings("top one\ntop two", viewport);
+    const active = try screen.selectionString(a, .{ .sel = startupActiveSelection(&screen), .trim = false });
+    defer a.free(active);
+    // Named floor: reverting startupActiveSelection to viewport fails here.
+    try std.testing.expectEqualStrings("bottom one\nbottom two", active);
+}
+
+test "3173: startupAsk screen fixture keeps the bottom answer after scrolling and excludes restored boxes" {
+    const a = std.testing.allocator;
+    const Plugin = poltergeistpkg.Plugin;
+    var says = Plugin.StartupSays.none;
+    says.blocks = &.{"Do you want to use this API key?"};
+    says.answers = &.{.{ .contains = "❯ No (recommended)", .keys = &.{ "arrow_up", "enter" }, .description = "use key" }};
+    const manifests = [_]Plugin.Manifest{.{ .key = "fixture", .exec = "p", .startup_says = says }};
+    var screen = try terminal.Screen.init(std.testing.io, a, .{ .cols = 100, .rows = 12, .max_scrollback_bytes = 10000 });
+    defer screen.deinit();
+    try screen.testWriteString("h0\nh1\nh2\nh3\nh4\nh5\nh6\nh7\nhistory one\nhistory two\nhistory three\nhistory four\nDo you want to use this API key?\n❯ Yes\n");
+    // **The marker line, not just its wording**: `isBoundaryLine` requires
+    // the `── … ──` rules on both sides, and a fixture that wrote only the
+    // words would leave the boundary unrecognised -- which is how this test
+    // first passed the wrong thing for a right reason.
+    var marker_buf: [scrollback.boundary_line_max]u8 = undefined;
+    try screen.testWriteString(scrollback.boundaryLine(&marker_buf));
+    try screen.testWriteString("\nDo you want to use this API key?\n❯ No (recommended)\nEnter to confirm");
+    screen.pages.scroll(.top);
+    const viewport = try screen.dumpStringAlloc(a, .{ .viewport = .{} });
+    defer a.free(viewport);
+    try std.testing.expect(std.mem.indexOf(u8, viewport, "Enter to confirm") == null);
+    const active = try screen.selectionString(a, .{ .sel = startupActiveSelection(&screen), .trim = false });
+    defer a.free(active);
+    const ask = startupAskOnScreen(&manifests, "fixture", active);
+    // Named floor: a viewport read cannot see the current box's option.
+    try std.testing.expectEqual(std.meta.Tag(Plugin.StartupAsk).key, std.meta.activeTag(ask));
+    try std.testing.expectEqualStrings("arrow_up", ask.key.keys[0]);
+    try std.testing.expectEqualStrings("enter", ask.key.keys[1]);
+    try std.testing.expectEqual(Plugin.StartupSays.Verdict.blocked, says.verdict(scrollback.sinceRestored(active, scrollback.boundaryWording())));
+    // With only restored history, even a valid old box is not a question.
+    var old: std.Io.Writer.Allocating = .init(a);
+    defer old.deinit();
+    try old.writer.writeAll("Do you want to use this API key?\n❯ No (recommended)\n");
+    try old.writer.writeAll(scrollback.boundaryLine(&marker_buf));
+    try std.testing.expectEqual(Plugin.StartupAsk.none, startupAskOnScreen(&manifests, "fixture", old.written()));
 }

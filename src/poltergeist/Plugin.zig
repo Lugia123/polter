@@ -1136,23 +1136,33 @@ pub const StartupSays = struct {
     /// apart.
     pub fn blockSaid(self: StartupSays, screen: []const u8) ?[]const u8 {
         const tail = bottomRows(screen, ScreenSays.rows);
+        return if (self.lastBlock(tail)) |b| b.text else null;
+    }
+
+    const Block = struct { at: usize, text: []const u8 };
+
+    /// Multiple boxes can remain in the active rows. The lowest one owns
+    /// both the question and its answer (3173), including repeated wording.
+    fn lastBlock(self: StartupSays, tail: []const u8) ?Block {
+        var last: ?Block = null;
         for (self.blocks) |text| {
-            const at = wrappedAt(tail, text) orelse continue;
-            if (!inStartupBox(tail, at)) continue;
-            return text;
+            var offset: usize = 0;
+            while (wrappedAt(tail[offset..], text)) |relative| {
+                const at = offset + relative;
+                if (inStartupBox(tail, at) and (last == null or at > last.?.at))
+                    last = .{ .at = at, .text = text };
+                offset = at + 1;
+            }
         }
-        return null;
+        return last;
     }
 
     /// The declared answer to the question on `screen`, or null when this
     /// plugin declares none for it (task 2635).
     ///
-    /// **First match wins, in the order the manifest wrote them.** Two
-    /// entries whose text is on the same screen are a declaration that can
-    /// only be read one way, so the order the plugin chose is the answer and
-    /// there is no second rule to learn. What a caller gets back is the
-    /// whole entry, `description` included, so that the log says which of
-    /// them was taken.
+    /// The lowest declared question owns the answer. Within that box the
+    /// manifest's declaration order breaks ties. Standalone answer matches
+    /// retain declaration order for callers inspecting an answer directly.
     ///
     /// ⚠️ **Having an answer is not the same as being allowed to press it.**
     /// This says only that the plugin declares a key for what is on the
@@ -1161,8 +1171,9 @@ pub const StartupSays = struct {
     /// asked before this is reached.
     pub fn answerFor(self: StartupSays, screen: []const u8) ?Answer {
         const tail = bottomRows(screen, ScreenSays.rows);
+        const box = if (self.lastBlock(tail)) |b| tail[b.at..] else tail;
         for (self.answers) |a| {
-            if (containsWrapped(tail, a.contains)) return a;
+            if (containsWrapped(box, a.contains)) return a;
         }
         return null;
     }
@@ -7549,4 +7560,22 @@ test "3170: a notice echoed on the prompt's own row is not a startup question" {
     // shape the rule asks for.
     try testing.expect(all[0].startup_says.blockSaid(api_key_box_at_yes) != null);
     try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "claude-code", api_key_box_at_yes));
+}
+
+test "3173: the lowest box owns question and answer even with repeated wording" {
+    var says = StartupSays.none;
+    says.blocks = &.{ "First question?", "Second question?" };
+    says.answers = &.{
+        .{ .contains = "❯ old answer", .keys = &.{"escape"}, .description = "old" },
+        .{ .contains = "❯ new answer", .keys = &.{"enter"}, .description = "new" },
+    };
+    const screen = "First question?\n❯ old answer\nSecond question?\n❯ new answer";
+    try testing.expectEqualStrings("Second question?", says.blockSaid(screen).?);
+    try testing.expectEqualStrings("enter", says.answerFor(screen).?.keys[0]);
+    const repeated = "First question?\n❯ old answer\nFirst question?\n❯ new answer";
+    try testing.expectEqualStrings("enter", says.answerFor(repeated).?.keys[0]);
+    // An upper answer never supplies the key for an unanswerable lower box.
+    try testing.expect(says.answerFor("First question?\n❯ old answer\nFirst question?\n❯ other choice") == null);
+    // A prose mention first must not hide the later real box.
+    try testing.expectEqualStrings("First question?", says.blockSaid("First question? in prose\ntext\ntext\ntext\ntext\ntext\nFirst question?\n❯ new answer").?);
 }
