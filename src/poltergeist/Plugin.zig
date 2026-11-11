@@ -1385,10 +1385,14 @@ const startup_box_rows = 5;
 /// Whether the match at `at` in `tail` is inside a question box rather than
 /// in prose that happens to name the question (task 3168).
 ///
-/// The anchor is an **option row** within `startup_box_rows`: a cursor
-/// glyph (`❯ > › → ▸ »`) followed by a label. That is what a box has and
-/// prose does not, and a cursor with nothing after it (`❯ `) -- the
-/// prompt the incident's sentence sat above -- is not one.
+/// The anchor is an **option row below the question's own line** within
+/// `startup_box_rows`: a cursor glyph (`❯ > › → ▸ »`) followed by a label.
+/// That is what a box has and prose does not, and a cursor with nothing
+/// after it (`❯ `) -- the prompt the incident's sentence sat above -- is
+/// not one. **The row may not be the question's own line** (task 3170):
+/// the notice Polter types into a terminal is `❯ [polter] … asks "…"`, and
+/// a rule that accepted a cursor and the sentence on one row would read its
+/// own notice back as a box and lock the terminal for ever.
 ///
 /// ⚠️ **The one case this cannot tell apart**: an idle CLI whose input
 /// line carries a label (`› Ask Codex to do anything`) has the same shape
@@ -1414,10 +1418,16 @@ fn inStartupBox(tail: []const u8, at: usize) bool {
     for (tail[0..at]) |c| {
         if (c == '\n') want += 1;
     }
-    const low = want -| startup_box_rows;
     const high = @min(count - 1, want + startup_box_rows);
 
-    var i = low;
+    // **Below the question's own line, never on it and never above it**
+    // (task 3170). A real box draws the question and then its options.
+    // The line that taught this is the one Polter itself typed into the
+    // terminal: `❯ [polter] 0x… waiting for the person: its CLI asks "Do
+    // you want to use this API key?" …` -- a cursor, a label, and the
+    // question, all on one row, which the CLI echoed into its transcript
+    // and which then looked exactly like a box.
+    var i = want + 1;
     while (i <= high) : (i += 1) {
         if (choiceLabel(rows[i]) != null) return true;
     }
@@ -7447,4 +7457,96 @@ test "3168: a real box is still a question, and the answer is still found" {
         .key => |answer| try testing.expectEqualStrings("enter", answer.keys[0]),
         else => return error.TestUnexpectedResult,
     }
+}
+
+// ---- 3170: Polter's own notice, echoed, is not a box ---------------------
+//
+// Task 3168 required the sentence to be near an option row; this is the
+// screen that showed the rule was still too wide. The notice Polter typed
+// into the manager's terminal starts with the CLI's prompt cursor -- `❯
+// [polter] … its CLI asks "Do you want to use this API key?" …` -- and the
+// CLI echoed it into the transcript. A cursor with a label and the
+// question on the same row looked exactly like a box, so the terminal read
+// its own notice back and stayed locked. An option row is now only an
+// anchor **below** the question's own line, which is the shape a real box
+// draws.
+
+/// The same screen with the "Thought for 19s" line and its blank removed,
+/// so the notice is inside the **16 rows** the rule reads. The paste above
+/// has one line too many for that window; without this variant the notice
+/// would be just outside it and the test would not exercise the row that
+/// locked the machine.
+const polter_notice_in_window =
+    \\❯ [polter] 0x6fd14c9ac9383f55 waiting for the person: its CLI asks "Do you want to use this API key?" before it starts. Nothing can be typed or pressed there until they answer it in that tab -- ask them to
+    \\
+    \\⏺ 3145（微博）在跑，改法与公众号一致。3144 已合并并在 main
+    \\  全绿（2fd0adb）。我会在它报完成后复核、合并，再开下一个（百家号）。
+    \\
+    \\  另外记一笔给你早上看：workers 启动时的「Do you want to use this API
+    \\  key?」每次都自动过去了，根因是环境里两个鉴权变量同时存在；不影响任务，要彻底消掉得改 launcher
+    \\  的全局配置，我没动。
+    \\
+    \\✻ Baked for 52s · done 0:51
+    \\                                                           new task? /clear to save 450.1k tokens
+    \\────────────────────────────────────────
+    \\❯ 
+    \\────────────────────────────────────────
+    \\  ⏵⏵ auto mode on (shift+tab to cycle)
+;
+
+/// The dotmora supervisor's bottom lines, as measured (task 3170).
+const polter_notice_echoed =
+    \\❯ [polter] 0x6fd14c9ac9383f55 waiting for the person: its CLI asks "Do you want to use this API key?" before it starts. Nothing can be typed or pressed there until they answer it in that tab -- ask them to
+    \\
+    \\  Thought for 19s, called polter 2 times
+    \\
+    \\⏺ 3145（微博）在跑，改法与公众号一致。3144 已合并并在 main
+    \\  全绿（2fd0adb）。我会在它报完成后复核、合并，再开下一个（百家号）。
+    \\
+    \\  另外记一笔给你早上看：workers 启动时的「Do you want to use this API
+    \\  key?」每次都自动过去了，根因是环境里两个鉴权变量同时存在；不影响任务，要彻底消掉得改 launcher
+    \\  的全局配置，我没动。
+    \\
+    \\✻ Baked for 52s · done 0:51
+    \\                                                           new task? /clear to save 450.1k tokens
+    \\────────────────────────────────────────
+    \\❯ 
+    \\────────────────────────────────────────
+    \\  ⏵⏵ auto mode on (shift+tab to cycle)
+;
+
+test "3170: a notice echoed on the prompt's own row is not a startup question" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const all = [_]Manifest{
+        try startupManifest(a, "claude-code", @embedFile("plugin_claude_code_json")),
+    };
+
+    // The incident screen: the cursor and the question are on one row (the
+    // notice), and the prose below quotes the question again. Neither is a
+    // box.
+    try testing.expect(all[0].startup_says.blockSaid(polter_notice_echoed) == null);
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "claude-code", polter_notice_echoed));
+    try testing.expectEqual(StartupSays.Verdict.neither, all[0].startup_says.verdict(polter_notice_echoed));
+
+    // **The notice inside the window on its own** -- the row that locked
+    // the machine. It starts with the prompt cursor and has a label, and
+    // the question is on that same row; it must not anchor.
+    try testing.expect(all[0].startup_says.blockSaid(polter_notice_in_window) == null);
+    try testing.expectEqual(StartupAsk.none, startupAskFor(&all, "claude-code", polter_notice_in_window));
+
+    // The notice on its own, with nothing else on the screen.
+    const notice_only =
+        \\❯ [polter] 0x6fd14c9ac9383f55 waiting for the person: its CLI asks "Do you want to use this API key?" before it starts.
+        \\❯ 
+    ;
+    try testing.expect(all[0].startup_says.blockSaid(notice_only) == null);
+
+    // **A real box still counts, cursor moved or not** (task 3168's rule
+    // kept): the question is above the option row here, which is the
+    // shape the rule asks for.
+    try testing.expect(all[0].startup_says.blockSaid(api_key_box_at_yes) != null);
+    try testing.expectEqual(StartupAsk.unanswerable, startupAskFor(&all, "claude-code", api_key_box_at_yes));
 }

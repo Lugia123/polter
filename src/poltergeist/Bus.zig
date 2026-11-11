@@ -4460,9 +4460,15 @@ fn writeAgent(
         ),
         // Task 1746: not the agent's question and not one for an agent to
         // answer -- the keys that would are refused while it is up.
+        // **The declared text is not repeated** (task 3170): this line is
+        // typed into the supervisor's terminal, the CLI echoes it into its
+        // own transcript, and a sentence the screen rule looks for -- now on
+        // a row that starts with the prompt cursor -- then reads as a box
+        // the terminal can never be typed into. What the supervisor needs
+        // is that the person must answer it, not the words.
         .startup_question => try w.print(
-            "{s}0x{x:0>16} waiting for the person: its CLI asks \"{s}\" before it starts. Nothing can be typed or pressed there until they answer it in that tab -- ask them to",
-            .{ sep, id, a.note.get() orelse "a question" },
+            "{s}0x{x:0>16} waiting for the person: its CLI is asking something before it starts. Nothing can be typed or pressed there until they answer it in that tab -- ask them to",
+            .{ sep, id },
         ),
         .hooks_silent => try w.print(
             "{s}0x{x:0>16} hooks expected {d}s ago and nothing heard (no session_started)",
@@ -6890,9 +6896,12 @@ test "hooks: a launch whose CLI asks the person a question says so, to the super
 
     var buf: [255]u8 = undefined;
     const line = b.drain(boss, 2_000, &buf, .none) orelse return error.TestUnexpectedResult;
-    const said = std.mem.indexOf(u8, line, "waiting for the person") != null and
-        std.mem.indexOf(u8, line, "Do you trust") != null;
-    try testing.expect(said);
+    // **The line says the person must answer, and does not repeat the
+    // question's own words** (task 3170): a notice quoting them is echoed
+    // into the terminal by its CLI, and the core's screen rule then found
+    // its own notice on a cursor row and called it a box.
+    try testing.expect(std.mem.indexOf(u8, line, "waiting for the person") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "Do you trust") == null);
 
     // Answered: the state goes back.
     _ = b.noteStartupQuestion(fresh_one, null, boss, 3_000);
