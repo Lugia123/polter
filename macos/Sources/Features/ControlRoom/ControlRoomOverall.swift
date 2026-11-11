@@ -178,6 +178,26 @@ enum ControlRoomOverall {
         var totalMib: UInt64
     }
 
+    /// 3179: a core-authored permutation, selected locally without sorting.
+    struct TableOrder: Equatable, Identifiable {
+        struct Children: Equatable { var orderId: String; var order: [UInt64] }
+        var key: String
+        var direction: String
+        var processes: [String]
+        var groups: [String]
+        var children: [Children]
+        var id: String { key + "_" + direction }
+        var label: String {
+            let metric: String
+            switch key {
+            case "memory": metric = String(localized: "Memory")
+            case "cpu": metric = String(localized: "CPU")
+            default: metric = String(localized: "Name")
+            }
+            return String(format: direction == "asc" ? String(localized: "%@, ascending") : String(localized: "%@, descending"), metric)
+        }
+    }
+
     /// The whole answer's `polter` block: the numbers the four figures draw
     /// and the stacked layers.
     struct Whole {
@@ -230,6 +250,7 @@ enum ControlRoomOverall {
         /// the core chose it; nil when nothing is rising. Never worked out
         /// here (`Rise`).
         var rise: Rise?
+        var tableOrders: [TableOrder] = []
     }
 
     /// One span's layers. **The step between cells is the core's**:
@@ -290,6 +311,8 @@ enum ControlRoomOverall {
     /// One process behind the table (task 2149, handoff §3): what the core
     /// read, and the two verdicts it made itself.
     struct Process: Equatable {
+        var orderId: String?
+
         /// **Which grouping of the table this row is drawn in**, as
         /// the core named it (`main`, `chats`, `terminals`). The core has the
         /// row's kind beside it and this side **must not read that**: which
@@ -481,7 +504,20 @@ enum ControlRoomOverall {
             processes: readProcesses(r, p),
             sections: readSections(r, p),
             tableGroups: readTableGroups(r, p),
-            rise: readRise(r, p))
+            rise: readRise(r, p), tableOrders: readTableOrders(p))
+    }
+
+    private static func readTableOrders(_ block: ControlRoomAnswerReader.Object) -> [TableOrder] {
+        (block["table_orders"] as? [[String: Any]] ?? []).compactMap { value in
+            guard let key = value["key"] as? String, ["memory", "cpu", "name"].contains(key),
+                  let direction = value["direction"] as? String, ["asc", "desc"].contains(direction),
+                  let ids = value["processes"] as? [String], let groups = value["groups"] as? [String] else { return nil }
+            let children = (value["children"] as? [[String: Any]] ?? []).compactMap { item -> TableOrder.Children? in
+                guard let orderId = item["order_id"] as? String, let ids = item["order"] as? [NSNumber] else { return nil }
+                return .init(orderId: orderId, order: ids.map(\.uint64Value))
+            }
+            return .init(key: key, direction: direction, processes: ids, groups: groups, children: children)
+        }
     }
 
     /// **The table's headings, as the core counted and added them up**
@@ -576,6 +612,7 @@ enum ControlRoomOverall {
                                      memMib: r.int(c, at, "mem_mib") ?? 0)
             }
             return Process(
+                orderId: o["order_id"] as? String,
                 category: r.text(o, path, "category"),
                 pid: r.int(o, path, "pid") ?? 0,
                 group: r.nullableText(o, path, "group"),
@@ -886,7 +923,8 @@ enum ControlRoomOverall {
     /// `group:polter`, `term:0x…`): a group really can be called `main`, and
     /// a bare `main` would fold the main process's heading with the group
     /// (task 3119).
-    static func tableLines(_ w: Whole, folded: Set<String> = []) -> [TableLine] {
+    static func tableLines(_ original: Whole, folded: Set<String> = [], order: String? = nil) -> [TableLine] {
+        let w = orderedWhole(original, order: order)
         guard !w.tableGroups.isEmpty else { return legacyTableLines(w, folded: folded) }
         var out: [TableLine] = []
         for s in w.sections {
@@ -947,6 +985,70 @@ enum ControlRoomOverall {
     /// **A terminal's fold key**: the terminal's id, behind `term:`. A row
     /// with no id falls back to its pid.
     static func terminalKey(_ p: Process) -> String { "term:" + (p.terminal ?? String(p.pid)) }
+
+    enum FoldAction { case collapseAll, expandAll, toggle(String) }
+
+    static func fold(_ state: Set<String>, whole: Whole, action: FoldAction) -> Set<String> {
+        switch action {
+        case .collapseAll:
+            let keys = tableLines(whole).compactMap { line -> String? in
+                switch line {
+                case .section(let section): sectionKey(section.category)
+                case .grouping(let group): groupKey(group.group)
+                case .terminal(let process): terminalKey(process)
+                default: nil
+                }
+            }
+            return state.union(keys)
+        case .expandAll:
+            return state.filter { !$0.hasPrefix("category:") && !$0.hasPrefix("group:") && !$0.hasPrefix("term:") }
+        case .toggle(let key):
+            var next = state
+            if next.contains(key) { next.remove(key) } else { next.insert(key) }
+            return next
+        }
+    }
+
+    /// Replay a core permutation. Unknown IDs are skipped; unlisted rows
+    /// retain wire order, so a partial or old reply never loses data.
+    static func ordered<Value, ID: Hashable>(_ values: [Value], ids: [ID], id: (Value) -> ID) -> [Value] {
+        guard !ids.isEmpty else { return values }
+        var seen: Set<ID> = []
+        var out: [Value] = []
+        for key in ids where seen.insert(key).inserted {
+            out.append(contentsOf: values.filter { id($0) == key })
+        }
+        out.append(contentsOf: values.filter { !seen.contains(id($0)) })
+        return out
+    }
+
+    static func orderedWhole(_ original: Whole, order: String?) -> Whole {
+        guard let plan = original.tableOrders.first(where: { $0.id == order }) else { return original }
+        var whole = original
+        whole.processes = ordered(original.processes, ids: plan.processes.map { Optional($0) }, id: { $0.orderId }).map { source in
+            var process = source
+            if let children = plan.children.first(where: { $0.orderId == source.orderId }) {
+                process.children = ordered(source.children, ids: children.order, id: { $0.pid })
+            }
+            return process
+        }
+        whole.tableGroups = ordered(original.tableGroups, ids: plan.groups, id: { $0.group })
+        return whole
+    }
+
+    /// Same local-coordinate continuous-hover mechanism as the history grid.
+    static func tableHit(_ point: CGPoint?, width: CGFloat, lines: Int) -> Int? {
+        guard let point, point.x.isFinite, point.y.isFinite,
+              point.x >= 0, point.x < width else { return nil }
+        let y = point.y - CGFloat(Look.OverallPage.tableTop + Look.OverallPage.tableHeadHeight)
+        let h = CGFloat(Look.OverallPage.tableRowHeight)
+        guard y >= 0, y < CGFloat(lines) * h else { return nil }
+        return Int(y / h)
+    }
+
+    static func pageContentHeight(width: CGFloat, rising: Bool, lines: Int) -> CGFloat {
+        layout(width: width, rising: rising).contentHeight + tableHeight(rows: lines)
+    }
 
     /// The old spelling, kept for the callers that fold a terminal: the same
     /// key as `terminalKey`, now carrying what kind of line it is.

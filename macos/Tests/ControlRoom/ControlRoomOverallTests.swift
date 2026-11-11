@@ -1493,3 +1493,122 @@ struct PerfColor3178Tests {
         #expect(Palette.curveEvent(0.6, warnings: [0.25, 0.5], stopped: true) == .stopped)
     }
 }
+
+struct OverallUsability3179Tests {
+    typealias Overall = ControlRoomOverall
+    typealias Fixtures = ControlRoomOverallTests
+
+    private func whole() -> Overall.Whole {
+        let processes = [
+            Fixtures.process("terminals", pid: 3, group: "z", memMib: 400, terminal: "tz",
+                             children: [Fixtures.child(31, "first", 1), Fixtures.child(32, "second", 9)]),
+            Fixtures.process("main", pid: 9),
+            Fixtures.process("chats", pid: 2, group: "a", memMib: 9999),
+            Fixtures.process("terminals", pid: 1, group: "a", memMib: 1, terminal: "ta",
+                             children: [Fixtures.child(11, "first", 99), Fixtures.child(12, "second", 1)]),
+        ]
+        return Fixtures.whole(sections: [.init(category: "main", count: 1, totalMib: 100)], processes: processes.map { source in
+                                  var row = source
+                                  row.orderId = "row:\(source.pid)"
+                                  return row
+                              },
+                              tableGroups: [Fixtures.group("z", count: 1, totalMib: 10000), Fixtures.group("a", count: 2, totalMib: 5)])
+    }
+
+    @Test func collapseAllIncludesHiddenDescendants3179() {
+        let source = whole()
+        let result = Overall.fold(["other:kept", "group:a"], whole: source, action: .collapseAll)
+        #expect(result == ["other:kept", "category:main", "group:a", "group:z", "term:ta", "term:tz"],
+                "3179 collapse all closes every category, group and terminal, including hidden descendants")
+        #expect(Overall.tableLines(source, folded: result).allSatisfy { line in
+            switch line {
+            case .section, .grouping: true
+            default: false
+            }
+        })
+    }
+
+    @Test func expandAllAndSingleToggle3179() {
+        let source = whole()
+        let closed = Overall.fold(["other:kept", "term:stale"], whole: source, action: .collapseAll)
+        #expect(Overall.fold(closed, whole: source, action: .expandAll) == ["other:kept"])
+        let once = Overall.fold([], whole: source, action: .toggle("term:ta"))
+        #expect(once == ["term:ta"])
+        #expect(Overall.fold(once, whole: source, action: .toggle("term:ta")).isEmpty)
+    }
+
+    @Test func hoverUsesTheActualRowBoundsAndClearsOnExit3179() {
+        let top = CGFloat(ControlRoomLook.OverallPage.tableTop + ControlRoomLook.OverallPage.tableHeadHeight)
+        let height = CGFloat(ControlRoomLook.OverallPage.tableRowHeight)
+        #expect(Overall.tableHit(CGPoint(x: 1, y: top), width: 800, lines: 3) == 0)
+        #expect(Overall.tableHit(CGPoint(x: 799, y: top + 3 * height - 0.1), width: 800, lines: 3) == 2)
+        #expect(Overall.tableHit(CGPoint(x: 1, y: top - 0.1), width: 800, lines: 3) == nil)
+        #expect(Overall.tableHit(CGPoint(x: 800, y: top), width: 800, lines: 3) == nil)
+        #expect(Overall.tableHit(CGPoint(x: 1, y: top + 3 * height), width: 800, lines: 3) == nil)
+        #expect(Overall.tableHit(nil, width: 800, lines: 3) == nil)
+    }
+
+    @Test func shuffledInputDrawsOnlyTheCoreOrder3179() {
+        var source = whole()
+        source.tableOrders = [.init(key: "memory", direction: "desc", processes: ["row:1", "row:2", "row:3", "row:9"], groups: ["a", "z"],
+                                    children: [.init(orderId: "row:1", order: [12, 11]), .init(orderId: "row:3", order: [32, 31])])]
+        let lines = Overall.tableLines(source, order: "memory_desc")
+        let pids = lines.compactMap { line -> UInt64? in
+            switch line {
+            case .process(let p), .terminal(let p): p.pid
+            default: nil
+            }
+        }
+        #expect(pids == [9, 1, 2, 3], "3179 shuffled input follows the core order, even when metrics suggest another order")
+        let children = lines.compactMap { line -> UInt64? in
+            switch line {
+            case .child(let child): child.pid
+            default: nil
+            }
+        }
+        #expect(children == [12, 11, 32, 31])
+        #expect(Overall.tableLines(source, order: "unknown") == Overall.tableLines(source))
+    }
+
+    @Test func distinctCoreIdentitiesKeepRowsWithTheSamePid3179() {
+        var value = whole()
+        value.processes[0].pid = value.processes[1].pid
+        value.tableOrders = [.init(key: "name", direction: "asc",
+                                   processes: ["row:9", "row:3"], groups: [], children: [])]
+        let ordered = Overall.orderedWhole(value, order: "name_asc")
+        #expect(ordered.processes.prefix(2).map(\.orderId) == ["row:9", "row:3"],
+                "3179 core identities distinguish rows sharing a reused pid")
+        #expect(ordered.processes.count == value.processes.count)
+    }
+
+    @Test func replaySkipsUnknownAndRepeatedIdsButKeepsUnlistedInput3179() {
+        #expect(Overall.ordered([3, 1, 2], ids: [2, 99, 2], id: { $0 }) == [2, 3, 1])
+        #expect(Overall.ordered([3, 1, 2], ids: [], id: { $0 }) == [3, 1, 2])
+    }
+
+    @Test func expandedPageHeightIncludesItsLastRow3179() {
+        let source = whole()
+        let expanded = Overall.tableLines(source)
+        let collapsed = Overall.tableLines(source, folded: Overall.fold([], whole: source, action: .collapseAll))
+        let fullHeight = Overall.pageContentHeight(width: 1000, rising: false, lines: expanded.count)
+        let smallHeight = Overall.pageContentHeight(width: 1000, rising: false, lines: collapsed.count)
+        let layout = Overall.layout(width: 1000, rising: false)
+        let rowHeight = CGFloat(ControlRoomLook.OverallPage.tableRowHeight)
+        let lastBottom = layout.table.minY + CGFloat(ControlRoomLook.OverallPage.tableTop + ControlRoomLook.OverallPage.tableHeadHeight) + CGFloat(expanded.count) * rowHeight
+        #expect(fullHeight >= lastBottom, "3179 the only scroll container receives the full expanded table height")
+        #expect(fullHeight - smallHeight == CGFloat(expanded.count - collapsed.count) * rowHeight)
+    }
+
+    @Test func additiveOrderPlansDecodeAndOldRepliesStillWork3179() throws {
+        let old = try Overall.decode(Fixtures.fixture())
+        #expect(old.polter.tableOrders.isEmpty)
+        var object = try #require(JSONSerialization.jsonObject(with: Fixtures.fixture()) as? [String: Any])
+        var polter = try #require(object["polter"] as? [String: Any])
+        polter["table_orders"] = [["key": "memory", "direction": "desc", "processes": ["row:2", "row:1"], "groups": ["a"], "children": [["order_id": "row:2", "order": [22, 21]]]]]
+        object["polter"] = polter
+        let read = try Overall.decode(JSONSerialization.data(withJSONObject: object))
+        #expect(read.polter.tableOrders.first?.id == "memory_desc")
+        #expect(read.polter.tableOrders.first?.processes == ["row:2", "row:1"])
+        #expect(read.polter.tableOrders.first?.children.first?.order == [22, 21])
+    }
+}

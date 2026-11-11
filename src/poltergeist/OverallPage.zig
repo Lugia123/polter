@@ -281,6 +281,7 @@ const Polter = struct {
     /// then the rows in no group. Each carries its own count and total so
     /// that a host draws the first layer without counting anything.
     table_groups: []const TableGroup,
+    table_orders: []const TableOrder,
     /// **The one row the overall view's chart is about** (task 2149, slice
     /// 2), as the core chose it; null when nothing is rising.
     ///
@@ -323,6 +324,88 @@ const Polter = struct {
     },
 };
 
+/// 3179: additive order plans. Existing process/group arrays are unchanged.
+/// Hosts replay IDs within the existing hierarchy; they never compare metrics.
+const TableOrder = struct {
+    key: SortKey,
+    direction: enum { asc, desc },
+    processes: []const []const u8,
+    groups: []const []const u8,
+    children: []const struct { order_id: []const u8, order: []const u32 },
+};
+const SortKey = enum { memory, cpu, name };
+const SortContext = struct {
+    key: SortKey,
+    descending: bool,
+    fn before(self: SortContext, order: std.math.Order) bool {
+        return order == (if (self.descending) std.math.Order.gt else .lt);
+    }
+    fn less(self: SortContext, a: Row, b: Row) bool {
+        if (a.inside_main != b.inside_main) return !a.inside_main;
+        const order = switch (self.key) {
+            .memory => std.math.order(a.mem_mib, b.mem_mib),
+            .cpu => std.math.order(a.cpu_ds, b.cpu_ds),
+            .name => std.mem.order(u8, a.terminal_title orelse a.group orelse a.kind, b.terminal_title orelse b.group orelse b.kind),
+        };
+        return if (order == .eq)
+            (if (a.pid != b.pid) a.pid < b.pid else std.mem.order(u8, a.order_id, b.order_id) == .lt)
+        else
+            self.before(order);
+    }
+    fn childLess(self: SortContext, a: Child, b: Child) bool {
+        const order = if (self.key == .name) std.mem.order(u8, a.name, b.name) else std.math.order(a.mem_mib, b.mem_mib);
+        return if (order == .eq) a.pid < b.pid else self.before(order);
+    }
+    const GroupRank = struct { name: []const u8, memory: u64, cpu: u64 };
+    fn groupLess(self: SortContext, a: GroupRank, b: GroupRank) bool {
+        // Unassigned terminals remain the final group, for every sort mode.
+        if ((a.name.len == 0) != (b.name.len == 0)) return b.name.len == 0;
+        const order = switch (self.key) {
+            .memory => std.math.order(a.memory, b.memory),
+            .cpu => std.math.order(a.cpu, b.cpu),
+            .name => std.mem.order(u8, a.name, b.name),
+        };
+        return if (order == .eq) std.mem.order(u8, a.name, b.name) == .lt else self.before(order);
+    }
+};
+
+fn tableOrdersOf(arena: Allocator, rows: []const Row, groups: []const TableGroup) Allocator.Error![]const TableOrder {
+    const out = try arena.alloc(TableOrder, 6);
+    var index: usize = 0;
+    for ([_]SortKey{ .memory, .cpu, .name }) |key| for ([_]bool{ false, true }) |descending| {
+        const context = SortContext{ .key = key, .descending = descending };
+        const ordered = try arena.dupe(Row, rows);
+        std.mem.sort(Row, ordered, context, SortContext.less);
+        const ids = try arena.alloc([]const u8, rows.len);
+        const ChildOrder = @typeInfo(@FieldType(TableOrder, "children")).pointer.child;
+        const children = try arena.alloc(ChildOrder, rows.len);
+        for (ordered, ids, children) |row, *id, *child_order| {
+            id.* = row.order_id;
+            const child_rows = try arena.dupe(Child, row.children);
+            // CPU is not sampled per child: retain core order, never invent a value.
+            if (key != .cpu) std.mem.sort(Child, child_rows, context, SortContext.childLess);
+            const child_pids = try arena.alloc(u32, child_rows.len);
+            for (child_rows, child_pids) |child, *child_pid| child_pid.* = child.pid;
+            child_order.* = .{ .order_id = row.order_id, .order = child_pids };
+        }
+        const ranks = try arena.alloc(SortContext.GroupRank, groups.len);
+        for (groups, ranks) |group, *rank| {
+            var cpu: u64 = 0;
+            for (rows) |row| {
+                if (row.inside_main or !std.mem.eql(u8, row.group orelse "", group.group)) continue;
+                cpu += row.cpu_ds;
+            }
+            rank.* = .{ .name = group.group, .memory = group.total_mib, .cpu = cpu };
+        }
+        std.mem.sort(SortContext.GroupRank, ranks, context, SortContext.groupLess);
+        const names = try arena.alloc([]const u8, ranks.len);
+        for (ranks, names) |rank, *name| name.* = rank.name;
+        out[index] = .{ .key = key, .direction = if (descending) .desc else .asc, .processes = ids, .groups = names, .children = children };
+        index += 1;
+    };
+    return out;
+}
+
 const Layer = struct {
     /// One of `Overall.Category`, in the order the stack is drawn.
     ///
@@ -339,6 +422,7 @@ const Layer = struct {
 };
 
 const Row = struct {
+    order_id: []const u8,
     kind: []const u8,
     /// **Which grouping the table draws this row in**
     /// (`Overall.Category`: `main`, `chats`, `terminals`), worked out here
@@ -479,6 +563,7 @@ pub fn render(arena: Allocator, overall: *const Overall, in: In) Allocator.Error
             cpu_ds +|= t.cpu_ds;
         }
     }
+    const table_groups = try tableGroupsOf(arena, in, rows);
     const out: Out = .{
         .at = try isoOf(arena, in.now_ms, in.offset_ms),
         .machine = .{
@@ -503,7 +588,8 @@ pub fn render(arena: Allocator, overall: *const Overall, in: In) Allocator.Error
             .monitor_bytes = overall.monitorBytes(),
             .processes = rows,
             .sections = try sectionsOf(arena, rows),
-            .table_groups = try tableGroupsOf(arena, in, rows),
+            .table_groups = table_groups,
+            .table_orders = try tableOrdersOf(arena, rows, table_groups),
             .rise = riseOf(rows),
             .untracked = overall.untracked,
             .run_started = try isoOf(arena, overall.run_start_ms, in.offset_ms),
@@ -653,6 +739,7 @@ fn rowsOf(arena: Allocator, overall: *const Overall, in: In) Allocator.Error![]c
         if (in.only_pid != 0) points = try pointsOf(arena, overall, @intCast(i));
         const sum = overall.summarize(@intCast(i));
         try out.append(arena, .{
+            .order_id = try std.fmt.allocPrint(arena, "{s}:{x}:{d}", .{ @tagName(t.kind), t.pane, t.pid }),
             .kind = @tagName(t.kind),
             .category = @tagName(Overall.categoryOf(t.kind)),
             .pid = t.pid,
@@ -1056,6 +1143,7 @@ fn climb(overall: *Overall, n: u64) i64 {
 /// that is not rising.
 fn riser(category: []const u8, group: ?[]const u8, since_s: ?u32, rose_mib: u32) Row {
     return .{
+        .order_id = "riser",
         .kind = "chat",
         .category = category,
         .pid = 1,
@@ -2061,4 +2149,43 @@ test "2149: the answer carries the core's own rise, and it is the reading's" {
         .null => {},
         else => return error.ExpectedNull,
     }
+}
+
+test "3179: core supplies ascending and descending sibling orders without changing source rows" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var rows = [_]Row{ riser("terminals", "b", null, 0), riser("terminals", "a", null, 0), riser("terminals", "a", null, 0) };
+    rows[0].order_id = "three";
+    rows[1].order_id = "one";
+    rows[2].order_id = "two";
+    rows[0].pid = 3;
+    rows[0].mem_mib = 100;
+    rows[0].cpu_ds = 5;
+    rows[0].terminal_title = "z";
+    rows[1].pid = 1;
+    rows[1].mem_mib = 900;
+    rows[1].cpu_ds = 1;
+    rows[1].terminal_title = "a";
+    rows[2].pid = 2;
+    rows[2].mem_mib = 500;
+    rows[2].cpu_ds = 9;
+    rows[2].terminal_title = "m";
+    rows[1].children = &.{ .{ .pid = 11, .name = "z", .mem_mib = 1 }, .{ .pid = 12, .name = "a", .mem_mib = 9 } };
+    const groups = [_]TableGroup{ .{ .group = "b", .count = 1, .total_mib = 100 }, .{ .group = "a", .count = 2, .total_mib = 1400 }, .{ .group = "", .count = 0, .total_mib = 99999 } };
+    const plans = try tableOrdersOf(alloc, &rows, &groups);
+    const expected = [_][3][]const u8{
+        .{ "three", "two", "one" }, .{ "one", "two", "three" },
+        .{ "one", "three", "two" }, .{ "two", "three", "one" },
+        .{ "one", "two", "three" }, .{ "three", "two", "one" },
+    };
+    for (plans, expected) |plan, wanted| {
+        for (plan.processes, wanted) |actual, id| try testing.expectEqualStrings(id, actual);
+    }
+    try testing.expectEqualStrings("a", plans[1].groups[0]);
+    try testing.expectEqualStrings("", plans[1].groups[2]); // unassigned stays last
+    try testing.expectEqualSlices(u32, &.{ 11, 12 }, plans[2].children[0].order); // child CPU unknown: preserve wire order
+    try testing.expectEqualSlices(u32, &.{ 12, 11 }, plans[4].children[0].order); // child name asc
+    try testing.expectEqual(@as(u32, 11), rows[1].children[0].pid);
+    try testing.expectEqual(@as(u32, 3), rows[0].pid); // legacy wire order is untouched
 }

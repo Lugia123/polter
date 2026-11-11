@@ -312,6 +312,13 @@ mod tests {
     const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-overall-group.json"));
 
     #[test]
+    fn v8_3179_additive_table_order_metadata_preserves_existing_group_reader() {
+        let before=decode(FIXTURE).unwrap();
+        let with_orders=FIXTURE.replacen('{',r#"{"polter":{"table_orders":[{"key":"memory","direction":"desc","processes":["row:2","row:1"],"groups":["a"],"children":[]}]},"#,1);
+        assert_eq!(decode(&with_orders).unwrap(),before,"3179 additive table order plans cannot break the existing Windows group-cost reader");
+    }
+
+    #[test]
     fn the_group_is_read_with_the_fields_the_strip_draws() {
         let g = decode(FIXTURE).unwrap().expect("one group");
         assert_eq!(g.group, "web-app");

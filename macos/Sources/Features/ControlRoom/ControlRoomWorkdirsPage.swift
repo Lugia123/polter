@@ -1860,23 +1860,6 @@ struct ControlRoomWorkdirsPage: View {
     }
 }
 
-/// **Whether the pointer is inside the thing it wraps**, handed to that thing
-/// so it can draw its own hover state -- the flat ground the design puts under
-/// a row (`.tr-row:hover`, `.sec-row:hover`, `.act-btn:hover`,
-/// `.sb-tool-btn:hover` all say `background: var(--hover)`).
-///
-/// ⚠️ **Hover is not selection.** The design draws them apart wherever it
-/// draws both: hover is the ground, while selected carries the chip, the bar
-/// and the accent.
-private struct RowHover<Content: View>: View {
-    @State private var over = false
-    @ViewBuilder var content: (Bool) -> Content
-
-    var body: some View {
-        content(over).onHover { over = $0 }
-    }
-}
-
 /// The marks of the design's activity bar and tree, drawn: the strings of
 /// their `<path>` elements turned into a `Path` on the artboard they were
 /// written for.

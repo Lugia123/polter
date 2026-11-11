@@ -1561,3 +1561,14 @@
 "Zoom Out" = "Zoom Out";
 "Zoom In" = "Zoom In";
 "Preview zoom" = "Preview zoom";
+
+/* Overall process table controls (3179). */
+"Processes" = "Processes";
+"Expand all" = "Expand all";
+"Original order" = "Original order";
+"Sort" = "Sort";
+"Sort by %@" = "Sort by %@";
+"Memory" = "Memory";
+"CPU" = "CPU";
+"%@, ascending" = "%@, ascending";
+"%@, descending" = "%@, descending";

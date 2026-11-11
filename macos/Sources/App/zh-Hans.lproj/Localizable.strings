@@ -1625,3 +1625,12 @@
 "Zoom Out" = "缩小";
 "Zoom In" = "放大";
 "Preview zoom" = "预览缩放";
+
+/* Overall process table controls (3179). */
+"Processes" = "进程";
+"Expand all" = "全部展开";
+"Original order" = "原始顺序";
+"Sort" = "排序";
+"Sort by %@" = "排序：%@";
+"%@, ascending" = "%@，升序";
+"%@, descending" = "%@，降序";

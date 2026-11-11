@@ -35,7 +35,7 @@ struct ControlRoomOverallPane: View {
         GeometryReader { proxy in
             ScrollView(.vertical) {
                 if let answer = feed.answer {
-                    ControlRoomOverallPage(answer: answer, span: $span, folded: $folded)
+                    ControlRoomOverallPage(answer: answer, width: proxy.size.width, span: $span, folded: $folded)
                         .frame(width: proxy.size.width, alignment: .topLeading)
                 } else {
                     Color.clear.frame(width: proxy.size.width, height: proxy.size.height)
@@ -89,6 +89,7 @@ struct ControlRoomOverallPage: View {
     typealias Page = Look.OverallPage
 
     var answer: U.Answer
+    var width: CGFloat
     /// Which of the two spans the chart draws. **The host's own**, like the
     /// performance page's: which of two windows a reader is looking at is
     /// not a fact about the machine.
@@ -97,30 +98,91 @@ struct ControlRoomOverallPage: View {
     /// core's own category. The host's own for the reason `span` is.
     @Binding var folded: Set<String>
 
+    @State private var selectedOrder: String?
+    @State private var hoveredRow: Int?
     @Environment(\.colorScheme) private var scheme
 
     private var theme: Look.Theme { Look.theme(scheme) }
 
     var body: some View {
-        GeometryReader { proxy in
-            let at = U.layout(width: proxy.size.width, rising: answer.polter.rise != nil)
-            // **The table's lines, worked out once** and used for both the
-            // table's own height and how tall the page is: two readings of
-            // the same list would be two answers about how many lines there
-            // are, and the page would end above or below its own table.
-            // The folded headings are the reader's, so the same list moves
-            // with them (task 3113).
-            let lines = U.tableLines(answer.polter, folded: folded)
+        let at = U.layout(width: width, rising: answer.polter.rise != nil)
+        let lines = U.tableLines(answer.polter, folded: folded, order: selectedOrder)
+        // The outer pane is the only vertical ScrollView. A GeometryReader
+        // here reports its ideal 10pt height under an unbounded proposal,
+        // hiding the expanded table's height from that scroll view (3179).
+        VStack(spacing: 0) {
+            tableTools
             ZStack(alignment: .topLeading) {
                 figures(at)
                 chart(at)
                 curves(at)
                 processTable(at, lines: lines)
             }
-            .frame(width: proxy.size.width,
-                   height: at.contentHeight + U.tableHeight(rows: lines.count + 1),
-                   alignment: .topLeading)        }
+            .frame(width: width, height: U.pageContentHeight(width: width, rising: answer.polter.rise != nil, lines: lines.count), alignment: .topLeading)
+        }
+        .frame(width: width, alignment: .topLeading)
         .background(theme.terminalBackground.color)
+    }
+
+    private var tableTools: some View {
+        HStack(spacing: CGFloat(Page.chartHeadGap)) {
+            Text(String(localized: "Processes"))
+                .fontWeight(.semibold)
+                .foregroundStyle(theme.text.color)
+            Spacer(minLength: 0)
+            tool("chevron.up", title: String(localized: "Collapse all")) {
+                folded = U.fold(folded, whole: answer.polter, action: .collapseAll)
+                hoveredRow = nil
+            }
+            tool("chevron.down", title: String(localized: "Expand all")) {
+                folded = U.fold(folded, whole: answer.polter, action: .expandAll)
+                hoveredRow = nil
+            }
+            RowHover { over in
+                Menu {
+                    Button { selectedOrder = nil; hoveredRow = nil } label: {
+                        HStack {
+                            Text(String(localized: "Original order"))
+                            if selectedOrder == nil { Image(systemName: "checkmark") }
+                        }
+                    }
+                    Divider()
+                    ForEach(answer.polter.tableOrders) { plan in
+                        Button { selectedOrder = plan.id; hoveredRow = nil } label: {
+                            HStack {
+                                Text(plan.label)
+                                if selectedOrder == plan.id { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .frame(width: CGFloat(Page.chartHeadHeight), height: CGFloat(Page.chartHeadHeight))
+                        .background(RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row)).fill(over ? theme.windowTabHover.color : .clear))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .disabled(answer.polter.tableOrders.isEmpty)
+                .help(String(format: String(localized: "Sort by %@"), answer.polter.tableOrders.first { $0.id == selectedOrder }?.label ?? String(localized: "Original order")))
+                .accessibilityLabel(String(localized: "Sort"))
+            }
+        }
+        .font(.system(size: CGFloat(Look.Font.body)))
+        .padding(.horizontal, CGFloat(Page.padX))
+        .padding(.vertical, CGFloat(Page.cardPadY))
+    }
+
+    private func tool(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {
+        RowHover { over in
+            Button(action: action) {
+                Image(systemName: symbol)
+                    .frame(width: CGFloat(Page.chartHeadHeight), height: CGFloat(Page.chartHeadHeight))
+                    .background(RoundedRectangle(cornerRadius: CGFloat(Look.Radius.row)).fill(over ? theme.windowTabHover.color : .clear))
+            }
+            .buttonStyle(.plain)
+            .help(title)
+            .accessibilityLabel(title)
+        }
     }
 
     // MARK: - The four figures
@@ -547,11 +609,19 @@ struct ControlRoomOverallPage: View {
             // the core's own two lists.
             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                 lineView(line)
+                    .frame(width: at.table.width, height: rowH, alignment: .leading)
+                    .background(hoveredRow == i ? theme.windowTabHover.color : .clear)
                     .offset(x: 0, y: CGFloat(Page.tableTop) + headH + CGFloat(i) * rowH)
             }
         }
         .frame(width: at.table.width, height: height, alignment: .topLeading)
         .background(card(radius: CGFloat(Page.cardRadius)))
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let point): hoveredRow = U.tableHit(point, width: at.table.width, lines: lines.count)
+            case .ended: hoveredRow = U.tableHit(nil, width: at.table.width, lines: lines.count)
+            }
+        }
         .offset(x: at.table.minX, y: at.table.minY)
     }
 
@@ -583,7 +653,7 @@ struct ControlRoomOverallPage: View {
         let closed = folded.contains(key)
         let name = g.group.isEmpty ? words.noGroup : g.group
         return Button {
-            if closed { folded.remove(key) } else { folded.insert(key) }
+            folded = U.fold(folded, whole: answer.polter, action: .toggle(key))
         } label: {
             HStack(spacing: 0) {
                 HStack(spacing: CGFloat(Page.tableTwistGap)) {
@@ -631,7 +701,7 @@ struct ControlRoomOverallPage: View {
         let key = U.foldKey(p)
         let closed = folded.contains(key)
         return Button {
-            if closed { folded.remove(key) } else { folded.insert(key) }
+            folded = U.fold(folded, whole: answer.polter, action: .toggle(key))
         } label: {
             HStack(spacing: 0) {
                 HStack(spacing: CGFloat(Page.tableTwistGap)) {
@@ -748,7 +818,7 @@ struct ControlRoomOverallPage: View {
         let key = U.sectionKey(s.category)
         let closed = folded.contains(key)
         return Button {
-            if closed { folded.remove(key) } else { folded.insert(key) }
+            folded = U.fold(folded, whole: answer.polter, action: .toggle(key))
         } label: {
             HStack(spacing: 0) {
                 HStack(spacing: CGFloat(Page.tableTwistGap)) {
@@ -980,5 +1050,23 @@ struct ControlRoomOverallPage: View {
             f.dateFormat = span == .day ? "HH:mm" : "M/d HH:mm"
             return f.string(from: at)
         }
+    }
+}
+
+/// **Whether the pointer is inside the thing it wraps**, handed to that thing
+/// so it can draw its own hover state -- the flat ground the design puts under
+/// a row (`.tr-row:hover`, `.sec-row:hover`, `.act-btn:hover`,
+/// `.sb-tool-btn:hover` all say `background: var(--hover)`).
+///
+/// ⚠️ **Hover is not selection.** The design draws them apart wherever it
+/// draws both: hover is the ground, while selected carries the chip, the bar
+/// and the accent.
+/// Shared with working-directory rows; retain the existing hover mechanism.
+struct RowHover<Content: View>: View {
+    @State private var over = false
+    @ViewBuilder var content: (Bool) -> Content
+
+    var body: some View {
+        content(over).onHover { over = $0 }
     }
 }
