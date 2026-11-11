@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-11T09:30:00+08:00",
+  "groups": [
+    {
+      "group": "web-app",
+      "total_mib": 512,
+      "parts": {
+        "supervisor_mib": 120,
+        "workers_mib": 200,
+        "yours_mib": 100,
+        "own_mib": 80
+      },
+      "own": {
+        "chat_pid": 4242,
+        "chat_mib": 80,
+        "growth": {
+          "rising": true,
+          "slope_mib_per_h": 64,
+          "rose_mib": 12,
+          "since_s": 57840,
+          "since": "2026-11-11T09:00:00+08:00"
+        },
+        "tasks": 7,
+        "tasks_open": 3,
+        "record_bytes": 4718592
+      }
+    }
+  ]
+}

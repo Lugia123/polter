@@ -56,6 +56,7 @@ use polter_control_room::lend::{Detail, Effect, Event, Lending, Place};
 use polter_control_room::list::{self, List, Selection};
 use polter_control_room::look::{self, selection, side, status, Rgba, Theme};
 use polter_control_room::rules;
+use polter_control_room::overall;
 use polter_control_room::perf::{self, Span};
 use polter_control_room::perf_scene::{self, Draw};
 use polter_control_room::pulse;
@@ -441,6 +442,12 @@ struct Perf {
     group: String,
     span: Span,
     data: Option<perf::Resources>,
+    /// The group's own cost, from the same `overall` page the overall view
+    /// reads (task 3167). **None is "no strip"**, not an empty one: a core
+    /// that has no group yet draws the page exactly as it did.
+    overall: Option<overall::Group>,
+    /// Why the last `overall` ask had no answer, said once until it changes.
+    said_overall: Option<String>,
     curves: perf::Curves,
     scroll: f64,
     hovered: Option<(usize, usize)>,
@@ -497,7 +504,7 @@ fn perf_sync(hwnd: HWND) {
         match p.as_mut() {
             Some(x) if x.group == group => x.armed.is_none(),
             _ => {
-                *p = Some(Perf { group: group.clone(), span, data: None, curves: perf::Curves::default(), scroll: 0.0, hovered: None, drawn: None, armed: None, said: None, said_missing: Vec::new(), drew: None });
+                *p = Some(Perf { group: group.clone(), span, data: None, overall: None, said_overall: None, curves: perf::Curves::default(), scroll: 0.0, hovered: None, drawn: None, armed: None, said: None, said_missing: Vec::new(), drew: None });
                 true
             }
         }
@@ -535,12 +542,40 @@ fn perf_fetch(hwnd: HWND) {
     if !in_front(hwnd) {
         return;
     }
-    let Some(ask) = PERF.with(|p| p.borrow().as_ref().map(|x| perf::request(&x.group, x.span, x.curves.since))) else { return };
+    let Some((ask, overall_ask)) = PERF.with(|p| {
+        p.borrow()
+            .as_ref()
+            .map(|x| (perf::request(&x.group, x.span, x.curves.since), overall::request(&x.group)))
+    }) else {
+        return;
+    };
     let frame = unsafe { GetAncestor(hwnd, GA_ROOT) };
     let answer = source::page(&ask).and_then(|text| perf::decode(&text).map_err(|e| format!("{e:?}")));
+    // **The strip's numbers are a second reader of the `overall` page**
+    // (task 3167): the same request the overall view asks, about this group.
+    // A core with nothing to say leaves the strip out -- it does not empty
+    // it -- and what it said is written down once.
+    let overall_answer = source::page(&overall_ask)
+        .and_then(|text| overall::decode(&text).map_err(|e| format!("{e:?}")));
     let period = PERF.with(|p| {
         let mut p = p.borrow_mut();
         let x = p.as_mut()?;
+        match overall_answer {
+            Ok(group) => {
+                // **Only this group's block**: a selection that moved between
+                // asking and now leaves a stale answer, and the mac host
+                // filters by name (`ControlRoomOverall.group(_:named:)`).
+                x.overall = group.filter(|g| g.group == x.group);
+                x.said_overall = None;
+            }
+            Err(why) => {
+                if x.said_overall.as_deref() != Some(why.as_str()) {
+                    wlogf!(frame, "[control-room] performance page of {:?}: no overall answer ({})", x.group, why);
+                    x.said_overall = Some(why);
+                }
+                x.overall = None;
+            }
+        }
         match answer {
             // An answer about another group -- the selection moved between
             // asking and now -- is not this page's.
@@ -675,6 +710,9 @@ unsafe fn paint_perf(dc: HDC, at: Px, page: Rect, theme: &Theme) {
         unsafe { text_width(dc, font, text) as f64 / scale.max(0.1) }
     };
     let origin = Px { scale, ox: at.ox + at.len(page.x), oy: at.oy + at.len(page.y) };
+    // The host's `tr`, as the task page has it (task 3157): the strip's
+    // words are this host's msgids, marked with `n_` in the crate.
+    let translate = |s: &str| tr(s);
     let mut fonts = Fonts { dpi: (scale * 96.0).round() as i32, made: Vec::new() };
     PERF.with(|p| {
         let mut p = p.borrow_mut();
@@ -683,12 +721,12 @@ unsafe fn paint_perf(dc: HDC, at: Px, page: Rect, theme: &Theme) {
             x.drawn = None;
             return;
         };
-        let lay = perf_scene::layout(r, page.w, x.scroll, theme, &measure);
+        let lay = perf_scene::layout(r, page.w, x.scroll, theme, &measure, x.overall.as_ref());
         // A page grown shorter scrolls no further than its end.
         let max = lay.max_scroll(page.h);
         let lay = if x.scroll > max {
             x.scroll = max;
-            perf_scene::layout(r, page.w, x.scroll, theme, &measure)
+            perf_scene::layout(r, page.w, x.scroll, theme, &measure, x.overall.as_ref())
         } else {
             lay
         };
@@ -701,7 +739,7 @@ unsafe fn paint_perf(dc: HDC, at: Px, page: Rect, theme: &Theme) {
             plogf!("[control-room] performance page of {:?}: {}", x.group, drew);
             x.drew = Some(drew);
         }
-        let draws = perf_scene::build(r, &x.curves, &lay, theme, scale, x.hovered, &measure);
+        let draws = perf_scene::build(r, &x.curves, &lay, theme, scale, x.hovered, &measure, x.overall.as_ref(), &translate);
         let clip = origin.rect(Rect { x: 0.0, y: 0.0, w: page.w, h: page.h });
         unsafe {
             let saved = SaveDC(dc);

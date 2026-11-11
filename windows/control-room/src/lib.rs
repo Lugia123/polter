@@ -26,6 +26,7 @@
 //! | [`rightpage`] | the right side's five pages: the tabs over it, which is pressed, where a page goes |
 //! | [`tasks`] | the task page's data: the core's `tasks` answer, read |
 //! | [`tasks_scene`] | the task page laid out and drawn: the goal, the tasks, the open one's detail, the keys |
+//! | [`overall`] | the `overall` page's group block, read: the four parts of a group's cost and the card's own numbers (task 3167) |
 //! | [`workdirs`] | the working-directories page's data: the core's `workdirs` answer and one level of a directory, read, and the tree the person opens |
 //! | [`workdirs_scene`] | the working-directories page laid out and drawn: the activity bar, the sidebar and the workbench |
 //! | [`scene`] | everything the panel draws, as a list of rectangles, words and glyphs for a host to paint |
@@ -68,6 +69,7 @@ pub mod list;
 pub mod lone;
 pub mod look;
 pub mod pane;
+pub mod overall;
 pub mod pane_color;
 pub mod level;
 pub mod perf;

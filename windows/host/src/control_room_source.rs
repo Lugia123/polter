@@ -235,10 +235,16 @@ pub fn page(request: &str) -> Result<String, String> {
 fn test_answer(request: &str) -> Result<String, String> {
     static SAID_RESOURCES: AtomicBool = AtomicBool::new(false);
     static SAID_TASKS: AtomicBool = AtomicBool::new(false);
+    static SAID_OVERALL: AtomicBool = AtomicBool::new(false);
     let (var, said) = if request.contains(r#""page":"resources""#) {
         ("POLTER_TEST_RESOURCES_JSON", &SAID_RESOURCES)
     } else if request.contains(r#""page":"tasks""#) {
         ("POLTER_TEST_TASKS_JSON", &SAID_TASKS)
+    } else if request.contains(r#""page":"overall""#) {
+        // The group block under the history grid (task 3167): the same fake
+        // answers the performance page's own page has, for a machine whose
+        // core predates the strip.
+        ("POLTER_TEST_OVERALL_JSON", &SAID_OVERALL)
     } else {
         return Err("NoExport".into());
     };

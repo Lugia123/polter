@@ -16,7 +16,8 @@
 
 use crate::layout::Rect;
 use crate::level::{level_ink, Level};
-use crate::look::{font, perf_card as c, perf_grid as g, perf_page as p, Rgba, Theme};
+use crate::look::{font, group_strip as gs, perf_card as c, perf_grid as g, perf_page as p, Rgba, Theme};
+use crate::overall::{self, Group};
 use crate::perf::{Card, Curves, Resources, Span, Toned};
 use crate::scene::{self, Align, Face, Item, Part, Piece, Side, Style};
 
@@ -165,6 +166,10 @@ pub struct Layout {
     pub axis: Rect,
     pub cards_head: Rect,
     pub cards: Vec<Rect>,
+    /// The group's own cost between the box and the cards (task 3167);
+    /// none when the core sent no group, and then the cards stand where
+    /// they did.
+    pub strip: Option<Rect>,
     /// How tall the page is unscrolled: what `scroll` is held under.
     pub content_height: f64,
 }
@@ -300,7 +305,71 @@ pub fn drew_line(r: &Resources, at: &Layout) -> String {
     )
 }
 
-pub fn layout(r: &Resources, width: f64, scroll: f64, theme: &Theme, measure: Measure) -> Layout {
+/// **How tall the group's strip is**, from the look's own numbers and
+/// nothing measured (the mac host's `groupStripHeight`): a word in either
+/// box getting longer must not move the cards under it.
+pub fn strip_height() -> f64 {
+    let left = gs::PAD_Y + gs::HEAD_HEIGHT + gs::BAR_TOP + gs::BAR_HEIGHT
+        + gs::LEGEND_TOP + strip_legend_height() + gs::PAD_Y;
+    let card = gs::PAD_Y + gs::HEAD_HEIGHT.max(gs::TAG_HEIGHT)
+        + gs::CARD_LINE_GAP + gs::CARD_VALUE_HEIGHT
+        + gs::CARD_FOOT_GAP + gs::LEGEND_ROW
+        + gs::CARD_FOOT_GAP + gs::LEGEND_ROW
+        + gs::PAD_Y;
+    left.max(card)
+}
+
+/// The legend's room: `LEGEND_ROWS` lines and the gaps between them. **A
+/// fixed count**, because a height worked out from how many entries fit
+/// would move the cards (task 3167; the mac host's
+/// `groupStripLegendHeight`).
+pub fn strip_legend_height() -> f64 {
+    gs::LEGEND_ROWS * gs::LEGEND_ROW + (gs::LEGEND_ROWS - 1.0).max(0.0) * gs::LEGEND_GAP_Y
+}
+
+/// The strip's three widths in a row `width` points wide: the card is
+/// `CARD_WIDTH` at the right (or what there is), the bar's box takes what is
+/// left less the gap, and the bar is that box less its two paddings (the
+/// mac host's `ControlRoomGroupOwnRow.layout`).
+pub fn strip_columns(width: f64) -> (f64, f64, f64) {
+    let w = width.max(0.0);
+    let card = gs::CARD_WIDTH.min(w);
+    let left = (w - card - gs::GAP).max(0.0);
+    (left, card, (left - 2.0 * gs::PAD_X).max(0.0))
+}
+
+/// **The four legend entries on the lines `LEGEND_ROWS` reserves for
+/// them**: as many as fit on a line with `gap` between two, the rest on the
+/// next (the mac host's `legendLines`). The four are the core's own, so this
+/// is where they are drawn, not how many there are.
+pub fn legend_lines(widths: &[f64], room: f64, gap: f64) -> Vec<Vec<usize>> {
+    let room = room.max(0.0);
+    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        let last = lines.len() - 1;
+        if !lines[last].is_empty() && used + gap + w > room {
+            lines.push(Vec::new());
+            used = 0.0;
+        }
+        let last = lines.len() - 1;
+        if !lines[last].is_empty() {
+            used += gap;
+        }
+        used += w;
+        lines[last].push(i);
+    }
+    lines
+}
+
+pub fn layout(
+    r: &Resources,
+    width: f64,
+    scroll: f64,
+    theme: &Theme,
+    measure: Measure,
+    group: Option<&Group>,
+) -> Layout {
     let x0 = p::PADDING;
     let inner = (width - 2.0 * p::PADDING).max(0.0);
     let y0 = p::PADDING - scroll;
@@ -320,9 +389,21 @@ pub fn layout(r: &Resources, width: f64, scroll: f64, theme: &Theme, measure: Me
     let rows_h = if n == 0 { 0.0 } else { n as f64 * g::ROW_HEIGHT + (n - 1) as f64 * g::ROW_GAP };
     let axis = Rect { x: top.x, y: rows_top + rows_h + g::AXIS_GAP, w: top.w, h: g::AXIS_HEIGHT };
     let summary = Rect { x: x0, y: y0, w: inner, h: axis.y + axis.h + p::SUMMARY_PAD_Y - y0 };
+    // The group's own cost, between the box above and the cards below (task
+    // 3167): **drawn only when the core's answer carries this group**, so a
+    // page whose core has nothing yet looks exactly as it did (the mac
+    // host's `showsStrip`).
+    let strip = group.map(|_| Rect {
+        x: x0,
+        y: summary.y + summary.h + gs::TOP,
+        w: inner,
+        h: strip_height(),
+    });
+    let after_strip = summary.y + summary.h
+        + if strip.is_some() { gs::TOP + strip_height() + gs::BOTTOM } else { 0.0 };
     let cards_head = Rect {
         x: x0 + p::CARDS_TITLE_INSET,
-        y: summary.y + summary.h + p::CARDS_TITLE_TOP,
+        y: after_strip + p::CARDS_TITLE_TOP,
         w: (inner - 2.0 * p::CARDS_TITLE_INSET).max(0.0),
         h: p::CARDS_TITLE_HEIGHT,
     };
@@ -352,6 +433,7 @@ pub fn layout(r: &Resources, width: f64, scroll: f64, theme: &Theme, measure: Me
         axis,
         cards_head,
         cards,
+        strip,
         content_height: bottom + scroll,
     }
 }
@@ -422,7 +504,17 @@ fn cell_color(theme: &Theme, level: Level, ground: Rgba) -> Rgba {
 /// The page under `at`, with `hovered` -- `(row, cell)` -- lit and its
 /// tip drawn when the core says something about it.
 #[allow(clippy::too_many_arguments)]
-pub fn build(r: &Resources, curves: &Curves, at: &Layout, theme: &Theme, scale: f64, hovered: Option<(usize, usize)>, measure: Measure) -> Vec<Draw> {
+pub fn build(
+    r: &Resources,
+    curves: &Curves,
+    at: &Layout,
+    theme: &Theme,
+    scale: f64,
+    hovered: Option<(usize, usize)>,
+    measure: Measure,
+    group: Option<&Group>,
+    tr: &dyn Fn(&str) -> String,
+) -> Vec<Draw> {
     let ground = theme.terminal_background;
     let panel = scene::over(ground, theme.perf_card, 1.0);
     let panel_edge = scene::over(panel, theme.perf_card_edge, scene::hairline(scale).1);
@@ -572,6 +664,12 @@ pub fn build(r: &Resources, curves: &Curves, at: &Layout, theme: &Theme, scale: 
         over_cards.push(words(&r.now_note, secondary, Side::Trail, 0.0));
     }
     out.push(line(at.cards_head, over_cards));
+    // **This group's cost**, split four ways, between the box above and the
+    // cards below (task 3167): the four segments, their legend and the
+    // group-itself card. Drawn only when the answer carried the group.
+    if let (Some(rect), Some(g)) = (at.strip, group) {
+        out.extend(draw_strip(g, rect, theme, scale, measure, tr));
+    }
     for (card, rect) in r.cards.iter().zip(&at.cards) {
         out.extend(build_card(card, curves.points(&card.id), *rect, r.now_ms, curve_span(r), theme, scale, measure));
     }
@@ -580,6 +678,179 @@ pub fn build(r: &Resources, curves: &Curves, at: &Layout, theme: &Theme, scale: 
         out.extend(build_tip(r, at, row, cell, theme, scale, measure));
     }
     tidy(out)
+}
+
+/// **This group's cost, split four ways** (task 3167; the mac host's
+/// `ControlRoomGroupOwnRow`): the bar's box on the left -- the title, four
+/// segments of `Parts::sum_mib` and a four-entry legend on the lines the
+/// look reserves -- and the group-itself card at the right.
+///
+/// **Every number is the core's**: the four parts, `own.rising`, the slope,
+/// the chat's pid, the tasks and the record. The words are the host's, in
+/// the person's language, asked of `tr` here; a translation that reorders
+/// an argument is [`overall::sentence`]'s.
+fn draw_strip(
+    group: &Group,
+    rect: Rect,
+    theme: &Theme,
+    scale: f64,
+    measure: Measure,
+    tr: &dyn Fn(&str) -> String,
+) -> Vec<Draw> {
+    let (left_w, card_w, bar_w) = strip_columns(rect.w);
+    let left = Rect { w: left_w, ..rect };
+    let card = Rect { x: rect.x + left_w + gs::GAP, w: card_w, ..rect };
+    let ground = theme.terminal_background;
+    let panel = scene::over(ground, theme.perf_card, 1.0);
+    let edge = scene::over(panel, theme.perf_card_edge, scene::hairline(scale).1);
+    let warn = group.own.growth.rising;
+    let mut out = Vec::new();
+
+    // ---- the bar's box
+    out.push(Draw::Item(Item::Round { rect: left, radius: gs::BOX_RADIUS, color: panel, edge: Some(edge) }));
+    let ix = left.x + gs::PAD_X;
+    let iw = (left.w - 2.0 * gs::PAD_X).max(0.0);
+    let mut y = left.y + gs::PAD_Y;
+    out.push(Draw::Item(Item::Line {
+        rect: Rect { x: ix, y, w: iw, h: gs::HEAD_HEIGHT },
+        parts: vec![
+            words(&tr(overall::msg::TITLE), strong(theme.text), Side::Lead, 0.0),
+            words(&tr(overall::msg::SUBTITLE), l3(theme.text_secondary), Side::Lead, gs::GAP),
+        ],
+    }));
+    y += gs::HEAD_HEIGHT + gs::BAR_TOP;
+    let bar = Rect { x: ix, y, w: bar_w, h: gs::BAR_HEIGHT };
+    // The bar's ground, so a group that costs nothing still shows the bar
+    // there is nothing in (the design's `.comp .segbar` on `--line-faint`).
+    out.push(Draw::Item(Item::Round { rect: bar, radius: gs::BAR_RADIUS, color: theme.line_faint, edge: None }));
+    let widths = group.bar_widths(bar_w);
+    let inks = [
+        theme.seg_supervisor,
+        theme.seg_workers,
+        theme.seg_yours,
+        if warn { theme.strip_warn } else { theme.seg_own },
+    ];
+    let mut seg_x = bar.x;
+    for (i, w) in widths.iter().enumerate() {
+        if *w <= 0.0 {
+            continue;
+        }
+        let r = Rect { x: seg_x, y: bar.y, w: *w, h: bar.h };
+        if i == 3 {
+            // **The group's own part is the one outlined** (the design's
+            // `.segbar .gp`'s `inset 0 0 0 1px`), and orange while it is
+            // rising.
+            out.push(Draw::Item(Item::Round { rect: r, radius: 0.0, color: inks[i], edge: Some(theme.seg_own_edge) }));
+        } else {
+            out.push(Draw::Item(Item::Fill { rect: r, color: inks[i] }));
+        }
+        seg_x += *w;
+    }
+    // ---- the legend, on the lines the look reserves
+    y += gs::BAR_HEIGHT + gs::LEGEND_TOP;
+    let name_style = l3(theme.text_secondary);
+    let value_style = strong(theme.text);
+    let entries: [(String, String, Rgba, bool); 4] = [
+        (tr(overall::msg::SUPERVISOR), overall::size(group.parts.supervisor_mib), theme.seg_supervisor, false),
+        (tr(overall::msg::WORKERS), overall::size(group.parts.workers_mib), theme.seg_workers, false),
+        (tr(overall::msg::YOURS), overall::size(group.parts.yours_mib), theme.seg_yours, false),
+        (tr(overall::msg::GROUP_ITSELF), overall::size(group.parts.own_mib), inks[3], true),
+    ];
+    // Between a name and its number: the one space a reader needs, as the
+    // mac host has it (not a designed number).
+    const NAME_VALUE_GAP: f64 = 4.0;
+    let widths: Vec<f64> = entries
+        .iter()
+        .map(|(name, value, _, _)| {
+            gs::LEGEND_SWATCH + gs::LEGEND_SWATCH_GAP + measure(name, &name_style).ceil() + NAME_VALUE_GAP
+                + measure(value, &value_style).ceil()
+        })
+        .collect();
+    let lines = legend_lines(&widths, bar_w, gs::LEGEND_GAP_X);
+    for (li, line) in lines.iter().enumerate().take(gs::LEGEND_ROWS as usize) {
+        let ly = y + li as f64 * (gs::LEGEND_ROW + gs::LEGEND_GAP_Y);
+        let mut x = ix;
+        for &i in line {
+            let (name, value, ink, own) = &entries[i];
+            out.push(Draw::Item(Item::Round {
+                rect: Rect { x, y: ly + (gs::LEGEND_ROW - gs::LEGEND_SWATCH) / 2.0, w: gs::LEGEND_SWATCH, h: gs::LEGEND_SWATCH },
+                radius: gs::LEGEND_SWATCH_RADIUS,
+                color: *ink,
+                edge: own.then_some(theme.seg_own_edge),
+            }));
+            x += gs::LEGEND_SWATCH + gs::LEGEND_SWATCH_GAP;
+            let nw = measure(name, &name_style);
+            out.push(text(Rect { x, y: ly, w: nw, h: gs::LEGEND_ROW }, name, name_style, Align::Left));
+            x += nw + NAME_VALUE_GAP;
+            let vw = measure(value, &value_style);
+            out.push(text(Rect { x, y: ly, w: vw, h: gs::LEGEND_ROW }, value, value_style, Align::Left));
+            x += vw + gs::LEGEND_GAP_X;
+        }
+    }
+
+    // ---- the group-itself card
+    let card_edge = if warn { theme.strip_warn_edge } else { edge };
+    out.push(Draw::Item(Item::Round { rect: card, radius: gs::CARD_RADIUS, color: panel, edge: Some(card_edge) }));
+    let cx = card.x + gs::PAD_X;
+    let cw = (card.w - 2.0 * gs::PAD_X).max(0.0);
+    let mut cy = card.y + gs::PAD_Y;
+    out.push(text(
+        Rect { x: cx, y: cy, w: cw, h: gs::TAG_HEIGHT },
+        &tr(overall::msg::GROUP_ITSELF),
+        strong(theme.text),
+        Align::Left,
+    ));
+    if warn {
+        // **The tag is the core's verdict and not a second reading**: drawn
+        // only while `own.growth.rising` is true, which is also what turns
+        // the card's edge orange.
+        let tag = tr(overall::msg::RISING);
+        let tag_style = strong(theme.level_warn2_text);
+        let tw = (measure(&tag, &tag_style) + 2.0 * gs::TAG_PAD_X).min(cw);
+        let tag_rect = Rect { x: cx + cw - tw, y: cy + (gs::TAG_HEIGHT - gs::TAG_HEIGHT) / 2.0, w: tw, h: gs::TAG_HEIGHT };
+        out.push(Draw::Item(Item::Round { rect: tag_rect, radius: gs::TAG_RADIUS, color: theme.strip_warn, edge: None }));
+        out.push(text(tag_rect, &tag, tag_style, Align::Centre));
+    }
+    cy += gs::HEAD_HEIGHT.max(gs::TAG_HEIGHT) + gs::CARD_LINE_GAP;
+    let big = Style { size: c::FONT_VALUE, weight: font::WEIGHT_EMPHASIS, face: Face::Ui, color: theme.text };
+    // The direction mark is the core's verdict; the words after it are the
+    // translator's (`%@ an hour`, with the rate already signed).
+    let mark = if warn { overall::RISING_MARK } else { "→" };
+    let rate = format!("{} {}", mark, overall::sentence(&tr(overall::msg::AN_HOUR), &[overall::rate(group.own.growth.slope_mib_per_h)]));
+    let rate_style = l3(if warn { theme.level_warn2_text } else { theme.text_secondary });
+    out.push(Draw::Item(Item::Line {
+        rect: Rect { x: cx, y: cy, w: cw, h: gs::CARD_VALUE_HEIGHT },
+        parts: vec![
+            words(&overall::size(group.own.chat_mib), big, Side::Lead, 0.0),
+            words(&rate, rate_style, Side::Lead, gs::GAP),
+        ],
+    }));
+    cy += gs::CARD_VALUE_HEIGHT + gs::CARD_FOOT_GAP;
+    // The first foot: what the group's chat is, in the one sentence the
+    // core's two fields pick (the mac host's `Words.init`).
+    let foot1 = match (group.own.growth.rising, group.own.growth.since.as_deref(), group.own.chat_pid) {
+        (true, Some(since), _) => overall::sentence(
+            &tr(overall::msg::CHAT_RISING),
+            &[overall::size(group.own.chat_mib), since.to_string()],
+        ),
+        (_, _, Some(pid)) => overall::sentence(
+            &tr(overall::msg::CHAT_PID),
+            &[overall::size(group.own.chat_mib), pid.to_string()],
+        ),
+        _ => tr(overall::msg::NO_CHAT),
+    };
+    out.push(text(Rect { x: cx, y: cy, w: cw, h: gs::LEGEND_ROW }, &foot1, name_style, Align::Left));
+    cy += gs::LEGEND_ROW + gs::CARD_FOOT_GAP;
+    let foot2 = overall::sentence(
+        &tr(overall::msg::TASKS),
+        &[
+            group.own.tasks.to_string(),
+            group.own.tasks_open.to_string(),
+            overall::record(group.own.record_bytes),
+        ],
+    );
+    out.push(text(Rect { x: cx, y: cy, w: cw, h: gs::LEGEND_ROW }, &foot2, name_style, Align::Left));
+    out
 }
 
 /// Nothing empty is handed on (`scene::draws`): a core that has nothing to
@@ -810,8 +1081,8 @@ mod tests {
     #[test]
     fn a_page_with_every_nullable_field_null_is_drawn_without_those_items() {
         let r = decode(NULLS).unwrap();
-        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal);
-        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal, None);
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
         let said = format!("{d:?}");
         for c in &r.cards {
             assert!(said.contains(&format!("{:?}", c.name)), "{}", c.name);
@@ -827,6 +1098,11 @@ mod tests {
 
     /// No font: a character is `stack_tab::NOMINAL_CELL_WIDTH` scaled by the
     /// size over the body's, a wide one two.
+    /// The `tr` the existing tests pass: the catalogue is not consulted.
+    fn same(s: &str) -> String {
+        s.to_string()
+    }
+
     fn nominal(s: &str, style: &Style) -> f64 {
         let cells: usize = s.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum();
         cells as f64 * crate::look::stack_tab::NOMINAL_CELL_WIDTH * style.size / font::BODY
@@ -834,7 +1110,7 @@ mod tests {
 
     fn page(width: f64) -> (Resources, Layout) {
         let r = decode(DAY).unwrap();
-        let at = layout(&r, width, 0.0, &DARK, &nominal);
+        let at = layout(&r, width, 0.0, &DARK, &nominal, None);
         (r, at)
     }
 
@@ -926,7 +1202,7 @@ mod tests {
         // A group's gap stands between the sixth and the seventh at
         // whatever the cells are scaled to (1040 wide: 840 of room).
         let r = decode(WEEK).unwrap();
-        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal);
+        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal, None);
         let between = at.cell_rect(0, 6).unwrap().x - at.cell_rect(0, 5).unwrap().x;
         assert!((between - (at.cells.size + at.cells.gap + at.cells.group_gap)).abs() < 1e-9);
         assert!(between > 16.0 + 7.0, "the room is wider than the cells need: {between}");
@@ -973,8 +1249,8 @@ mod tests {
     fn on_a_narrow_page_the_overview_says_less_but_nothing_is_cut_or_overlaps() {
         let r = decode(DAY).unwrap();
         for width in [449.0, 588.0, 1028.0] {
-            let at = layout(&r, width, 0.0, &DARK, &nominal);
-            let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+            let at = layout(&r, width, 0.0, &DARK, &nominal, None);
+            let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
             let its = items(&d);
             // The machine's line: its parts, whole, inside it.
             let line = its.iter().find_map(|i| match i {
@@ -1002,8 +1278,8 @@ mod tests {
         }
         // Wide, everything is said; narrow, the day is the first to go.
         let said = |width: f64| {
-            let at = layout(&r, width, 0.0, &DARK, &nominal);
-            format!("{:?}", build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal))
+            let at = layout(&r, width, 0.0, &DARK, &nominal, None);
+            format!("{:?}", build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same))
         };
         assert!(said(1028.0).contains("24 小时内中断"));
         assert!(!said(449.0).contains("24 小时内中断"));
@@ -1016,8 +1292,8 @@ mod tests {
     fn over_the_cards_the_note_goes_first() {
         let r = decode(DAY).unwrap();
         let note_drawn = |width: f64| {
-            let at = layout(&r, width, 0.0, &DARK, &nominal);
-            let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+            let at = layout(&r, width, 0.0, &DARK, &nominal, None);
+            let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
             items(&d).iter().any(|i| matches!(i, Item::Line { rect, parts } if rect.y == at.cards_head.y && parts.iter().any(|p| matches!(&p.piece, Piece::Words { text, .. } if *text == r.now_note))))
         };
         assert!(note_drawn(1400.0));
@@ -1037,15 +1313,15 @@ mod tests {
         // clamped). At 911 and 965 the rooms are exactly what they need and
         // the line names the look's own 13.
         let w = decode(WEEK).unwrap();
-        let at = layout(&w, 1388.0, 0.0, &DARK, &nominal);
+        let at = layout(&w, 1388.0, 0.0, &DARK, &nominal, None);
         assert_eq!(at.cells.size, x::MAX_CELL);
         assert!(drew_line(&w, &at).starts_with("answer span=week cells=42 first pane=42; drew 42 cells from 0 in 7 group(s), 20 pt"), "{}", drew_line(&w, &at));
-        let at = layout(&w, 711.0 + 200.0, 0.0, &DARK, &nominal);
+        let at = layout(&w, 711.0 + 200.0, 0.0, &DARK, &nominal, None);
         assert!(drew_line(&w, &at).ends_with("13 pt at width 911"), "{}", drew_line(&w, &at));
         let d = decode(DAY).unwrap();
-        let at = layout(&d, 1388.0, 0.0, &DARK, &nominal);
+        let at = layout(&d, 1388.0, 0.0, &DARK, &nominal, None);
         assert!(drew_line(&d, &at).starts_with("answer span=day cells=48 first pane=48; drew 48 cells from 0 in 1 group(s), 20 pt"));
-        let at = layout(&d, 588.0, 0.0, &DARK, &nominal);
+        let at = layout(&d, 588.0, 0.0, &DARK, &nominal, None);
         assert_eq!((at.cells.drawn(), at.cells.first), (39, 9));
         assert!(drew_line(&d, &at).ends_with("8 pt at width 588"), "{}", drew_line(&d, &at));
     }
@@ -1055,7 +1331,7 @@ mod tests {
         let room = |at: &Layout| at.top.w - g::LABEL_WIDTH - g::LABEL_GAP;
         // Room for 600: 48 cells scaled, all of them, ending at the room's end.
         let r = decode(DAY).unwrap();
-        let at = layout(&r, 600.0 + 144.0 + 32.0 + 24.0, 0.0, &DARK, &nominal);
+        let at = layout(&r, 600.0 + 144.0 + 32.0 + 24.0, 0.0, &DARK, &nominal, None);
         assert_eq!(room(&at), 600.0);
         let c = at.cells;
         assert_eq!(c.first, 0);
@@ -1064,7 +1340,7 @@ mod tests {
         assert!((last.x + last.w - (at.cells_x + 600.0)).abs() < 1e-9, "{last:?}");
         assert_eq!(last.w, last.h, "square");
         // The window's first size on the test machine: a page 588 wide.
-        let at = layout(&r, 588.0, 0.0, &DARK, &nominal);
+        let at = layout(&r, 588.0, 0.0, &DARK, &nominal, None);
         let c = at.cells;
         assert_eq!((c.size, c.gap), (x::MIN_CELL, x::MIN_CELL_GAP));
         // 388 of room: 39 cells of 8 with 2 between -- the newest 39.
@@ -1075,7 +1351,7 @@ mod tests {
         assert_eq!(last.x + last.w, at.cells_x + 388.0, "against the right end");
         assert!(at.cell_rect(0, c.first).unwrap().x >= at.cells_x);
         // Nothing is drawn past the frame, and the axis only under drawn cells.
-        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
         let frame_right = at.summary.x + at.summary.w;
         for i in items(&d) {
             if let Item::Round { rect, .. } = i {
@@ -1104,7 +1380,7 @@ mod tests {
         let room = |at: &Layout| at.top.w - g::LABEL_WIDTH - g::LABEL_GAP;
         // A page 1200 wide leaves 1000 of room, against the day's 765 at
         // the look's size: 1000/765 of 13 is 16.993464052287582.
-        let at = layout(&r, 1200.0, 0.0, &DARK, &nominal);
+        let at = layout(&r, 1200.0, 0.0, &DARK, &nominal, None);
         assert_eq!(room(&at), 1000.0);
         assert!(at.cells.size > g::CELL);
         assert!((at.cells.size - 1000.0 / 765.0 * 13.0).abs() < 1e-9);
@@ -1115,13 +1391,13 @@ mod tests {
         assert!(at.cells.first == 0 && at.cells.drawn() == 48);
         // And no wider than the cap: past it the empty side comes back,
         // which is `x::MAX_CELL` and not the bug.
-        let wide = layout(&r, 3000.0, 0.0, &DARK, &nominal);
+        let wide = layout(&r, 3000.0, 0.0, &DARK, &nominal, None);
         assert_eq!(wide.cells.size, x::MAX_CELL);
         assert!(wide.cell_rect(0, 47).unwrap().x + x::MAX_CELL < wide.cells_x + room(&wide), "past the cap the rest is left empty");
         // A week too: 42 of 13 with 41 of 3 and 6 of 7 need 711, and 1200
         // leaves 1000.
         let w = decode(WEEK).unwrap();
-        let at = layout(&w, 1200.0, 0.0, &DARK, &nominal);
+        let at = layout(&w, 1200.0, 0.0, &DARK, &nominal, None);
         assert!((at.cells.size - 1000.0 / 711.0 * 13.0).abs() < 1e-9, "{}", at.cells.size);
     }
 
@@ -1143,8 +1419,8 @@ mod tests {
     #[test]
     fn scrolled_everything_moves_up_and_the_page_scrolls_no_further_than_its_end() {
         let r = decode(DAY).unwrap();
-        let a = layout(&r, 1040.0, 0.0, &DARK, &nominal);
-        let b = layout(&r, 1040.0, 100.0, &DARK, &nominal);
+        let a = layout(&r, 1040.0, 0.0, &DARK, &nominal, None);
+        let b = layout(&r, 1040.0, 100.0, &DARK, &nominal, None);
         assert_eq!(b.cards[5].y, a.cards[5].y - 100.0);
         // Scaled cells put the middle of a row at a number that is not
         // exact (95.86274509803921 of 94 + 1.8627450980392126), so this is
@@ -1159,7 +1435,7 @@ mod tests {
     fn the_dial_fills_to_its_fraction_and_no_further_and_a_card_without_a_line_has_no_ticks() {
         let (r, at) = page(1040.0);
         let c = Curves::default();
-        let d = build(&r, &c, &at, &DARK, 1.0, None, &nominal);
+        let d = build(&r, &c, &at, &DARK, 1.0, None, &nominal, None, &same);
         let arcs: Vec<(f64, f64)> = d.iter().filter_map(|d| if let Draw::Arc { from, sweep, .. } = d { Some((*from, *sweep)) } else { None }).collect();
         // Track and reading per card: 16 arcs, every one from 150°.
         assert_eq!(arcs.len(), 16);
@@ -1231,7 +1507,7 @@ mod tests {
     fn every_word_drawn_is_the_cores_and_nothing_is_set_below_the_body_size() {
         let (r, at) = page(1040.0);
         let c = Curves::default();
-        let d = build(&r, &c, &at, &DARK, 1.0, Some((3, 46)), &nominal);
+        let d = build(&r, &c, &at, &DARK, 1.0, Some((3, 46)), &nominal, None, &same);
         let mut said = Vec::new();
         for i in items(&d) {
             match i {
@@ -1263,7 +1539,7 @@ mod tests {
     #[test]
     fn the_legend_is_at_the_headings_right_swatch_then_words() {
         let (r, at) = page(1040.0);
-        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
         let swatches: Vec<Rect> = items(&d)
             .into_iter()
             .filter_map(|i| match i {
@@ -1303,8 +1579,8 @@ mod tests {
             c.foot.1 = String::new();
         }
         r.machine.swap = Some(String::new());
-        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal);
-        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal);
+        let at = layout(&r, 1040.0, 0.0, &DARK, &nominal, None);
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, None, &same);
         for i in items(&d) {
             match i {
                 Item::Text { text, .. } => assert!(!text.is_empty()),
@@ -1318,4 +1594,86 @@ mod tests {
             }
         }
     }
+
+    /// **No group, no strip** (task 3167; the mac host's `showsStrip`): a
+    /// core whose answer carries no group leaves the page exactly as it
+    /// was, cards and all.
+    #[test]
+    fn a_page_with_no_group_draws_no_strip_and_the_cards_stay_put() {
+        let r = decode(DAY).unwrap();
+        let at = layout(&r, 1000.0, 0.0, &DARK, &nominal, None);
+        assert_eq!(at.strip, None);
+        assert_eq!(at.cards_head.y, at.summary.y + at.summary.h + p::CARDS_TITLE_TOP);
+
+        let g = crate::overall::decode(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-overall-group.json")))
+            .unwrap()
+            .expect("one group");
+        let with = layout(&r, 1000.0, 0.0, &DARK, &nominal, Some(&g));
+        let strip = with.strip.expect("the group's strip");
+        assert_eq!(strip.y, with.summary.y + with.summary.h + gs::TOP);
+        assert_eq!(strip.h, strip_height());
+        assert_eq!(strip.w, with.width - 2.0 * p::PADDING);
+        // The cards move down by the strip and the two gaps between them.
+        assert_eq!(with.cards_head.y, at.cards_head.y + gs::TOP + strip_height() + gs::BOTTOM);
+        assert_eq!(with.cards[0].y, at.cards[0].y + gs::TOP + strip_height() + gs::BOTTOM);
+    }
+
+    /// **The strip's words are asked of `tr`** (task 3167), as the task
+    /// page's are (task 3157): a marked `tr` proves the lookup, and an
+    /// identity one is the negative control.
+    #[test]
+    fn the_strips_words_are_looked_up_while_they_are_drawn() {
+        let r = decode(DAY).unwrap();
+        let g = crate::overall::decode(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/core-overall-group.json")))
+            .unwrap()
+            .expect("one group");
+        let at = layout(&r, 1000.0, 0.0, &DARK, &nominal, Some(&g));
+        let marked = |s: &str| format!("«{s}»");
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, Some(&g), &marked);
+        let said = format!("{d:?}");
+        for w in [
+            "«This group's cost»",
+            "«GB, one segment each, width by memory»",
+            "«Supervisor»",
+            "«Workers»",
+            "«Your terminals»",
+            "«The group itself»",
+            "«Rising»",
+            // The templates are filled before they are drawn: the marker
+            // wraps the sentence, the arguments are inside it.
+            "«+64 MB an hour»",
+            "«Embedded chat 80 MB · rising since 2026-11-11T09:00:00+08:00»",
+            "«Tasks 7 (3 open) · Group record 4.5 MB»",
+        ] {
+            assert!(said.contains(w), "{w:?} was not drawn");
+        }
+        // The numbers around them are the core's.
+        assert!(said.contains("120 MB") && said.contains("80 MB"));
+        // **The negative control**: identity `tr`, and the msgids are what
+        // the screen carries.
+        let d = build(&r, &Curves::default(), &at, &DARK, 1.0, None, &nominal, Some(&g), &same);
+        let plain = format!("{d:?}");
+        assert!(plain.contains("This group's cost") && !plain.contains("«"));
+    }
+
+    /// The four legend entries take as many lines as their measured widths
+    /// need, and the count the look reserves is fixed (task 3167).
+    #[test]
+    fn the_legend_wraps_by_measured_width_and_keeps_two_lines_reserved() {
+        let four = [100.0, 100.0, 100.0, 100.0];
+        assert_eq!(legend_lines(&four, 1000.0, gs::LEGEND_GAP_X), vec![vec![0, 1, 2, 3]]);
+        assert_eq!(legend_lines(&four, 250.0, gs::LEGEND_GAP_X), vec![vec![0, 1], vec![2, 3]]);
+        assert_eq!(legend_lines(&four, 50.0, gs::LEGEND_GAP_X), vec![vec![0], vec![1], vec![2], vec![3]]);
+        assert_eq!(strip_legend_height(), gs::LEGEND_ROWS * gs::LEGEND_ROW + (gs::LEGEND_ROWS - 1.0) * gs::LEGEND_GAP_Y);
+        assert_eq!(strip_height(), strip_height().max(0.0));
+    }
+
+    #[test]
+    fn the_strip_puts_a_fixed_card_at_the_right_and_the_bar_takes_the_rest() {
+        let (left, card, bar) = strip_columns(1000.0);
+        assert_eq!((left, card, bar), (1000.0 - gs::CARD_WIDTH - gs::GAP, gs::CARD_WIDTH, 1000.0 - gs::CARD_WIDTH - gs::GAP - 2.0 * gs::PAD_X));
+        let (left, card, bar) = strip_columns(200.0);
+        assert_eq!((left, card, bar), (0.0, 200.0, 0.0));
+    }
+
 }

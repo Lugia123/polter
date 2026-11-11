@@ -466,8 +466,8 @@ mod tests {
                             unsaid.push(what);
                         }
                     }
-                    let at = crate::perf_scene::layout(&r, 600.0, 0.0, &crate::look::DARK, &|s: &str, _: &crate::scene::Style| s.chars().count() as f64 * 7.0);
-                    let _ = crate::perf_scene::build(&r, &Curves::default(), &at, &crate::look::DARK, 1.0, None, &|s: &str, _: &crate::scene::Style| s.chars().count() as f64 * 7.0);
+                    let at = crate::perf_scene::layout(&r, 600.0, 0.0, &crate::look::DARK, &|s: &str, _: &crate::scene::Style| s.chars().count() as f64 * 7.0, None);
+                    let _ = crate::perf_scene::build(&r, &Curves::default(), &at, &crate::look::DARK, 1.0, None, &|s: &str, _: &crate::scene::Style| s.chars().count() as f64 * 7.0, None, &|s: &str| s.to_string());
                     checked += 1;
                 }
             }
