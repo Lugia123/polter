@@ -1371,8 +1371,8 @@ struct ControlRoomWorkdirsPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The workbench's bar: 40pt, the file across it, and the preview's own
-    /// kind at the right (`files.css`, `.fh`).
+    /// The workbench's bar: the file across it. Preview status belongs to
+    /// the preview page (3174).
     private var workHead: some View {
         HStack(spacing: Tile.headGap) {
             Text(workbenchTitle)
@@ -1381,10 +1381,6 @@ struct ControlRoomWorkdirsPage: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
-            Text(Tile.workbenchKind)
-                .font(.system(size: Tile.wordsSize))
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
         }
         .padding(.leading, Tile.headPadX)
         .padding(.trailing, Tile.headPadRightX)
@@ -1435,10 +1431,6 @@ struct ControlRoomWorkdirsPage: View {
     /// lines mean (`files.css`, `.foot`).
     private var workFoot: some View {
         HStack(spacing: Tile.footGap) {
-            Text(Tile.linesCount)
-                .font(.system(size: Tile.wordsSize))
-                .foregroundStyle(theme.textSecondary.color)
-                .lineLimit(1)
             Spacer(minLength: 0)
             Text(Tile.theirsLegend)
                 .font(.system(size: Tile.wordsSize))
@@ -2036,9 +2028,7 @@ private enum Tile {
     static let refreshFiles = String(localized: "Refresh files", comment: "工作目录页：资源管理器一侧刷新的提示")
     static let refreshSearch = String(localized: "Refresh search", comment: "工作目录页：搜索面板一侧刷新的提示")
     static let workbench = String(localized: "Workbench", comment: "工作目录页：右栏顶栏左侧，没有选中文件时的面包屑")
-    static let workbenchKind = String(localized: "Text preview", comment: "工作目录页：右栏顶栏右侧，当前用哪种预览")
     static let pickFile = String(localized: "Pick a file to see its code and its changes", comment: "工作目录页：右栏代码区为空时的提示")
-    static let linesCount = String(localized: "0 lines", comment: "工作目录页：右栏底栏左侧的行数")
     /// The legend for the bar beside a changed line. **No `{agent}` in it**,
     /// deliberately: the design writes 你打开以后 frontend 改过的行, and who
     /// changed a line is `PreviewSlot`'s to say.

@@ -1423,9 +1423,7 @@
 "No files" = "No files";
 "Collapse all" = "Collapse all";
 "Workbench" = "Workbench";
-"Text preview" = "Text preview";
 "Pick a file to see its code and its changes" = "Pick a file to see its code and its changes";
-"0 lines" = "0 lines";
 "The bars at the left mark lines changed after you opened this file" = "The bars at the left mark lines changed after you opened this file";
 "%@ directories" = "%@ directories";
 "%@ being changed" = "%@ being changed";
@@ -1551,3 +1549,15 @@
 "Close preview" = "Close preview";
 "File" = "File";
 "From %@ · %@" = "From %@ · %@";
+
+/* Text preview status and zoom (3174); placeholders are filled by the page. */
+"Ln {Line}, Col {Column}" = "Ln {Line}, Col {Column}";
+"{Count} lines" = "{Count} lines";
+"Spaces: 4" = "Spaces: 4";
+"End of Line: {EOL}" = "End of Line: {EOL}";
+"Mixed line endings" = "Mixed line endings";
+"No line ending" = "No line ending";
+"Other encoding" = "Other encoding";
+"Zoom Out" = "Zoom Out";
+"Zoom In" = "Zoom In";
+"Preview zoom" = "Preview zoom";

@@ -1498,9 +1498,7 @@
 "No files" = "暂无文件";
 "Collapse all" = "全部收起";
 "Workbench" = "工作台";
-"Text preview" = "文本预览";
 "Pick a file to see its code and its changes" = "选择文件以查看代码与改动";
-"0 lines" = "0 行";
 "The bars at the left mark lines changed after you opened this file" = "左边的竖条：这个文件在你打开以后被改过的行";
 "%@ directories" = "%@ 个";
 "%@ being changed" = "在改 %@ 个";
@@ -1615,3 +1613,15 @@
 "Close preview" = "关闭预览";
 "File" = "文件";
 "From %@ · %@" = "来自 %@ · %@";
+
+/* Text preview status and zoom (3174); placeholders are filled by the page. */
+"Ln {Line}, Col {Column}" = "行 {Line}，列 {Column}";
+"{Count} lines" = "{Count} 行";
+"Spaces: 4" = "空格: 4";
+"End of Line: {EOL}" = "换行: {EOL}";
+"Mixed line endings" = "混合换行";
+"No line ending" = "无换行";
+"Other encoding" = "其他编码";
+"Zoom Out" = "缩小";
+"Zoom In" = "放大";
+"Preview zoom" = "预览缩放";

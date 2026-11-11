@@ -135,7 +135,31 @@ enum WebViewShell {
             self.page = page
             self.navigation = Navigation(schemes: WebViewShell.allowedSchemes(page))
             self.windows = Windows()
-            self.view = WKWebView(frame: .zero, configuration: configuration(page))
+            let preview = TextPreviewWebView(frame: .zero, configuration: configuration(page))
+            preview.handlesTextZoom = page.entryURL?.scheme == PreviewPluginPage.scheme &&
+                page.entryURL?.host == "edit-text"
+            if preview.handlesTextZoom {
+                let strings = [
+                    "position": String(localized: "Ln {Line}, Col {Column}"),
+                    "lines": String(localized: "{Count} lines"),
+                    "spaces": String(localized: "Spaces: 4"),
+                    "lineEnding": String(localized: "End of Line: {EOL}"),
+                    "mixed": String(localized: "Mixed line endings"),
+                    "none": String(localized: "No line ending"),
+                    "otherEncoding": String(localized: "Other encoding"),
+                    "zoomOut": String(localized: "Zoom Out"),
+                    "zoomIn": String(localized: "Zoom In"),
+                    "zoom": String(localized: "Preview zoom"),
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: strings),
+                   let json = String(data: data, encoding: .utf8) {
+                    preview.configuration.userContentController.addUserScript(WKUserScript(
+                        source: "window.polterTextPreviewStrings = \(json);",
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: true))
+                }
+            }
+            self.view = preview
             view.navigationDelegate = navigation
             view.uiDelegate = windows
 
@@ -146,6 +170,26 @@ enum WebViewShell {
             view.allowsMagnification = false
 
             load(page, into: view)
+        }
+    }
+
+    /// Keep the text preview's zoom keys ahead of AppKit's font-size menu
+    /// equivalents. WebKit delivers the original event to the page's keydown
+    /// handler; the host does not calculate zoom or call page internals.
+    private final class TextPreviewWebView: WKWebView {
+        var handlesTextZoom = false
+
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option])
+            let key = event.charactersIgnoringModifiers ?? ""
+            if handlesTextZoom, event.type == .keyDown, modifiers == [.command],
+               ["+", "=", "-", "0"].contains(key),
+               let responder = window?.firstResponder as? NSView,
+               responder === self || responder.isDescendant(of: self) {
+                keyDown(with: event)
+                return true
+            }
+            return super.performKeyEquivalent(with: event)
         }
     }
 

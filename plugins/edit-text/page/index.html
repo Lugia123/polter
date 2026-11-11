@@ -55,12 +55,29 @@
     color: var(--text-tertiary, inherit); font-size: .85em;
   }
   main { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  pre {
-    margin: 0; padding: 10px 12px;
+  #text {
+    display: block; width: 100%; height: 100%; resize: none; border: 0; outline: none;
+    background: transparent; color: inherit; margin: 0; padding: 10px 12px;
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: var(--size-body, 13px); line-height: var(--line-height, 1.5);
     white-space: pre; tab-size: 4;
   }
+  [hidden] { display: none !important; }
+  footer {
+    flex: 0 0 auto; position: relative; display: flex; align-items: center;
+    gap: 12px; padding: 3px 10px; font-size: 12px;
+    border-top: 1px solid var(--line, rgba(128,128,128,.3));
+    color: var(--text-secondary, inherit); font-variant-numeric: tabular-nums;
+  }
+  .zoom { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+  button { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; padding: 3px 6px; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--text-secondary, Highlight); }
+  #zoom-menu {
+    position: absolute; right: 12px; bottom: 100%; padding: 12px;
+    background: var(--well, Canvas); border: 1px solid var(--line, GrayText);
+    border-radius: var(--radius-card, 4px);
+  }
+  #zoom-slider { writing-mode: vertical-lr; direction: rtl; width: 20px; height: 120px; }
   .notice {
     margin: 10px 12px; padding: 8px 10px;
     border: 1px solid var(--line, rgba(128,128,128,.3));
@@ -78,9 +95,19 @@
   <span class="meta" id="meta"></span>
 </header>
 <main>
-  <pre id="text" hidden></pre>
+  <textarea id="text" readonly wrap="off" spellcheck="false" hidden></textarea>
   <div class="empty" id="empty"></div>
 </main>
+<footer id="status" hidden>
+  <span id="position"></span><span id="lines"></span><span id="indent"></span>
+  <span id="encoding"></span><span id="eol"></span>
+  <div class="zoom">
+    <button id="zoom-out" type="button">−</button>
+    <button id="zoom-percent" type="button" aria-expanded="false" aria-controls="zoom-menu">100%</button>
+    <button id="zoom-in" type="button">+</button>
+    <div id="zoom-menu" hidden><input id="zoom-slider" type="range" min="50" max="200" step="25" value="100" orient="vertical"></div>
+  </div>
+</footer>
 
 <script>
 (function () {
@@ -107,7 +134,10 @@
       refused: "The preview could not be shown: {Why}",
       noBridge: "This page was opened without the preview bridge, so the file cannot be read.",
       encoding: "encoding",
-      eol: "end of line"
+      eol: "end of line",
+      position: "Ln {Line}, Col {Column}", lines: "{Count} lines", spaces: "Spaces: 4",
+      lineEnding: "End of Line: {EOL}", mixed: "Mixed", none: "None", otherEncoding: "Other encoding",
+      zoomOut: "Zoom Out", zoomIn: "Zoom In", zoom: "Zoom"
     },
     "zh-Hans": {
       loading: "正在读取文件…",
@@ -119,13 +149,16 @@
       refused: "没法显示这份预览：{Why}",
       noBridge: "这个页面没有带着预览桥打开，所以读不到文件。",
       encoding: "编码",
-      eol: "换行"
+      eol: "换行",
+      position: "行 {Line}，列 {Column}", lines: "{Count} 行", spaces: "空格: 4",
+      lineEnding: "换行: {EOL}", mixed: "混合", none: "无", otherEncoding: "其他编码",
+      zoomOut: "缩小", zoomIn: "放大", zoom: "缩放"
     }
   };
   var lang = (navigator.language || "en").toLowerCase();
   var L = strings[lang.indexOf("zh") === 0 ? "zh-Hans" : "en"];
   function say(key, vars) {
-    var s = L[key] || strings.en[key] || key;
+    var s = (window.polterTextPreviewStrings || {})[key] || L[key] || strings.en[key] || key;
     if (!vars) return s;
     for (var k in vars) s = s.split("{" + k + "}").join(vars[k]);
     return s;
@@ -136,8 +169,70 @@
     badge: document.getElementById("badge"),
     meta: document.getElementById("meta"),
     text: document.getElementById("text"),
-    empty: document.getElementById("empty")
+    empty: document.getElementById("empty"),
+    status: document.getElementById("status"), position: document.getElementById("position"),
+    lines: document.getElementById("lines"), indent: document.getElementById("indent"),
+    encoding: document.getElementById("encoding"), eol: document.getElementById("eol"),
+    zoomOut: document.getElementById("zoom-out"), zoomIn: document.getElementById("zoom-in"),
+    zoomPercent: document.getElementById("zoom-percent"), zoomMenu: document.getElementById("zoom-menu"),
+    zoomSlider: document.getElementById("zoom-slider")
   };
+
+  var zoom = 100, baseSize = 13, baseLineHeight = 19.5;
+  function setZoom(value) {
+    zoom = Math.max(50, Math.min(200, Number(value)));
+    document.documentElement.style.setProperty("--size-body", baseSize * zoom / 100 + "px");
+    document.documentElement.style.setProperty("--line-height", baseLineHeight * zoom / 100 + "px");
+    el.zoomPercent.textContent = zoom + "%";
+    el.zoomSlider.value = String(zoom);
+  }
+  function updatePosition() {
+    var before = el.text.value.slice(0, el.text.selectionStart || 0);
+    var rows = before.split(/\r\n|\r|\n/);
+    // Textarea's native selection and arrow navigation use UTF-16 offsets;
+    // count Unicode codepoints for the displayed column instead.
+    el.position.textContent = say("position", { Line: rows.length, Column: Array.from(rows[rows.length - 1]).length + 1 });
+  }
+  function showStatus(info, text) {
+    el.status.hidden = false;
+    el.lines.textContent = say("lines", { Count: text.split(/\r\n|\r|\n/).length });
+    el.indent.textContent = say("spaces");
+    el.encoding.textContent = ({ utf8: "UTF-8", utf8_bom: "UTF-8 BOM" })[info.encoding] || say("otherEncoding");
+    var ending = ({ lf: "LF", crlf: "CRLF", mixed: say("mixed"), none: say("none") })[info.eol] || say("none");
+    el.eol.textContent = ending;
+    el.eol.title = say("lineEnding", { EOL: ending });
+    el.text.setSelectionRange(0, 0);
+    updatePosition();
+  }
+  el.text.addEventListener("click", updatePosition);
+  el.text.addEventListener("keyup", updatePosition);
+  el.text.addEventListener("select", updatePosition);
+  document.addEventListener("selectionchange", updatePosition);
+  el.zoomOut.setAttribute("aria-label", say("zoomOut"));
+  el.zoomIn.setAttribute("aria-label", say("zoomIn"));
+  el.zoomPercent.setAttribute("aria-label", say("zoom"));
+  el.zoomSlider.setAttribute("aria-label", say("zoom"));
+  el.zoomOut.addEventListener("click", function () { setZoom(zoom - 25); });
+  el.zoomIn.addEventListener("click", function () { setZoom(zoom + 25); });
+  function closeZoom() { el.zoomMenu.hidden = true; el.zoomPercent.setAttribute("aria-expanded", "false"); }
+  el.zoomPercent.addEventListener("click", function () {
+    el.zoomMenu.hidden = !el.zoomMenu.hidden;
+    el.zoomPercent.setAttribute("aria-expanded", String(!el.zoomMenu.hidden));
+    if (!el.zoomMenu.hidden) el.zoomSlider.focus();
+  });
+  el.zoomSlider.addEventListener("input", function () { setZoom(el.zoomSlider.value); });
+  document.addEventListener("click", function (event) {
+    if (!el.zoomMenu.contains(event.target) && event.target !== el.zoomPercent) closeZoom();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !el.zoomMenu.hidden) { closeZoom(); el.zoomPercent.focus(); return; }
+    if (!event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+    if (event.key === "+" || event.key === "=") setZoom(zoom + 25);
+    else if (event.key === "-") setZoom(zoom - 25);
+    else if (event.key === "0") setZoom(100);
+    else return;
+    event.preventDefault();
+  });
 
   function bytes(n) {
     if (typeof n !== "number" || !isFinite(n)) return "";
@@ -190,8 +285,6 @@
     if (info.kind && info.kind !== "file") el.badge.textContent = info.kind;
     var parts = [];
     if (typeof info.size === "number") parts.push(bytes(info.size));
-    if (info.encoding) parts.push(say("encoding") + " " + info.encoding);
-    if (info.eol) parts.push(say("eol") + " " + info.eol);
     el.meta.textContent = parts.join(" · ");
   }
 
@@ -231,7 +324,7 @@
           // moves (`SettingsFont.minimumPointSize`).
           var body = look.size.body, min = look.size.min;
           var size = typeof min === "number" ? Math.max(body || min, min) : body;
-          if (typeof size === "number") root.setProperty("--size-body", size + "px");
+          if (typeof size === "number") baseSize = size;
           if (typeof look.size.line_height === "number") {
             // **px, because the host's number is a height and not a
             // multiple.** `ControlRoomLook.Font.lineHeightTerminal` is a point
@@ -242,7 +335,7 @@
             // be written here rather than guessed from the number: 20 is a
             // plausible multiple as well as a plausible height, which is the
             // whole reason the host names its token in points.
-            root.setProperty("--line-height", look.size.line_height + "px");
+            baseLineHeight = look.size.line_height;
           }
         }
         if (look && look.radius && typeof look.radius.card === "number") {
@@ -251,6 +344,7 @@
       } catch (e) { /* the tokens are a courtesy; the file is the job. */ }
     }
 
+    setZoom(zoom);
     el.empty.textContent = say("loading");
 
     var info;
@@ -273,6 +367,7 @@
     }
     if (info.size === 0) {
       el.empty.textContent = say("empty");
+      showStatus(info, "");
       return;
     }
 
@@ -290,7 +385,9 @@
     }
 
     var text = base64ToText(answer.base64);
+    el.text.value = text;
     el.text.textContent = text;
+    showStatus(info, text);
     el.text.hidden = false;
     el.empty.className = "empty";
     el.empty.textContent = "";
