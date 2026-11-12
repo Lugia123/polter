@@ -1305,23 +1305,52 @@ command: ?Command = null,
 /// Set it to `false` for a plain terminal that opens no socket at all.
 @"poltergeist-mcp": bool = true,
 
-/// How many agents may hold the socket at once.
+/// How many connections to the agent socket may be open at once.
 ///
-/// One connection is one agent CLI running in one terminal, and it lasts as
-/// long as that CLI does. The cap exists because each connection is a thread
-/// and a pair of buffers, and because anything that can reach the socket
-/// could otherwise spawn threads until the process ran out.
+/// **A connection is not a terminal** (task 3281). One agent CLI holds two,
+/// for as long as it runs: the one its tool calls go over, and a notifier
+/// that parks `persona_wait` on the server 30 seconds at a time. Each
+/// upstream MCP server handed to Polter (`+mcp-slot`) holds one more, in
+/// every terminal. So `K` terminals with `M` registered upstreams cost
+/// `K * (2 + M)` connections at worst -- the arithmetic in
+/// `dev-docs/poltergeist/personas-contract.md` 4.1.
 ///
-/// The number used to be a constant of 16 with a comment calling it
-/// generous. It was, for one person with a few terminals. It was measured
-/// full on an ordinary working day -- fifteen live agent CLIs, every one of
-/// them with a running parent, so nothing had leaked and nothing could be
-/// reclaimed -- and past that point *every new terminal* is refused, which
-/// is why this is a setting and not a larger constant. Whatever number is
-/// chosen here, somebody's day is the day they exceed it.
+/// The cap exists because each connection is a thread whose stack frame
+/// holds a 64 KiB read buffer and a 16 KiB write buffer, and because
+/// anything that can reach the socket could otherwise spawn threads until
+/// the process ran out.
+///
+/// # Why 256, and how 64 was wrong for seven weeks with nothing going red
+///
+/// 64 was chosen on 2026-09-10 (`7e97932b1`), when one agent terminal still
+/// held one connection: it had been measured full at 16, on an ordinary
+/// working day with fifteen live agent CLIs, every one with a running
+/// parent, so nothing had leaked. **Seven days later** the notifier's second
+/// connection landed (`2f74fb4a1`, 2026-09-17) and nobody re-derived the
+/// number -- 64 quietly meant 32 terminals from then on, and it stayed that
+/// way until it was measured again on 2026-11-12: 24 `+mcp` sidecars, 49
+/// accepted connections on one socket, and a 38-terminal fleet refused in
+/// bursts for two hours, every agent started in that window having no tools
+/// for its whole life.
+///
+/// **256 is the ceiling itself** (`Server.limit_max_connections`), not a
+/// number with room above it. The slot array is allocated once at startup
+/// and the server clamps what is written here, so a larger value is
+/// accepted, clamped, and quietly does not take effect -- raising the
+/// ceiling is a change to that constant and to the build.
+///
+/// # What it does not fix
+///
+/// A full table still costs an agent its tools. What is left when it is full
+/// is (i) `+mcp` retrying its handshake with backoff for 20 seconds, (ii)
+/// the alert the person sees, (iii) one log line a minute with how many were
+/// turned away. "Finished the work and cannot hand in the result" is **not**
+/// solved for a table that stays full -- the wall has only moved, from 38
+/// terminals to 128 at `M = 0` (64 at two upstreams each), where
+/// `K * (2 + M) = 256`.
 ///
 /// Valid range is 1 to 256.
-@"poltergeist-max-agents": u16 = 64,
+@"poltergeist-max-agents": u16 = 256,
 
 /// Lower the renderer mailbox's capacity, so that a full mailbox can be
 /// reached deliberately. **Zero, the default, means the built-in bound.**

@@ -51,12 +51,25 @@ pub const max_request_bytes = 64 * 1024;
 /// point every new terminal is refused for as long as the others live, and
 /// the refusal does not heal on its own.
 ///
-/// So the number is a setting now (`poltergeist-max-agents`). These bounds
-/// are here because a connection is a thread and two buffers, and because
-/// the array is allocated once at startup: zero would refuse everything and
-/// a very large value would reserve memory for connections that will never
-/// arrive.
-pub const default_max_connections = 64;
+/// ⚠️ **A slot is a connection, and one agent terminal holds two** (task
+/// 3281): its tool calls, and a notifier parked in `persona_wait`
+/// (`cli/mcp.zig::notifier`). Each registered upstream adds one more. So the
+/// number of terminals this admits is `limit / (2 + M)`, not `limit` -- and
+/// `64`, which was right for one connection per terminal on 2026-09-10, was
+/// quietly half of that a week later when the notifier landed, and stayed
+/// wrong for seven weeks. See `Config.@"poltergeist-max-agents"` for the
+/// counting, the measurement and what a full table still costs.
+///
+/// **The default is the ceiling** (`limit_max_connections`), and that is
+/// deliberate: `slotCount` clamps anything larger, so a default below the
+/// ceiling would mean the code can do more than the configuration it ships
+/// with ever asks for.
+///
+/// These bounds are here because a connection is a thread whose stack frame
+/// holds a 64 KiB read and a 16 KiB write buffer, and because the array is
+/// allocated once at startup: zero would refuse everything and a very large
+/// value would reserve memory for connections that will never arrive.
+pub const default_max_connections: usize = limit_max_connections;
 
 /// Room for a slot's sighting: every adapter's names and their values,
 /// checked to be short (`Plugin.AgentCli`, `agent_cli.Sighting`).

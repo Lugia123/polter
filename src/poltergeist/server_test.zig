@@ -915,3 +915,93 @@ test "1736: a token Polter does not know is still a refused token" {
     const hook_said = hook.deliver(f.io, f.path, wrong, .none);
     try testing.expectError(error.AuthRefused, hook_said);
 }
+
+// -- a full socket is waited out, not given up on (task 3281) ----------------
+//
+// Measured on 2026-11-12: every agent started into a fleet that held all 64
+// connections had no tools at all, for the two hours the socket stayed full
+// -- 421 turn-aways in ten minutes on an earlier day is the same shape. The
+// sidecar's own refusal is what made it permanent: it exited, and nothing
+// starts an MCP server again for that session.
+
+/// Give a held connection back after `ms`, from another thread -- the only
+/// way to make a slot free *while* `waitForSlot` is waiting for one.
+const Release = struct {
+    fn after(client: *Client, ms: u64) void {
+        client.io.sleep(.fromNanoseconds(ms * std.time.ns_per_ms), .awake) catch {};
+        client.close();
+    }
+};
+
+test "3281: a sidecar refused because every slot is in use waits for one and then connects" {
+    var f: Fixture = undefined;
+    try f.setupCap(true, 1);
+    defer f.deinit();
+
+    const token = try f.server.issueToken(worker);
+
+    // The one slot, taken -- the same arrangement 1736 uses.
+    var held = try f.connect();
+    var released: ?std.Thread = null;
+    defer if (released) |t| t.join() else held.close();
+
+    try expectOk(try held.auth(token));
+    try roundTrip(&held);
+
+    // ... and given back while the sidecar is waiting for it.
+    released = try std.Thread.spawn(.{}, Release.after, .{ &held, 80 });
+
+    var host = try mcp.waitForSlot(testing.allocator, f.io, f.path, token, .agent, "", .{
+        .deadline_ms = 5_000,
+        .first_ms = 20,
+        .max_ms = 100,
+    });
+    defer host.deinit();
+
+    // Connected **and** usable: a slot that opened but cannot be talked over
+    // would pass a weaker criterion than "the agent has its tools".
+    const reply = try host.call("{\"method\":\"me\"}");
+    try expectOk(reply);
+}
+
+test "3281: a refused token is not waited out -- only a full socket is temporary" {
+    var f: Fixture = undefined;
+    try f.setup(true);
+    defer f.deinit();
+
+    _ = try f.server.issueToken(worker);
+
+    // If a refused token went into the wait, the *first* sleep alone would
+    // be five seconds. The clock is the whole criterion here: both answers
+    // are `error.AuthFailed`, and only one of them comes back at once.
+    const wrong = "0" ** Server.token_len;
+    const started: std.Io.Timestamp = .now(f.io, .awake);
+    const refused = mcp.waitForSlot(testing.allocator, f.io, f.path, wrong, .agent, "", .{
+        .deadline_ms = 30_000,
+        .first_ms = 5_000,
+        .max_ms = 5_000,
+    });
+    const spent: u64 = @intCast(started.durationTo(.now(f.io, .awake)).toMilliseconds());
+
+    try testing.expectError(error.AuthFailed, refused);
+    try testing.expect(spent < 1_000);
+}
+
+test "3281: the default slot count holds a fleet, not a count of terminals" {
+    // One agent terminal is **two** connections (`+mcp`'s serve connection
+    // and its parked `persona_wait` notifier), and each upstream handed to
+    // Polter is one more. So the number that has to fit a working fleet is
+    // `K * (2 + M)`, and the day that was measured was 38 terminals -- the
+    // default has to hold that with room, not exactly it.
+    const fleet = 48;
+    const upstreams = 2;
+    const needed = fleet * (2 + upstreams);
+
+    try testing.expect(Server.default_max_connections >= needed);
+
+    // And it is the ceiling itself (`Config.@"poltergeist-max-agents"` says
+    // why): a value written above the ceiling is clamped rather than
+    // honoured, so a default below it would ship a configuration the build
+    // can already do better than.
+    try testing.expectEqual(Server.limit_max_connections, Server.default_max_connections);
+}

@@ -2086,32 +2086,71 @@ pub const entries = [_]Entry{
     },
     .{
         .key = .@"poltergeist-max-agents",
-        .en = "How many agents may hold the socket at once.",
-        .zh = "同时最多允许多少个 agent 占用该 socket。",
+        .en = "How many connections to the agent socket may be open at once.",
+        .zh = "同时最多允许多少条连接占用该 socket。",
         .full_en =
-        \\How many agents may hold the socket at once.
+        \\How many connections to the agent socket may be open at once.
         \\
-        \\One connection is one agent CLI running in one terminal, and it lasts as
-        \\long as that CLI does. The cap exists because each connection is a thread
-        \\and a pair of buffers, and because anything that can reach the socket
-        \\could otherwise spawn threads until the process ran out.
+        \\**A connection is not a terminal** (task 3281). One agent CLI holds two,
+        \\for as long as it runs: the one its tool calls go over, and a notifier
+        \\that parks `persona_wait` on the server 30 seconds at a time. Each
+        \\upstream MCP server handed to Polter (`+mcp-slot`) holds one more, in
+        \\every terminal. So `K` terminals with `M` registered upstreams cost
+        \\`K * (2 + M)` connections at worst -- the arithmetic in
+        \\`dev-docs/poltergeist/personas-contract.md` 4.1.
         \\
-        \\The number used to be a constant of 16 with a comment calling it
-        \\generous. It was, for one person with a few terminals. It was measured
-        \\full on an ordinary working day -- fifteen live agent CLIs, every one of
-        \\them with a running parent, so nothing had leaked and nothing could be
-        \\reclaimed -- and past that point *every new terminal* is refused, which
-        \\is why this is a setting and not a larger constant. Whatever number is
-        \\chosen here, somebody's day is the day they exceed it.
+        \\The cap exists because each connection is a thread whose stack frame
+        \\holds a 64 KiB read buffer and a 16 KiB write buffer, and because
+        \\anything that can reach the socket could otherwise spawn threads until
+        \\the process ran out.
+        \\
+        \\# Why 256, and how 64 was wrong for seven weeks with nothing going red
+        \\
+        \\64 was chosen on 2026-09-10 (`7e97932b1`), when one agent terminal still
+        \\held one connection: it had been measured full at 16, on an ordinary
+        \\working day with fifteen live agent CLIs, every one with a running
+        \\parent, so nothing had leaked. **Seven days later** the notifier's second
+        \\connection landed (`2f74fb4a1`, 2026-09-17) and nobody re-derived the
+        \\number -- 64 quietly meant 32 terminals from then on, and it stayed that
+        \\way until it was measured again on 2026-11-12: 24 `+mcp` sidecars, 49
+        \\accepted connections on one socket, and a 38-terminal fleet refused in
+        \\bursts for two hours, every agent started in that window having no tools
+        \\for its whole life.
+        \\
+        \\**256 is the ceiling itself** (`Server.limit_max_connections`), not a
+        \\number with room above it. The slot array is allocated once at startup
+        \\and the server clamps what is written here, so a larger value is
+        \\accepted, clamped, and quietly does not take effect -- raising the
+        \\ceiling is a change to that constant and to the build.
+        \\
+        \\# What it does not fix
+        \\
+        \\A full table still costs an agent its tools. What is left when it is full
+        \\is (i) `+mcp` retrying its handshake with backoff for 20 seconds, (ii)
+        \\the alert the person sees, (iii) one log line a minute with how many were
+        \\turned away. "Finished the work and cannot hand in the result" is **not**
+        \\solved for a table that stays full -- the wall has only moved, from 38
+        \\terminals to 128 at `M = 0` (64 at two upstreams each), where
+        \\`K * (2 + M) = 256`.
         \\
         \\Valid range is 1 to 256.
         ,
         .full_zh =
-        \\同时最多允许多少个 agent 占用该 socket。
+        \\同时最多允许多少条连接占用该 socket。
         \\
-        \\一个连接就是在一个终端里运行的一个 agent CLI，它活多久，连接就占多久。设上限是因为每个连接是一个线程加一对缓冲区，而且任何能连上 socket 的东西，否则都可能不停地开线程，直到进程耗尽资源。
+        \\**一条连接不等于一个终端**（任务 3281）。一个 agent CLI 会占两条，并持续到它退出为止：承载工具调用的那一条，以及一条 notifier —— 它在服务端挂 `persona_wait`，每 30 秒重新挂一次。另外，每一个交给 Polter 的上游 MCP 服务器（`+mcp-slot`）在每个终端里再占一条。所以 `K` 个终端、注册了 `M` 个上游时，最坏情况是 `K * (2 + M)` 条连接 —— 也就是 `dev-docs/poltergeist/personas-contract.md` 4.1 里那个式子。
         \\
-        \\这个数原来是常量 16，注释说它很宽裕。对一个人开几个终端来说，确实宽裕。可在一个普通的工作日里，它被实测用满了：十五个活着的 agent CLI，每个都有在运行的父进程，所以没有泄漏，也没有可以回收的。过了这个数，*每一个新终端*都会被拒绝，所以它成了一项设置，而不是改成一个更大的常量。不管这里选多大，总会有人的某一天超过它。
+        \\之所以有这个上限，是因为每条连接是一个线程，栈帧上放着 64 KiB 读缓冲和 16 KiB 写缓冲；也因为任何能连上 socket 的东西，否则都可能不停地开线程，直到进程耗尽资源。
+        \\
+        \\# 为什么是 256，以及 64 怎么错了七周而没有任何东西变红
+        \\
+        \\64 是 2026-09-10（`7e97932b1`）定的，那时一个 agent 终端还只占一条连接 —— 它在 16 上被实测用满过：一个普通工作日、十五个活着的 agent CLI、每个都有在运行的父进程，所以没有泄漏。**七天后** notifier 的第二条连接落地（`2f74fb4a1`，2026-09-17），**没有人重算这个数** —— 从那时起 64 就悄悄只等于 32 个终端，一直错到 2026-11-12 再量：24 个 `+mcp` 侧车、同一个 socket 上 49 条已接受连接，而 38 个终端的舰队在两个小时里被成批拒接，那个窗口里起来的每一个 agent 一辈子都没有工具。
+        \\
+        \\**256 就是天花板本身**（`Server.limit_max_connections`），上面没有余量。槽位数组在启动时分配一次，服务端会把这里写的值夹到上限，所以写更大的值会被接受、被夹掉，然后悄悄不生效 —— 抬天花板是改那个常量、重新编译的事。
+        \\
+        \\# 它没有修好什么
+        \\
+        \\表满了 agent 依然没有工具。满的时候只剩（i）`+mcp` 在 20 秒内退避重试握手，（ii）用户看到的 alert，（iii）日志里一分钟一行、写着被拒了多少次。表**持续**满时，「干完活交不了结果」没有解决 —— 只是把墙挪了位置：从 38 个终端挪到 `M = 0` 时的 128 个（每个带两个上游时是 64 个），也就是 `K * (2 + M) = 256`。
         \\
         \\有效范围是 1 到 256。
         ,

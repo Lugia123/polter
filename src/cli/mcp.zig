@@ -240,7 +240,7 @@ pub fn run(alloc: Allocator) !u8 {
     defer identity_arena.deinit();
     const identity = identityField(identity_arena.allocator(), io, &env);
 
-    var host: Host = try .connectWith(alloc, io, socket_path, token, .agent, identity);
+    var host: Host = try waitForSlot(alloc, io, socket_path, token, .agent, identity, .{});
     defer host.deinit();
 
     return serve(alloc, io, &host, socket_path, token);
@@ -770,6 +770,24 @@ pub const Host = struct {
         kind: poltergeist_server.Kind,
         extra: []const u8,
     ) !Host {
+        return connectAttempt(alloc, io, path, token, kind, extra, true);
+    }
+
+    /// `connectWith`, saying (or not saying) the full-table paragraph.
+    ///
+    /// **The paragraph is written to be read once**, and a caller that is
+    /// going to retry must not print one per attempt -- which is why the
+    /// words stay here and the waiting is `waitForSlot`'s. `announce_full`
+    /// is false for every attempt but the last.
+    fn connectAttempt(
+        alloc: Allocator,
+        io: std.Io,
+        path: []const u8,
+        token: []const u8,
+        kind: poltergeist_server.Kind,
+        extra: []const u8,
+        announce_full: bool,
+    ) !Host {
         const stream = try transport.connect(io, path);
         errdefer stream.close(io);
 
@@ -840,6 +858,7 @@ pub const Host = struct {
             // connection is in, and "this terminal gets no tools" would be
             // false -- its tools work, it is only not told of a change.
             if (kind == .notifier) return error.AgentsFull;
+            if (!announce_full) return error.AgentsFull;
             var buffer: [512]u8 = undefined;
             var stderr: std.Io.File = .stderr();
             var w = stderr.writerStreaming(io, &buffer);
@@ -924,6 +943,90 @@ pub const Host = struct {
         return readline.readLine(&self.reader.interface, &self.reply_buf, self.reply_cap);
     }
 };
+
+/// How long a sidecar waits for a free connection before it gives up, and
+/// how the wait grows.
+///
+/// **The bound is the client's, not ours.** The CLI that started `+mcp` is
+/// holding its `initialize` unanswered for as long as this runs, and a
+/// server that answers too late is the same as one that never started. 20 s
+/// stays inside the shortest startup window any of them is known to use,
+/// with room for the handshake after it.
+const full_wait = struct {
+    const deadline_ms: u64 = 20_000;
+    const first_ms: u64 = 250;
+    const max_ms: u64 = 4_000;
+};
+
+/// What one wait is allowed to do.
+///
+/// A field rather than the constants above so a test can wait milliseconds
+/// instead of seconds; production always takes the default.
+pub const SlotWait = struct {
+    deadline_ms: u64 = full_wait.deadline_ms,
+    first_ms: u64 = full_wait.first_ms,
+    max_ms: u64 = full_wait.max_ms,
+};
+
+/// Connect, waiting out a socket whose every connection is in use, instead
+/// of dying at the first refusal (task 3281).
+///
+/// `AgentsFull` is the one handshake failure that is **temporary by
+/// construction**: a connection comes back the moment some other agent's CLI
+/// exits. Every other failure -- a stale token, no socket, a bad handshake --
+/// is not made better by waiting, and waiting would only delay the sentence
+/// that says what to do, so those come back at once.
+///
+/// # Why the waiting is here and not in the CLI
+///
+/// Nothing upstream is going to retry for us: the CLI starts this process
+/// once, and a stdio MCP server that exits during startup is marked failed
+/// for the life of the session. Measured on 2026-11-12: a fleet that filled
+/// the socket for two hours left every agent started in that window with no
+/// tools at all, for as long as it ran.
+///
+/// # What it does not do
+///
+/// It does not help when the socket is full for longer than the deadline --
+/// and a table can stay full for hours. What is left then is the paragraph
+/// in `connectAttempt` and the supervisor's alert, which is why the default
+/// was raised in the same change (`Config.@"poltergeist-max-agents"`). It
+/// also does not cover a connection lost *after* the handshake: `serve`
+/// returns on that and the process ends, unchanged.
+pub fn waitForSlot(
+    alloc: Allocator,
+    io: std.Io,
+    path: []const u8,
+    token: []const u8,
+    kind: poltergeist_server.Kind,
+    extra: []const u8,
+    wait: SlotWait,
+) !Host {
+    const started: std.Io.Timestamp = .now(io, .awake);
+    var delay_ms = wait.first_ms;
+
+    while (true) {
+        const spent: u64 = @intCast(std.math.clamp(
+            started.durationTo(.now(io, .awake)).toMilliseconds(),
+            0,
+            std.math.maxInt(i64),
+        ));
+        // The attempt that gives up is the one that speaks: it is the last,
+        // so the paragraph is printed once and not once per attempt.
+        const last = spent +| delay_ms >= wait.deadline_ms;
+
+        if (Host.connectAttempt(alloc, io, path, token, kind, extra, last)) |host| {
+            return host;
+        } else |err| switch (err) {
+            error.AgentsFull => {
+                if (last) return err;
+                try std.Io.sleep(io, .fromMilliseconds(@intCast(delay_ms)), .awake);
+                delay_ms = @min(delay_ms * 2, wait.max_ms);
+            },
+            else => |e| return e,
+        }
+    }
+}
 
 /// Every tool this exposes, with the request it maps to.
 ///
