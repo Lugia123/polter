@@ -307,9 +307,35 @@ sub: *Feed.Subscription,
 /// Set false by `stop`. The only thing the thread reads from outside.
 running: std.atomic.Value(bool) = .init(true),
 
+/// Set by `main` as it returns: the child has been collected and nothing of
+/// this resident is running. Read by quitting (`hasStopped`), which does not
+/// join -- the app is leaving, and a thread parked in a write nobody will
+/// read is not something quitting may wait for (task 3237).
+finished: std.atomic.Value(bool) = .init(false),
+
+/// Set by `endForQuit`: the child is the quitting path's to end now, not
+/// this thread's. It changes what the final `collect` does -- a quitting
+/// resident hands the child over instead of killing it, so that end of
+/// input gets its moment (task 3237). Read by the thread only.
+quitting: std.atomic.Value(bool) = .init(false),
+
 /// Shared with `stop` so shutdown can reach a live child without taking a
 /// lock the feeding loop might be holding across a blocking write.
 reaper: reap.Reaper,
+
+/// The child and everything it starts, as one thing to end (task 3237).
+/// Made before each spawn and given back by `collect`; see `reap.Tree`.
+tree: reap.Tree = .{},
+
+/// The child's standard input, published here so that quitting can end it
+/// without reaching into the thread that owns `child` (task 3237).
+///
+/// **End of input is the graceful half of stopping.** A plugin that honours
+/// it exits by itself, which is what happens today; killing it would be a
+/// change for the worse for every plugin that behaves
+/// (`275fa37ea` reasons this out). This is what lets that stay true while
+/// the plugin that does not take EOF gets a deadline it cannot miss.
+out: Out = .{},
 
 thread: ?std.Thread = null,
 
@@ -425,6 +451,11 @@ pub fn start(alloc: Allocator, io: std.Io, opts: Options) Error!*Resident {
         .reaper = .init(io, key, null, 0),
     };
 
+    // Where the child and everything it starts is held, so a fired deadline
+    // ends the tree and not just the child (task 3237). `self` is on the
+    // heap and never moves.
+    self.reaper.tree = &self.tree;
+
     // Before the thread, because the thread writes into it from its first
     // line. A log that cannot be opened is a warning and nothing more: a
     // plugin that runs without one is worse off than a plugin that does not
@@ -459,6 +490,99 @@ pub fn stop(self: *Resident) void {
 }
 
 /// Free everything. `stop` first.
+/// Quitting: no more batches, and end of input on the child's stdin.
+///
+/// The graceful half, and the first half of what quitting does (task 3237):
+/// a plugin that honours EOF sees its standard input close, exits by
+/// itself, and is never killed.
+///
+/// **The reaper is retired, not hurried.** Hurrying kills at the next tick,
+/// which is the very grace this exists to give. Retiring first is also what
+/// makes closing the child's stdin safe: the reaper holds that handle as
+/// the end a deadline cuts, and it does not read it again once retired.
+///
+/// Returns whether EOF was delivered. `false` means the feeding thread was
+/// inside a write when this was called (see `Out`); the child is not
+/// reading, so the hard half is what will end it. It is never a reason to
+/// wait.
+pub fn endForQuit(self: *Resident) bool {
+    self.running.store(false, .release);
+    self.quitting.store(true, .release);
+    self.reaper.retire();
+    return self.endInput();
+}
+
+/// Whether the child process this resident started is still there.
+///
+/// **Not `hasStopped`.** The thread may finish before the child does when
+/// quitting: it hands the child over (`collect` with `kill = false`) and
+/// waits for it, so what quitting has to read between the two is the child
+/// itself (task 3237).
+pub fn childRunning(self: *const Resident) bool {
+    return self.tree.running();
+}
+
+/// Quitting, hard: stop the child and everything it started, now.
+///
+/// Nothing is joined. The app is leaving, and the thread may be inside a
+/// write nobody will ever read; joining it would make quitting owe its exit
+/// to the plugin it is stopping. What is left for a thread that has already
+/// collected its child is harmless.
+pub fn killForQuit(self: *Resident) void {
+    self.running.store(false, .release);
+    // Through the quit list, under its lock: the resident's own thread may
+    // be collecting at this very moment, and that is the thread that gives
+    // the job handle back. A tree already forgotten is a child already
+    // collected (or one the list never held), and there is nothing to end.
+    reap.Live.killOne(self.io, &self.tree);
+}
+
+/// Whether `main` has returned: the child is collected and the thread is
+/// finished.
+pub fn hasStopped(self: *const Resident) bool {
+    return self.finished.load(.acquire);
+}
+
+/// Take the child's standard input out of `child` and into `out`, so that
+/// quitting can end it.
+fn publishInput(self: *Resident, child: *std.process.Child) void {
+    const f = child.stdin orelse return;
+    self.out.mutex.lockUncancelable(self.io);
+    defer self.out.mutex.unlock(self.io);
+    self.out.file = f;
+    child.stdin = null;
+}
+
+/// Feed the child one line through the published end.
+///
+/// A failure here reads as "the child is gone", the same as a failed write
+/// ever did, and a closed end (quitting) is that answer too.
+fn send(self: *Resident, bytes: []const u8) !void {
+    self.out.mutex.lockUncancelable(self.io);
+    defer self.out.mutex.unlock(self.io);
+    const f = self.out.file orelse return error.InputClosed;
+    try f.writeStreamingAll(self.io, bytes);
+}
+
+/// The end of a write a fired deadline cuts on Windows, for `reap.Ends`.
+fn inputHandle(self: *Resident) ?std.Io.File.Handle {
+    self.out.mutex.lockUncancelable(self.io);
+    defer self.out.mutex.unlock(self.io);
+    return if (self.out.file) |f| f.handle else null;
+}
+
+/// End of input: close our end of the child's standard input. Idempotent.
+///
+/// `tryLock` on purpose -- see `Out`. Returns whether it was closed.
+fn endInput(self: *Resident) bool {
+    if (!self.out.mutex.tryLock()) return false;
+    defer self.out.mutex.unlock(self.io);
+    const f = self.out.file orelse return true;
+    f.close(self.io);
+    self.out.file = null;
+    return true;
+}
+
 pub fn destroy(self: *Resident) void {
     // The thread first, and only then the subscription: giving it back
     // frees the queue the thread reads from.
@@ -901,6 +1025,27 @@ const Line = union(enum) {
     too_long,
 };
 
+/// The child's standard input, shared between the thread that feeds it and
+/// quitting, which ends it (task 3237).
+///
+/// **Taken out of `child`, and that is the point.** The thread owns the
+/// `std.process.Child` on its own stack, and quitting cannot reach into it;
+/// what quitting needs is the one thing that makes a `read` return zero at
+/// the other end, and that is this handle.
+///
+/// **`endInput` never waits for the lock.** A child that is not reading
+/// fills its pipe, and the thread sits in `writeStreamingAll` holding this
+/// mutex for as long as the write lasts. A quitting thread that blocked
+/// there would owe its whole exit to the plugin it is trying to stop, so
+/// `endInput` is a `tryLock` and a "could not" is an answer: EOF was not
+/// delivered, the child has not read anything for a while anyway, and the
+/// kill after the grace period is what ends it.
+const Out = struct {
+    mutex: std.Io.Mutex = .init,
+    /// Null once end of input has been sent, or the child is gone.
+    file: ?std.Io.File = null,
+};
+
 /// The two ends of the child's standard error.
 ///
 /// **A socket pair rather than a pipe, and the whole reason is that a pipe
@@ -1264,19 +1409,34 @@ fn collect(
     keeper: *?std.Thread,
     drain: *?std.Thread,
     errs: *?std.Io.File,
+    kill: bool,
 ) void {
     self.reaper.retire();
     if (keeper.*) |t| t.join();
     keeper.* = null;
 
     if (child.*) |*c| {
-        if (c.id) |pid| reap.kill(pid) catch {};
+        // **Not while quitting.** The child has had end of input and this
+        // wait is the moment it gets to take it; the quitting path kills it
+        // if that moment runs out (`App.writeDownBeforeQuit`). Killing here
+        // would make end of input decorative (task 3237).
+        if (kill) {
+            if (c.id) |pid| reap.kill(pid) catch {};
+
+            // The child and everything it started: a helper the plugin left
+            // behind is not something a restart should adopt, and an
+            // escaped one holds the pipes this is about to close.
+            self.tree.kill();
+        }
 
         // Closed *and* nulled, in that order: `wait` closes and nulls these
         // itself, so a close without the null is a second close of a
         // descriptor number the kernel may already have handed to another
         // thread. Stdout goes too, or a chatty child blocks writing into a
-        // full pipe while we block in `wait`.
+        // full pipe while we block in `wait`. The child's standard input
+        // lives in `out` (`publishInput`), so ending it is one call; it is
+        // already null on `c`.
+        _ = self.endInput();
         if (c.stdin) |f| {
             f.close(self.io);
             c.stdin = null;
@@ -1293,6 +1453,11 @@ fn collect(
         _ = c.wait(self.io) catch {};
         child.* = null;
     }
+
+    // Taken off the registry the quitting path walks, and its handle given
+    // back (on Windows closing the job also ends a helper still in it).
+    reap.Live.forget(self.io, &self.tree);
+    self.tree = .{};
 
     // Again, for the child that was never born: the pair can outlive a
     // spawn that failed, and it is ours either way.
@@ -1432,6 +1597,9 @@ fn tell(self: *Resident, why: report.Trouble, failures: u32) void {
 fn main(self: *Resident) void {
     const io = self.io;
     const a = self.alloc;
+
+    // Quitting reads this instead of joining (task 3237).
+    defer self.finished.store(true, .release);
 
     var child: ?std.process.Child = null;
     var keeper: ?std.Thread = null;
@@ -1605,10 +1773,29 @@ fn main(self: *Resident) void {
 
                 // Held across the whole `spawn`, which is where the child's
                 // inheritable ends exist: see `internal_os.windows.spawn_lock`.
+                // What the child and everything it starts will be held by
+                // (task 3237). Made before the spawn because on Windows
+                // the child is started suspended and put in it before it
+                // runs; the group on POSIX is the spawn's own doing.
+                self.tree = .{};
+                self.tree.begin();
+
                 internal_os.windows.lockSpawn(io);
                 internal_os.windows.spawnTrace("plugin spawn", .begin, 0);
                 const spawned = std.process.spawn(io, .{
                     .argv = argv,
+
+                    // **A process group of its own** (task 3237). Without
+                    // it the plugin shares Polter's group, and a group
+                    // kill would have to mean "the plugin's pid" -- which
+                    // is the direct child only, and leaves whatever it
+                    // started running. `0` is "make this child a leader".
+                    .pgid = if (builtin.os.tag == .windows) null else 0,
+
+                    // Windows only, and the other half of the job: a child
+                    // that starts something before it is in the job has
+                    // started something the job does not hold (task 3237).
+                    .start_suspended = self.tree.mustSuspend(),
 
                     // **The user's `PATH`, not the launcher's.** A Polter
                     // started from the Dock or a `.desktop` file has the
@@ -1681,14 +1868,35 @@ fn main(self: *Resident) void {
                         p.theirs.close(io);
                     }
                     if (out_pair) |p| p.ours.close(io);
+                    // No child, so nothing to hold; a job made for it is
+                    // given back rather than left to close with us.
+                    self.tree.close();
+                    self.tree = .{};
                     self.note(.warn, "could not start err={}", .{err});
                     break :step .failure;
                 };
+
+                // **In the tree before it runs anything.** On Windows this
+                // is the assign-and-resume pair; on POSIX it is reading back
+                // the group `spawn` made. Then it is on the quit-time list,
+                // which is what ends it when no thread of ours gets to.
+                self.tree.adopt(&child.?);
+                if (!reap.Live.add(io, &self.tree)) {
+                    self.note(
+                        .warn,
+                        "too many children to list; this one is only ended by its own thread",
+                        .{},
+                    );
+                }
 
                 // Handed to the child struct, so that `collect` closes it
                 // exactly where it closed the pipe, and `wait` finds it
                 // already gone.
                 if (out_pair) |p| child.?.stdout = p.ours;
+
+                // The input side moves to `out`, where quitting can end it
+                // without touching this thread's `child` (task 3237).
+                self.publishInput(&child.?);
 
                 // Whichever way it was made, this is our end to read.
                 const mine: ?std.Io.File = switch (plan) {
@@ -1748,10 +1956,8 @@ fn main(self: *Resident) void {
                 // end lives on in some other process (`reap.Ends`).
                 self.reaper.rearm(child.?.id, self.timeout_ms, .{
                     .read = if (child.?.stdout) |f| f.handle else null,
-                    .write = if (builtin.os.tag == .windows)
-                        (if (child.?.stdin) |f| f.handle else null)
-                    else
-                        null,
+                    // The child's input lives in `out` now, not on `child`.
+                    .write = if (builtin.os.tag == .windows) self.inputHandle() else null,
                 });
                 keeper = std.Thread.spawn(.{}, reap.Reaper.run, .{&self.reaper}) catch null;
 
@@ -1777,7 +1983,6 @@ fn main(self: *Resident) void {
 
                 spawned_at = .now(io, .awake);
 
-                const stdin = child.?.stdin orelse break :step .failure;
                 const stdout = child.?.stdout orelse break :step .failure;
                 reader = stdout.readerStreaming(io, self.ack_buf);
 
@@ -1792,7 +1997,7 @@ fn main(self: *Resident) void {
                 }) catch break :step .failure;
 
                 self.reaper.allow(self.timeout_ms);
-                stdin.writeStreamingAll(io, hello) catch |err| {
+                self.send(hello) catch |err| {
                     self.note(.warn, "could not greet it err={}", .{err});
                     break :step .failure;
                 };
@@ -1885,9 +2090,8 @@ fn main(self: *Resident) void {
                     ) catch break :step .failure;
                     defer a.free(beat);
 
-                    const stdin = child.?.stdin orelse break :step .failure;
                     self.reaper.allow(self.timeout_ms);
-                    stdin.writeStreamingAll(io, beat) catch break :step .failure;
+                    self.send(beat) catch break :step .failure;
 
                     const line = switch (self.answer(&reader.?)) {
                         .got => |l| l,
@@ -1948,8 +2152,7 @@ fn main(self: *Resident) void {
             // error rather than as a terminal that vanished.
             self.reaper.allow(self.timeout_ms);
 
-            const stdin = child.?.stdin orelse break :step .failure;
-            stdin.writeStreamingAll(io, line) catch |err| {
+            self.send(line) catch |err| {
                 self.note(.warn, "could not feed it err={}", .{err});
                 break :step .failure;
             };
@@ -2015,7 +2218,7 @@ fn main(self: *Resident) void {
         }
 
         reader = null;
-        self.collect(&child, &keeper, &drain, &errs);
+        self.collect(&child, &keeper, &drain, &errs, true);
 
         // Nothing to put back. A child that died between being handed a
         // batch and acknowledging it confirmed nothing, so nothing was
@@ -2062,7 +2265,7 @@ fn main(self: *Resident) void {
     }
 
     reader = null;
-    self.collect(&child, &keeper, &drain, &errs);
+    self.collect(&child, &keeper, &drain, &errs, !self.quitting.load(.acquire));
 
     // Not "Polter is stopping": `stop` is also how a plugin is switched off
     // or restarted with new settings (`App.stopResident`), and a log that
@@ -5414,4 +5617,191 @@ fn fixtureMode(comptime mode: u32) std.Io.File.CreateFlags {
         .windows => .{},
         else => .{ .permissions = .fromMode(mode) },
     };
+}
+
+// -- 3237: quitting, and the plugin that does not take end of input -------
+
+/// The pid a fixture wrote down, or null until it has.
+fn quitPid(io: std.Io, path: []const u8) ?u32 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        testing.allocator,
+        .limited(64),
+    ) catch return null;
+    defer testing.allocator.free(bytes);
+    const text = std.mem.trim(u8, bytes, " \t\r\n");
+    return std.fmt.parseInt(u32, text, 10) catch null;
+}
+
+fn quitPidWithin(io: std.Io, path: []const u8, limit_ms: u64) ?u32 {
+    var waited: u64 = 0;
+    while (waited <= limit_ms) : (waited += 25) {
+        if (quitPid(io, path)) |pid| return pid;
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch return null;
+    }
+    return quitPid(io, path);
+}
+
+fn quitStoppedWithin(a: *Resident, io: std.Io, limit_ms: u64) bool {
+    var waited: u64 = 0;
+    while (waited < limit_ms) : (waited += 25) {
+        if (a.hasStopped()) return true;
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch return false;
+    }
+    return a.hasStopped();
+}
+
+fn quitGoneWithin(io: std.Io, pid: u32, limit_ms: u64) bool {
+    var waited: u64 = 0;
+    while (waited < limit_ms) : (waited += 25) {
+        if (!reap.pidRunning(pid)) return true;
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch return false;
+    }
+    return !reap.pidRunning(pid);
+}
+
+/// Take the child away when the product's own ending did not happen, so
+/// that a broken floor fails rather than hangs in `destroy`'s join: what
+/// this file is being asked about is whether the product ends the child,
+/// not whether a test can out-wait it.
+fn endChildIfLeft(a: *Resident) void {
+    if (!a.childRunning()) return;
+    const pid = a.tree.pid.load(.acquire);
+    if (pid != 0) reap.pidKill(pid);
+}
+
+test "3237: a plugin that takes end of input leaves when Polter quits" {
+    // The half that is easy to lose when fixing the other one: EOF must
+    // still be an ending. `endForQuit` retires the reaper, so nothing is
+    // watching the child; the only thing that can wake the feeding thread
+    // is the child's own exit. A version that killed unconditionally would
+    // pass the test below and fail this one's reason for existing.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try scratchDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
+    const exec = try scriptFor(alloc, io,
+        \\#!/bin/sh
+        \\while IFS= read -r line; do
+        \\  echo '{"ok":true}'
+        \\done
+    ,
+        \\while ($null -ne ($line = $stdin.ReadLine())) {
+        \\  $stdout.Write('{"ok":true}' + "`n")
+        \\}
+    );
+
+    const env = try fixtureEnviron(testing.allocator);
+
+    const a = try start(testing.allocator, io, .{
+        .key = "takes-eof",
+        .exec = exec,
+        .timeout_ms = 60 * std.time.ms_per_s,
+        .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
+        .params = &.{},
+        .feed = &feed,
+        .environ = env,
+        .timing = .{ .poll_idle_ms = 20 },
+    });
+    defer {
+        endChildIfLeft(a);
+        a.destroy();
+    }
+
+    // Feeding is what says the handshake was answered: before that this is
+    // a process that has not been spoken to, and quitting it proves
+    // nothing.
+    var waited: u64 = 0;
+    while (waited < 3 * std.time.ms_per_s and a.status().state != .feeding) : (waited += 25) {
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch {};
+    }
+    try testing.expectEqual(State.feeding, a.status().state);
+
+    try testing.expect(a.endForQuit());
+    try testing.expect(quitStoppedWithin(a, io, 3 * std.time.ms_per_s));
+    try testing.expectEqual(State.stopped, a.status().state);
+}
+
+test "3237: a plugin that ignores end of input is killed when Polter quits" {
+    // **The defect.** The child answers the greeting and then stops reading
+    // its standard input for good; a plugin written that way (a loop, a
+    // sleep, a library that owns the descriptor) is the shape that was left
+    // running after Polter went. The pid is read from a file the plugin
+    // writes, so what is checked below is a process that really exists.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = try scratchDir(alloc, io);
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    const pidfile = try std.fmt.allocPrint(alloc, "{s}/pid", .{dir});
+
+    var feed: Feed = .init(testing.allocator, io);
+    defer feed.deinit();
+
+    const exec = try scriptFor(
+        alloc,
+        io,
+        try std.fmt.allocPrint(alloc,
+            \\#!/bin/sh
+            \\IFS= read -r line
+            \\echo '{{"ok":true}}'
+            \\echo $$ > {s}
+            \\while :; do sleep 1; done
+        , .{pidfile}),
+        try std.fmt.allocPrint(alloc,
+            \\$null = $stdin.ReadLine()
+            \\$stdout.Write('{{"ok":true}}' + "`n")
+            \\[IO.File]::WriteAllText('{s}', "$PID")
+            \\while ($true) {{ Start-Sleep -Seconds 1 }}
+        , .{pidfile}),
+    );
+
+    const env = try fixtureEnviron(testing.allocator);
+
+    const a = try start(testing.allocator, io, .{
+        .key = "ignores-eof",
+        .exec = exec,
+        .timeout_ms = 60 * std.time.ms_per_s,
+        .wants = .{ .events = &.{.chat}, .groups = &.{"*"} },
+        .params = &.{},
+        .feed = &feed,
+        .environ = env,
+        .timing = .{ .poll_idle_ms = 20 },
+    });
+    defer {
+        endChildIfLeft(a);
+        a.destroy();
+    }
+
+    const pid = quitPidWithin(io, pidfile, 3 * std.time.ms_per_s) orelse
+        return error.TestExpectedPid;
+    try testing.expect(reap.pidRunning(pid));
+
+    // **End of input alone is not enough**, and this is that reading rather
+    // than a sentence in a comment: the child is still there a moment
+    // after its standard input is closed.
+    _ = a.endForQuit();
+    std.Io.sleep(io, .fromMilliseconds(300), .awake) catch {};
+    try testing.expect(reap.pidRunning(pid));
+
+    // The fallback.
+    a.killForQuit();
+    try testing.expect(quitStoppedWithin(a, io, 3 * std.time.ms_per_s));
+    try testing.expect(quitGoneWithin(io, pid, 3 * std.time.ms_per_s));
 }

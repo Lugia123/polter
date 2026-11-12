@@ -331,6 +331,12 @@ pub const exp = struct {
             hProcess: HANDLE,
             lpExitCode: *DWORD,
         ) callconv(.winapi) BOOL;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess
+        pub extern "kernel32" fn OpenProcess(
+            dwDesiredAccess: DWORD,
+            bInheritHandle: BOOL,
+            dwProcessId: DWORD,
+        ) callconv(.winapi) ?HANDLE;
         pub extern "kernel32" fn TerminateProcess(
             hProcess: HANDLE,
             uExitCode: UINT,

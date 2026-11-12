@@ -1073,8 +1073,10 @@ pub const Entry = struct {
     /// not start it again -- Codex 0.163 answers every later tool call with
     /// `Transport closed` -- so an agent can be left running with no way
     /// to report anything, which reads to its supervisor like an agent
-    /// that has nothing to say. Null when the connection is there, or its
-    /// loss has been looked at (`considerLinks`).
+    /// that has nothing to say. Null when the connection is there, or the
+    /// loss has been answered: its program went (the agent left) or the
+    /// agent came back. A program still running answers nothing, so the
+    /// loss stays here and is looked at again (`considerLinks`, task 3238).
     link_lost: ?LinkLost = null,
 
     /// That loss, said: its own slot, counted like `silent_pending`. A lost
@@ -1082,6 +1084,12 @@ pub const Entry = struct {
     /// any of them -- so it does not take `agent.pending`'s place.
     link_pending: ?LinkLost = null,
     link_handed: u8 = 0,
+
+    /// This loss has been said once (`considerLinks`). The loss itself stays
+    /// in `link_lost` while its program runs -- it is not answered until the
+    /// program goes or the agent comes back (task 3238) -- and this is what
+    /// keeps every later look from saying the same thing again.
+    link_said: bool = false,
 
     /// How many times the supervisor has been told this terminal is quiet
     /// since it last came back to work.
@@ -1595,6 +1603,7 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
         e.link_lost = null;
         e.link_pending = null;
         e.link_handed = 0;
+        e.link_said = false;
         return;
     }
     // Gone, this time: from here, whether its program is still running
@@ -1604,8 +1613,11 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
     // supervisor's agent can come and go between two of them -- and an
     // agent whose hooks spoke was here. Which program is not known, so
     // only its shell can say it has gone.
-    if (was == true or (was == null and e.agent.hooks == .live and e.left == null))
+    if (was == true or (was == null and e.agent.hooks == .live and e.left == null)) {
         e.link_lost = .{ .at_ms = now_ms, .program = e.agent_program };
+        // A new loss is its own line, whatever was said about an older one.
+        e.link_said = false;
+    }
     e.agent_program = null;
     // An agent whose hooks were still awaited has gone (c1669-04: `/exit`
     // before a first turn): nothing more is due from it, and a wait left
@@ -1627,6 +1639,15 @@ pub fn noteAgentHere(self: *Bus, id: Id, here: bool, program: ?Program, now_ms: 
 /// c1669-12: a Codex that had quit with `/exit`, reported 40 s later as
 /// still running).
 ///
+/// **Looked at until it is answered** (task 3238). A program that is still
+/// running is not an answer -- it is the state of a program at one moment,
+/// and there is no later moment at which anything else would look: the loss
+/// used to be taken out here, and the line about it is read once and gone,
+/// so a program that went a minute later left `left` unwritten, and a
+/// supervisor's terminal kept claiming its agent. Only the program going
+/// (`left`) or the agent coming back (`noteAgentHere`) answers a loss. The
+/// line about it is said once (`link_said`), however many looks follow.
+///
 /// Answers whether anything new went in.
 pub fn considerLinks(
     self: *Bus,
@@ -1639,6 +1660,9 @@ pub fn considerLinks(
     while (it.next()) |kv| {
         const e = kv.value_ptr;
         const id = kv.key_ptr.*;
+        // The line said and not yet read, and the loss behind it, ask the
+        // same question: does its program still run? Asked once for each
+        // here and once below; both are the same answer for the same loss.
         if (e.link_pending) |said| {
             const still = if (said.program != null) runs(ctx, id, said.program) else false;
             if (!still) {
@@ -1648,8 +1672,6 @@ pub fn considerLinks(
         }
         const lost = e.link_lost orelse continue;
         if (now_ms -| lost.at_ms < link_grace_ms) continue;
-        // Looked at once, whatever comes of it.
-        e.link_lost = null;
         // **Its program went with it: the agent has left** (task 1762),
         // whoever's terminal this is -- a supervisor's above all, whose
         // agent nothing else watches. Written down here because nothing
@@ -1661,17 +1683,48 @@ pub fn considerLinks(
         // no program to look at, a shell back at its prompt is the one
         // thing that says so.
         if (!runs(ctx, id, lost.program)) {
+            e.link_lost = null;
+            e.link_said = false;
             self.noteLeft(id, .unknown, lost.at_ms);
             continue;
         }
+        // Still running: the loss stays here -- see above -- and what is
+        // left to do is say it, once.
         if (e.role != .watched or e.duty == .off) continue;
         // Nobody named to say is still running: not news.
         if (lost.program == null) continue;
+        if (e.link_said) continue;
+        e.link_said = true;
         e.link_pending = lost;
         e.link_handed = 0;
         raised = true;
     }
     return raised;
+}
+
+/// When the next look at a connection loss is owed, on the caller's clock:
+/// the end of the grace of the earliest loss still inside it. Null when
+/// nothing is waiting.
+///
+/// **Asked on every sweep, not once when the loss was recorded** (task
+/// 3238). The host's wake is one slot merged by the earlier moment
+/// (`App.noticeRetryIn`), so a look asked for at a later moment than one
+/// already standing is forgotten the moment an earlier wake fires -- and
+/// that wake's sweep runs before the grace is over and finds nothing to
+/// say. Deriving the moment from this state on each sweep is what makes it
+/// survive, the way `App.sweepFreshAssigns` comes back for a wait that is
+/// still standing.
+pub fn nextLinkLookMs(self: *const Bus, now_ms: u64) ?u64 {
+    var next: ?u64 = null;
+    var it = self.entries.iterator();
+    while (it.next()) |kv| {
+        const lost = kv.value_ptr.link_lost orelse continue;
+        const at = lost.at_ms +| link_grace_ms;
+        // Due now: this sweep looked at it.
+        if (at <= now_ms) continue;
+        next = if (next) |n| @min(n, at) else at;
+    }
+    return next;
 }
 
 /// Put a line in the box for every watched terminal whose calls have gone
@@ -7904,6 +7957,127 @@ test "1668: a lost connection said while its program ran is taken back once the 
     var buf: [255]u8 = undefined;
     try testing.expect(b.drain(boss, 2_000 + 2 * link_grace_ms, &buf, .none) == null);
 }
+
+test "3238: the look a loss is owed survives a sweep that runs before its grace is over" {
+    var b = try hookedBus();
+    defer b.deinit();
+    b.noteAgentHere(worker, true, .{ .pid = 77, .started = 500 }, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+
+    // The look is owed at the end of the grace, and nothing else is.
+    try testing.expectEqual(@as(?u64, 2_000 + link_grace_ms), b.nextLinkLookMs(2_000));
+
+    // A wake that came early -- a refused notice, a worker wait -- runs the
+    // sweep before the grace is over. Nothing is said, nothing is written,
+    // and the moment still stands: this is what the host asks again after
+    // every sweep, and what an earlier wake used to swallow (task 3238).
+    try testing.expect(!b.considerLinks(3_000, &alive_ctx, aliveNo));
+    try testing.expect(!b.agentHasLeft(worker));
+    try testing.expectEqual(@as(?u64, 2_000 + link_grace_ms), b.nextLinkLookMs(3_000));
+
+    // The look that is owed answers, and nothing is owed after it.
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(worker));
+    try testing.expectEqual(@as(?u64, null), b.nextLinkLookMs(2_000 + link_grace_ms));
+}
+
+test "3238: the moment a look is owed is the earliest of the losses still inside their grace" {
+    var b = try hookedBus();
+    defer b.deinit();
+    const other: Id = 0x3333;
+    try b.addSupervisor(other);
+
+    // **The walk order is the map's, so the fixture reads it rather than
+    // assuming it.** The earlier loss goes to the terminal the walk reaches
+    // first: then a moment taken from whichever it reaches last is a later
+    // moment, and this test cannot be satisfied by luck.
+    var walk: [2]Id = undefined;
+    var found: usize = 0;
+    var it = b.entries.iterator();
+    while (it.next()) |kv| {
+        const id = kv.key_ptr.*;
+        if (id != worker and id != other) continue;
+        walk[found] = id;
+        found += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), found);
+
+    b.noteAgentHere(walk[0], true, .{ .pid = 77, .started = 500 }, 1_000);
+    b.noteAgentHere(walk[0], false, null, 2_000);
+    b.noteAgentHere(walk[1], true, .{ .pid = 78, .started = 600 }, 4_000);
+    b.noteAgentHere(walk[1], false, null, 5_000);
+
+    // One wake, at the earliest moment: the first loss's grace ends at
+    // 7_000, the second one's at 10_000.
+    try testing.expectEqual(@as(?u64, 2_000 + link_grace_ms), b.nextLinkLookMs(4_500));
+    // The early one is answered; the later one is still owed.
+    _ = b.considerLinks(2_000 + link_grace_ms, &alive_ctx, aliveNo);
+    try testing.expect(b.agentHasLeft(walk[0]));
+    try testing.expectEqual(@as(?u64, 5_000 + link_grace_ms), b.nextLinkLookMs(2_000 + link_grace_ms));
+}
+
+test "3238: a loss whose program outlives the grace is still an agent that left when it goes" {
+    var b = try hookedBus();
+    defer b.deinit();
+    var r: Runner = .{ .runs = true };
+    b.noteAgentHere(worker, true, .{ .pid = 53324, .started = 123 }, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+
+    // At the grace the program still runs: a lost connection, said once.
+    try testing.expect(b.considerLinks(2_000 + link_grace_ms, &r, Runner.ask));
+    try testing.expect(!b.agentHasLeft(worker));
+    // Said once: a later look at the same loss says nothing again.
+    try testing.expect(!b.considerLinks(3_000 + 2 * link_grace_ms, &r, Runner.ask));
+
+    // The program goes after the grace, when nothing else would look: the
+    // agent has left, and its leaving is written down (task 3238).
+    r.runs = false;
+    try testing.expect(!b.considerLinks(4_000 + 3 * link_grace_ms, &r, Runner.ask));
+    try testing.expect(b.agentHasLeft(worker));
+    try testing.expectEqual(@as(?u64, null), b.nextLinkLookMs(4_000 + 3 * link_grace_ms));
+}
+
+test "3238: a loss with no program named, or in a terminal nobody watches, is still looked at" {
+    // Windows names no program (`agent_cli.Sighting.pid`): only the shell
+    // can say the agent went, and it says so whenever it is back at its
+    // prompt -- not necessarily at the moment the grace ran out.
+    var b = try hookedBus();
+    defer b.deinit();
+    var shell: Shell = .{ .idle = false };
+    b.noteAgentHere(worker, true, null, 1_000);
+    b.noteAgentHere(worker, false, null, 2_000);
+    // Not news: nobody named to say is still running.
+    try testing.expect(!b.considerLinks(2_000 + link_grace_ms, &shell, Shell.ask));
+    try testing.expect(!b.agentHasLeft(worker));
+    // The CLI exits at some later sweep: the shell is back at its prompt.
+    shell.idle = true;
+    _ = b.considerLinks(3_000 + 2 * link_grace_ms, &shell, Shell.ask);
+    try testing.expect(b.agentHasLeft(worker));
+
+    // A supervisor's terminal has no one to be told about it, and the loss
+    // is looked at all the same: its agent going is what frees the group
+    // (task 1762), and nothing else watches it.
+    var c = try hookedBus();
+    defer c.deinit();
+    var r: Runner = .{ .runs = true };
+    c.noteAgentHere(boss, true, .{ .pid = 91, .started = 500 }, 1_500);
+    c.noteAgentHere(boss, false, null, 2_000);
+    try testing.expect(!c.considerLinks(2_000 + link_grace_ms, &r, Runner.ask));
+    try testing.expect(!c.agentHasLeft(boss));
+    r.runs = false;
+    _ = c.considerLinks(3_000 + 2 * link_grace_ms, &r, Runner.ask);
+    try testing.expect(c.agentHasLeft(boss));
+}
+
+/// A shell that says whether it is back at its prompt, the way a host
+/// with no pid to look at answers `runs` (task 1762).
+const Shell = struct {
+    idle: bool = false,
+    fn ask(ctx: *anyopaque, _: Id, _: ?Program) bool {
+        const self: *Shell = @ptrCast(@alignCast(ctx));
+        return !self.idle;
+    }
+};
 
 test "1668: a connection gone while its program runs is said once, after the grace" {
     var b = try hookedBus();

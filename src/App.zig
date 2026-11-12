@@ -1109,14 +1109,32 @@ pub fn deinit(self: *App) void {
 /// quitting must not be.
 pub const quit_write_wait_ms: u64 = 1000;
 
+/// How long quitting waits, after end of input, for the child processes the
+/// core started to go by themselves. Shorter than `quit_write_wait_ms`: a
+/// plugin gets a moment to leave, not a whole second -- what is still there
+/// afterwards is one that did not take end of input, and killing it is the
+/// answer (task 3237).
+pub const quit_child_wait_ms: u64 = 400;
+
 /// The application is quitting, and neither host frees it as it does
 /// (task 2086, `polter-artifacts/2020/app-deinit-at-quit.md`): so
 /// `deinit`'s per-terminal close never comes, and with it went each
 /// terminal's last screenful of transcript and up to five seconds of its
 /// scrollback journal. Each terminal's IO thread writes them now; this
-/// waits for all of them, `quit_write_wait_ms` at most. The hosts call it
-/// as they quit (`ghostty_app_quitting`), and nothing else is torn down.
+/// waits for all of them, `quit_write_wait_ms` at most.
+///
+/// **The child processes the core started are ended here too** (task 3237),
+/// for the same reason: a plugin is stopped in `deinit`, and `deinit` never
+/// runs. End of input goes to every resident first, so a plugin that
+/// honours it leaves by itself while the terminals are still writing; then
+/// the ones that did not are killed, with their process groups on POSIX
+/// and their jobs on Windows (`reap.Tree`). Adapters have no input to end
+/// and are simply on the same list (`reap.Live`).
 pub fn writeDownBeforeQuit(self: *App) void {
+    // First, because it costs nothing to start now and the grace runs while
+    // the terminals below are writing.
+    for (self.poltergeist_residents.items) |archive| _ = archive.endForQuit();
+
     self.quit_written.store(0, .release);
     var asked: u32 = 0;
     for (self.surfaces.items) |rt| {
@@ -1130,6 +1148,43 @@ pub fn writeDownBeforeQuit(self: *App) void {
         asked,
         if (all) "" else "; the rest were not waited for",
     });
+
+    // What did not take end of input, and every adapter still running.
+    // **The child, not the thread**: a quitting resident hands its child
+    // over rather than killing it, so its thread can finish first.
+    const grace = waitChildrenGone(self.poltergeist_residents.items, quit_child_wait_ms, io);
+    const left = self.poltergeist_residents.items.len;
+    for (self.poltergeist_residents.items) |archive| {
+        if (archive.childRunning()) archive.killForQuit();
+    }
+    const killed = poltergeistpkg.reap.Live.endAll(io);
+    log.info("quitting: {d} resident plugin(s){s}; {d} child process tree(s) stopped", .{
+        left,
+        if (grace) " left on end of input" else " did not all leave on end of input",
+        killed,
+    });
+}
+
+/// Whether every resident's child is gone within `budget_ms`. The same
+/// shape as `waitCounted`, for the same reason: quitting must not wait on
+/// something that will not answer.
+fn waitChildrenGone(
+    residents: []const *poltergeistpkg.Resident,
+    budget_ms: u64,
+    io: std.Io,
+) bool {
+    const step_ms = 5;
+    var waited: u64 = 0;
+    while (true) {
+        var left: usize = 0;
+        for (residents) |r| {
+            if (r.childRunning()) left += 1;
+        }
+        if (left == 0) return true;
+        if (waited >= budget_ms) return false;
+        io.sleep(.fromMilliseconds(step_ms), .awake) catch return false;
+        waited += step_ms;
+    }
 }
 
 /// Whether `counter` reaches `want` within `budget_ms`.
@@ -1238,13 +1293,12 @@ pub fn tick(self: *App, rt_app: *apprt.App) !void {
 
     // A notice that was refused in its supervisor's terminal, come back
     // for. Before the snapshot, like everything else that can move it.
-    // A connection closed: note it now, and come back once its grace has
-    // passed to see whether its program still runs (`Bus.considerLinks`).
+    // A connection closed: note it now. The look owed once its grace has
+    // passed (`Bus.considerLinks`) is asked for by the sweep itself, on
+    // every sweep (task 3238) -- not by this branch once, which a wake that
+    // came earlier would have swallowed.
     if (self.links_due.swap(false, .acq_rel)) {
-        if (!self.poltergeist_stopping.load(.acquire)) {
-            self.notePoltergeistAgentsHere();
-            self.noticeRetryIn(poltergeistpkg.Bus.link_grace_ms + chat_notice_retry_margin_ms);
-        }
+        if (!self.poltergeist_stopping.load(.acquire)) self.notePoltergeistAgentsHere();
     }
 
     // An alarm's moment, or a supervisor's quiet, has come (task 2148).
@@ -5713,6 +5767,16 @@ fn notePoltergeistAgentsHere(self: *App) void {
     }
     // A connection gone while its program runs (task 1668, #83).
     _ = self.poltergeist.considerLinks(now_ms, self, poltergeistProgramRuns);
+    // **The look a loss is owed, re-derived from the bus on every sweep**
+    // (task 3238). `noticeRetryIn` keeps one slot and merges by the earlier
+    // moment, so a look asked for once, when the loss was recorded, is
+    // forgotten as soon as an earlier wake fires -- and that wake's sweep
+    // finds the grace unspent, asks nothing further, and `left` is never
+    // written. The state owns the wake, not one remembered moment; the same
+    // rule `sweepFreshAssigns` follows for a wait still standing.
+    if (self.poltergeist.nextLinkLookMs(now_ms)) |at| {
+        self.noticeRetryIn(at -| now_ms +| chat_notice_retry_margin_ms);
+    }
 }
 
 /// Whether the program an agent connected from is still running in that
@@ -9088,12 +9152,7 @@ fn hooklessOf(self: *App, arena: Allocator, id: poltergeistpkg.Bus.Id) poltergei
     // and then, so that "is it still that session" is not an hour old.
     if (v.state == .known) if (self.poltergeist_server) |*srv| {
         const sighting = srv.sightingOf(arena, id) catch poltergeistpkg.agent_cli.Sighting.none;
-        // An answer with no session in it is asked again soon (task 1674):
-        // the first ask comes before the CLI's first turn, when it has no
-        // record yet, and a take-over within the minute after that turn
-        // used to be offered "a new session" for a Codex that had one.
-        const every = if (v.identified.session == null) identity_unsure_refresh_ms else identity_refresh_ms;
-        self.identities.refresh(io, id, sighting, self.terminalCwd(arena, id), now_ms, every);
+        self.identities.refresh(io, id, sighting, self.terminalCwd(arena, id), now_ms, identityRefreshMs(v));
     };
     return switch (v.state) {
         .asking => .asking,
@@ -9118,8 +9177,53 @@ fn hooklessOf(self: *App, arena: Allocator, id: poltergeistpkg.Bus.Id) poltergei
 /// How often what an adapter said of a hand-started agent is asked again.
 const identity_refresh_ms: u64 = 60 * std.time.ms_per_s;
 
-/// How often an answer that named no session is asked again (task 1674).
-const identity_unsure_refresh_ms: u64 = 5 * std.time.ms_per_s;
+/// How long after its last ask an answer is asked again (task 3236).
+///
+/// **An answer is an answer, and `.asking` is the other thing.** A
+/// `.known` answer that names no session is a determination -- this
+/// adapter, for this CLI, right now, has no session to name -- and not a
+/// question that has not been asked out; that state is `.asking`, which
+/// `Identities` re-asks itself. Until this, a known answer whose session
+/// was null was asked again every 5 s (task 1674, for a Codex whose
+/// record only appears after its first turn), and nothing ended that
+/// retry: an adapter whose CLI never names a session ran an adapter
+/// process every 5 s for as long as the agent stayed -- on Windows a
+/// PowerShell each time, which is what was reported. The steady refresh
+/// still asks again, and a take-over asks again at the press
+/// (`controlActTakeOver`), which is the half 1674 actually needed.
+///
+/// The switch is over the state so that a state added later has to say
+/// what it does here instead of inheriting "asked again soon".
+fn identityRefreshMs(v: poltergeistpkg.Identities.View) u64 {
+    return switch (v.state) {
+        // Answered: whether it named a session changes nothing here.
+        .known => identity_refresh_ms,
+        // Not asked out, and answered "not mine". Neither is refreshed
+        // from here -- `hooklessOf` only refreshes a `.known` one.
+        .asking, .unknown => identity_refresh_ms,
+    };
+}
+
+test "3236: an answer that names no session is asked again at the steady cadence, not every 5 s" {
+    const testing = std.testing;
+    const Ids = poltergeistpkg.Identities;
+    const SeenView = struct {
+        fn view(state: Ids.State, session: ?[]const u8) Ids.View {
+            return .{
+                .state = state,
+                .key = "claude-code",
+                .label = "Claude Code",
+                .identified = .{ .me = state == .known, .session = session, .session_written_ms = null, .quit = null },
+            };
+        }
+    };
+    // The reported defect: an adapter said `me:true` and named no session,
+    // and this handed `Identities` five seconds.
+    try testing.expectEqual(@as(u64, 60 * std.time.ms_per_s), identityRefreshMs(SeenView.view(.known, null)));
+    // One that named a session was never the bug, and is asked at the same
+    // cadence: the answer's content does not pick the interval.
+    try testing.expectEqual(@as(u64, 60 * std.time.ms_per_s), identityRefreshMs(SeenView.view(.known, "0b1d1c35-5e33-4b5e-9f8c-1a2b3c4d5e6f")));
+}
 
 /// A take-over under way (task 1635).
 const TakeOverRun = struct {
@@ -16784,6 +16888,35 @@ test "2682: the housing answer is recorded, and a terminal housed again goes thr
         "if (housed) self.dropIfSuperseded(id)",
     }) |call| try testing.expect(std.mem.indexOf(u8, code, call) != null);
     try testing.expect(std.mem.indexOf(u8, code, "removeSupervisor") == null);
+}
+
+test "3238: every sweep asks the bus for the look a loss is still owed" {
+    // **Read off the source**, like the two above: the sweep needs a
+    // running App. What has to be shown is that the moment a connection
+    // loss is looked at is derived from the bus **on every sweep**, after
+    // `considerLinks` has run, rather than asked for once by whoever
+    // recorded the loss (`tick`). Asked once, an earlier wake -- the one
+    // slot `noticeRetryIn` keeps -- forgets it, and `left` is never
+    // written (task 3238).
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const code = try codeOf(alloc, "\nfn notePoltergeistAgentsHere(");
+    defer alloc.free(code);
+
+    const looked_at = std.mem.indexOf(u8, code, "considerLinks(");
+    try testing.expect(looked_at != null);
+    const owed = std.mem.indexOf(u8, code, "nextLinkLookMs(now_ms)");
+    try testing.expect(owed != null);
+    try testing.expect(looked_at.? < owed.?);
+    try testing.expect(std.mem.indexOf(u8, code, "noticeRetryIn(") != null);
+
+    // **Compiled, not just read.** A build analyses only what it reaches,
+    // so the sweep's own body -- nothing else in the suite calls it -- is
+    // not part of any build until something takes its address. Without
+    // this line a call written with the wrong arguments here compiles: the
+    // source check above reads text, and `zig build test-build` never looks
+    // at this function (measured: it exited 0 on a two-argument call).
+    _ = &notePoltergeistAgentsHere;
 }
 
 fn channelSeats(

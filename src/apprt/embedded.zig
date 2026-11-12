@@ -2878,7 +2878,16 @@ pub const CAPI = struct {
     /// The application is quitting (task 2086): every terminal writes down
     /// its last screenful and scrollback, which `ghostty_app_free` would
     /// have had them do and which no host calls as it quits. Waits a second
-    /// at most. Nothing is torn down; the host quits as it would have.
+    /// at most.
+    ///
+    /// The child processes the core started are ended in the same call
+    /// (task 3237): the resident plugins get end of input first and are
+    /// killed only if they do not take it, and the one-shot adapters still
+    /// running are killed. Neither host frees the app as it quits, so
+    /// `App.deinit` -- the only place that stopped a resident -- never runs;
+    /// without this a plugin that ignores end of input simply stayed.
+    /// The Windows host has one path that skips this call (a quit inside a
+    /// tick); there the Job Objects do the work when the process goes.
     export fn ghostty_app_quitting(v: *App) void {
         v.core_app.writeDownBeforeQuit();
     }

@@ -227,11 +227,27 @@ pub const win = if (builtin.os.tag == .windows) struct {
         return job;
     }
 
+    /// Put `process` in `job`. False when it could not be put in.
+    ///
+    /// Split from `resume` so that a caller which started the process
+    /// suspended -- `std.process.spawn`'s `start_suspended`, which is
+    /// `CREATE_SUSPENDED` -- can assign first and let it run afterwards.
+    /// That is the only order without a window in which the child starts
+    /// something that is not in the job yet (task 3237).
+    pub fn assign(job: HANDLE, process: HANDLE) bool {
+        return AssignProcessToJobObject(job, process) != .FALSE;
+    }
+
+    /// Let a thread started suspended run.
+    pub fn letRun(thread: HANDLE) void {
+        _ = ResumeThread(thread);
+    }
+
     /// Put the suspended `process` in `job` and let its first thread run.
     /// False when it could not be put in: it is let go all the same.
     pub fn adopt(job: HANDLE, process: HANDLE, thread: HANDLE) bool {
-        const ok = AssignProcessToJobObject(job, process) != .FALSE;
-        _ = ResumeThread(thread);
+        const ok = assign(job, process);
+        letRun(thread);
         return ok;
     }
 

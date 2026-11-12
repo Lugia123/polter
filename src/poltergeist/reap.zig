@@ -53,6 +53,286 @@ pub fn kill(id: std.process.Child.Id) !void {
     }
 }
 
+/// A child and everything it starts, as one thing to end (task 3237).
+///
+/// **A pid is one process; what a plugin leaves behind is a tree.** Killing
+/// the child alone left whatever it had started running: a helper that does
+/// not read the plugin's stdin inherits nothing from its death and simply
+/// stays, and on POSIX it is reparented to init and never heard from again.
+/// The two systems hold a tree differently, and each one is asked for the
+/// thing it actually has:
+///
+/// - **POSIX: a process group of its own.** `spawn` is given `pgid = 0`,
+///   which makes the child a group leader, and everything it starts belongs
+///   to that group unless it deliberately leaves (`setsid`). `kill(-pgid)`
+///   is the whole tree.
+/// - **Windows: a Job Object** (`os/job.zig`) with
+///   `KILL_ON_JOB_CLOSE`. The child is started suspended, put in the job,
+///   and only then let run -- that order is the whole point, because a
+///   process that starts something before it is assigned to a job has
+///   started something the job does not hold. `TerminateJobObject` ends it;
+///   and because the handle is the job, the system ends every member when
+///   Polter's last handle closes, even on a path that never reaches code of
+///   ours at all (a crash, or the Windows host's quit that finds itself
+///   inside a tick).
+///
+/// The graceful half is not here: it is end of input on the child's stdin
+/// (`Resident.endForQuit`), offered before this is reached. A plugin that
+/// takes it exits by itself and nothing here runs.
+pub const Tree = struct {
+    const WinHandle = if (builtin.os.tag == .windows) std.os.windows.HANDLE else void;
+
+    /// POSIX: the group the child leads, which is its own pid because
+    /// `spawn` was asked for a new group. Zero when the spawn did not get
+    /// one; killing is then skipped, because `kill(-0)` signals our own
+    /// process group -- Polter itself.
+    ///
+    /// An `i64` and not `std.c.pid_t`: that one is a `HANDLE` on Windows,
+    /// where this struct still exists (it lives in every `Resident`), and a
+    /// field whose default is `0` would not compile there.
+    group: i64 = 0,
+
+    /// Windows: the job holding the child and everything it starts.
+    job: ?WinHandle = null,
+
+    /// `Live` holds a pointer to this. Written under `Live.mutex`.
+    listed: bool = false,
+
+    /// The child's number, for asking whether it is still there once its
+    /// handle is gone (on Windows `wait` closes it). Zero before a child
+    /// and after one is collected; `kill(-0)` would be our own group.
+    pid: std.atomic.Value(u32) = .init(0),
+
+    /// Make what the child will be held by. Call before the spawn.
+    pub fn begin(self: *Tree) void {
+        if (comptime builtin.os.tag == .windows) self.job = internal_os.job.win.create();
+    }
+
+    /// Whether the child must be spawned suspended so that it can be put in
+    /// the tree before it runs anything. Windows with a job, and only then:
+    /// a suspended POSIX child would need a signal this file has no way to
+    /// send through `std.process`.
+    pub fn mustSuspend(self: *const Tree) bool {
+        return self.job != null;
+    }
+
+    /// Hand the freshly spawned child to the tree, and let it run if
+    /// `mustSuspend` made it wait.
+    pub fn adopt(self: *Tree, child: *const std.process.Child) void {
+        const id = child.id orelse return;
+        switch (builtin.os.tag) {
+            .windows => {
+                self.pid.store(internal_os.job.win.pidOf(id), .release);
+                if (self.job) |job| {
+                    if (!internal_os.job.win.assign(job, id)) {
+                        // Nested jobs need Windows 8; a job with a limit
+                        // that refuses nesting is the other way here. It is
+                        // let go all the same, and what is lost is only the
+                        // guarantee about what it starts.
+                        log.warn(
+                            "a child could not be put in its job; it runs without one",
+                            .{},
+                        );
+                    }
+                    internal_os.job.win.letRun(child.thread_handle);
+                }
+            },
+            else => {
+                const pid: u32 = @intCast(id);
+                self.pid.store(pid, .release);
+                self.group = pid;
+            },
+        }
+    }
+
+    /// Whether the child is still running.
+    pub fn running(self: *const Tree) bool {
+        const pid = self.pid.load(.acquire);
+        return pid != 0 and pidRunning(pid);
+    }
+
+    /// Stop everything in the tree. No `SIGTERM` first: the graceful end
+    /// was end of input, and a child still here after that is one that did
+    /// not take it.
+    pub fn kill(self: *const Tree) void {
+        switch (builtin.os.tag) {
+            .windows => if (self.job) |job| {
+                if (!internal_os.job.win.terminate(job)) {
+                    log.warn("could not terminate a child's job; it may outlive us", .{});
+                }
+            },
+            else => {
+                if (self.group <= 0) return;
+                // The negative form is the group: `kill(-pgid, ...)`.
+                const pgid = std.math.cast(std.c.pid_t, -self.group) orelse return;
+                std.posix.kill(pgid, std.posix.SIG.KILL) catch |err| switch (err) {
+                    error.ProcessNotFound => {},
+                    else => log.warn(
+                        "could not end a child's process group err={}",
+                        .{err},
+                    ),
+                };
+            },
+        }
+    }
+
+    /// Give the handle back. On Windows this is also what takes a helper
+    /// the child left behind with it (`KILL_ON_JOB_CLOSE`); on POSIX the
+    /// group needs no handle. Idempotent.
+    pub fn close(self: *Tree) void {
+        if (comptime builtin.os.tag == .windows) {
+            if (self.job) |job| internal_os.job.win.close(job);
+            self.job = null;
+        }
+    }
+};
+
+/// Whether the process with this **number** is still running.
+///
+/// `kill` takes a pid; `exitCode` takes a `Child.Id`, which is a handle on
+/// Windows. This is the one that can be asked about a process named on
+/// paper -- the reading a test can take, and the line in the log a person
+/// can check against Task Manager.
+pub fn pidRunning(pid: u32) bool {
+    switch (builtin.os.tag) {
+        .windows => {
+            const k32 = internal_os.windows.exp.kernel32;
+            const h = k32.OpenProcess(0x1000, .FALSE, pid) orelse return false;
+            defer _ = k32.CloseHandle(h);
+            var code: internal_os.windows.DWORD = 0;
+            if (k32.GetExitCodeProcess(h, &code) == internal_os.windows.FALSE) return false;
+            // `STILL_ACTIVE` is 259. A process whose real exit code is 259
+            // reads as running here; nothing started by Polter exits with
+            // it, and the alternative is a thread query nothing needs.
+            return code == 259;
+        },
+        else => {
+            const p: std.c.pid_t = std.math.cast(std.c.pid_t, pid) orelse return false;
+            const rc = std.c.kill(p, @enumFromInt(0));
+            // There, but not ours to signal: still a process.
+            if (rc != 0) return std.posix.errno(rc) == .PERM;
+            return true;
+        },
+    }
+}
+
+/// End the process with this number, hard.
+///
+/// `kill` takes a `Child.Id`, which is a handle on Windows; this takes the
+/// number `pidRunning` asks about. The two together are what a reading
+/// needs: something exists, and then it does not.
+pub fn pidKill(pid: u32) void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const k32 = internal_os.windows.exp.kernel32;
+            // `PROCESS_TERMINATE`.
+            const h = k32.OpenProcess(0x0001, .FALSE, pid) orelse return;
+            defer _ = k32.CloseHandle(h);
+            _ = k32.TerminateProcess(h, 1);
+        },
+        else => {
+            const p: std.c.pid_t = std.math.cast(std.c.pid_t, pid) orelse return;
+            _ = std.c.kill(p, std.posix.SIG.KILL);
+        },
+    }
+}
+
+/// Every child the core started whose own thread has not collected it yet.
+///
+/// **This is the quit-time backstop, and nothing else uses it.** A resident
+/// has a thread that lives to collect its child; an adapter has a `defer`.
+/// Both are gone the instant the process is -- a `defer` on a thread that
+/// dies with `exit` never runs -- so the one thing that can still stop the
+/// child then is a list that somebody else walks. Quitting walks it
+/// (`App.writeDownBeforeQuit`), after offering every resident end of input
+/// and waiting a moment for the ones that take it.
+///
+/// A **pointer** registry: each tree lives on the stack of the thread that
+/// spawned it, and the list shares the pointer rather than a copy. `add`
+/// and `forget` are the owner's; `endAll` is the quitter's. The mutex is
+/// also what keeps `close` from running under a `kill` of the same handle
+/// (`forget` closes under it).
+///
+/// Fixed size, and a count that overflowed is said out loud rather than
+/// dropped: the app runs a single-digit number of residents and adapters at
+/// once, so 64 is not a limit anything real reaches.
+pub const Live = struct {
+    const max = 64;
+
+    var mutex: std.Io.Mutex = .init;
+    var items: [max]?*Tree = @splat(null);
+
+    /// Put `tree` on the list. False when the list is full.
+    pub fn add(io: std.Io, tree: *Tree) bool {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        for (&items) |*slot| {
+            if (slot.* != null) continue;
+            slot.* = tree;
+            tree.listed = true;
+            return true;
+        }
+        return false;
+    }
+
+    /// The owner is done with `tree`: take it off the list, and give back
+    /// whatever the tree holds (on Windows, closing the job is also what
+    /// ends a helper the child left in it). Idempotent.
+    pub fn forget(io: std.Io, tree: *Tree) void {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        if (tree.listed) {
+            for (&items) |*slot| if (slot.* == tree) {
+                slot.* = null;
+                break;
+            };
+            tree.listed = false;
+        }
+        tree.close();
+        tree.pid.store(0, .release);
+    }
+
+    /// Stop one tree, unless its owner has already forgotten it -- which
+    /// means it has been collected and its handle is about to be given
+    /// back, so there is nothing left to stop.
+    ///
+    /// Under the same mutex as `forget`, and that is the point: a handle
+    /// closed by one thread while another is inside `TerminateJobObject`
+    /// with it is exactly the kind of "the number names something else now"
+    /// this file exists to avoid.
+    pub fn killOne(io: std.Io, tree: *Tree) void {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        if (!tree.listed) return;
+        tree.kill();
+    }
+
+    /// Stop every tree still on the list. How many there were.
+    pub fn endAll(io: std.Io) u32 {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        var n: u32 = 0;
+        for (items) |slot| {
+            const tree = slot orelse continue;
+            tree.kill();
+            n += 1;
+        }
+        return n;
+    }
+
+    /// How many are listed now. For the test that checks `add`/`forget`
+    /// balance; the quit path reads `endAll`'s own count.
+    pub fn count(io: std.Io) u32 {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        var n: u32 = 0;
+        for (items) |slot| if (slot != null) {
+            n += 1;
+        };
+        return n;
+    }
+};
+
 /// Our ends of a child's pipes, which a fired deadline cuts as well as
 /// signalling the child.
 ///
@@ -157,6 +437,14 @@ pub const Reaper = struct {
     /// only read under the lock.
     ends: Ends = .none,
 
+    /// What to end along with the child when the deadline fires (task 3237).
+    /// Null for a caller that holds no tree (a one-shot test fixture).
+    ///
+    /// Borrowed, and read only under this reaper's lock. The owner retires
+    /// the reaper before it closes the tree (`Tree.close`), so a fired
+    /// deadline never reaches a handle somebody has given back.
+    tree: ?*Tree = null,
+
     /// Milliseconds still allowed before the kill. Zero means "at the next
     /// tick".
     left_ms: u64 = 0,
@@ -257,6 +545,11 @@ pub const Reaper = struct {
                         );
                     } else {
                         log.warn("plugin {s}: out of time, stopping it", .{self.key});
+                        // The child and whatever it started. On POSIX the
+                        // group is what a helper of the plugin is in; on
+                        // Windows the job. `kill` below is still the direct
+                        // child, for a tree the spawn never got.
+                        if (self.tree) |tree| tree.kill();
                         kill(pid) catch |err| {
                             log.warn(
                                 "plugin {s}: could not stop it err={}; " ++
@@ -396,6 +689,184 @@ test "a reaper told to hurry does not wait out its deadline" {
     // avoid.
     const took = started.durationTo(.now(io, .awake)).toMilliseconds();
     try testing.expect(took < 5 * std.time.ms_per_s);
+}
+
+test "3237: a tree kill takes what the child started, not just the child" {
+    // **The defect, in the form a reading can hold.** The child starts a
+    // helper of its own and then waits; killing the child alone leaves the
+    // helper running, reparented and never heard from again. The helper's
+    // pid is read from a file the child writes, so what is checked is a
+    // process that really exists rather than anything this file thinks.
+    //
+    // The tree is the group `spawn` makes (`pgid = 0`), which is what
+    // `Resident` and `agent_cli` ask for. The `alive` assertion before the
+    // kill is the negative control: it says the helper was really there,
+    // so a kill that never happened cannot pass this by killing nothing.
+    if (comptime builtin.os.tag != .windows) {
+        var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var raw: [6]u8 = undefined;
+        io.random(&raw);
+        const dir = try std.fmt.allocPrint(testing.allocator, "/tmp/polter-tree-{x}", .{&raw});
+        defer testing.allocator.free(dir);
+        defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+        const pidfile = try std.fmt.allocPrint(testing.allocator, "{s}/grand", .{dir});
+        defer testing.allocator.free(pidfile);
+
+        const script = try std.fmt.allocPrint(
+            testing.allocator,
+            "sleep 300 & echo $! > {s}; wait",
+            .{pidfile},
+        );
+        defer testing.allocator.free(script);
+
+        var tree: Tree = .{};
+        tree.begin();
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ "/bin/sh", "-c", script },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .pgid = 0,
+        });
+        tree.adopt(&child);
+
+        const grand = waitForPid(io, pidfile, 3 * std.time.ms_per_s) orelse {
+            if (child.id) |id| kill(id) catch {};
+            _ = child.wait(io) catch {};
+            tree.close();
+            return error.TestExpectedGrandchild;
+        };
+        // It is really there, and the kill below is what has to end it.
+        try testing.expect(pidRunning(grand));
+
+        tree.kill();
+        // Read first, then take everything away: a floor that made `kill`
+        // do nothing must fail here rather than sit in `wait` for the
+        // minute the fixture sleeps.
+        const gone = waitForGone(io, grand, 3 * std.time.ms_per_s);
+        if (child.id) |id| kill(id) catch {};
+        if (!gone) pidKill(grand);
+        _ = child.wait(io) catch {};
+        tree.close();
+
+        // The reading: it was there before the kill, and it is not after.
+        try testing.expect(gone);
+    }
+
+    // **Windows: the job.** The child here is `cmd.exe` running `ping`,
+    // which is a process the job has to hold for this to mean anything:
+    // one member would prove only that the direct child was stopped.
+    if (comptime builtin.os.tag == .windows) {
+        var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var tree: Tree = .{};
+        tree.begin();
+        try testing.expect(!tree.mustSuspend() or tree.job != null);
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ "cmd.exe", "/c", "ping.exe -n 31 127.0.0.1" },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .create_no_window = true,
+            .start_suspended = tree.mustSuspend(),
+        });
+        tree.adopt(&child);
+
+        // Two: `cmd.exe` and the ping it is waiting for.
+        var members: usize = 0;
+        var waited: u64 = 0;
+        while (waited < 3 * std.time.ms_per_s) : (waited += 25) {
+            members = countMembers(&tree);
+            if (members >= 2) break;
+            std.Io.sleep(io, .fromMilliseconds(25), .awake) catch {};
+        }
+        try testing.expect(members >= 2);
+
+        tree.kill();
+        if (child.id) |id| kill(id) catch {};
+        _ = child.wait(io) catch {};
+        members = countMembers(&tree);
+        waited = 0;
+        while (members != 0 and waited < 3 * std.time.ms_per_s) : (waited += 25) {
+            std.Io.sleep(io, .fromMilliseconds(25), .awake) catch {};
+            members = countMembers(&tree);
+        }
+        tree.close();
+        try testing.expectEqual(@as(usize, 0), members);
+    }
+}
+
+test "3237: the quit list holds a child until its owner forgets it" {
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const before = Live.count(io);
+
+    var a: Tree = .{};
+    var b: Tree = .{};
+    try testing.expect(Live.add(io, &a));
+    try testing.expect(Live.add(io, &b));
+    try testing.expectEqual(before + 2, Live.count(io));
+
+    Live.forget(io, &a);
+    try testing.expectEqual(before + 1, Live.count(io));
+
+    // The quitter's reading: one tree still listed, and it is the one
+    // whose owner has not forgotten it yet.
+    try testing.expect(Live.endAll(io) >= 1);
+
+    Live.forget(io, &b);
+    try testing.expectEqual(before, Live.count(io));
+}
+
+fn countMembers(tree: *const Tree) usize {
+    if (comptime builtin.os.tag == .windows) {
+        const job = tree.job orelse return 0;
+        const members = internal_os.job.win.members(testing.allocator, job) catch return 0;
+        defer testing.allocator.free(members);
+        return members.len;
+    }
+    return 0;
+}
+
+/// The pid the child wrote down, once it has: null if it never did.
+fn waitForPid(io: std.Io, path: []const u8, limit_ms: u64) ?u32 {
+    var waited: u64 = 0;
+    while (waited <= limit_ms) : (waited += 25) {
+        if (readPid(io, path)) |pid| return pid;
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch return null;
+    }
+    return readPid(io, path);
+}
+
+fn readPid(io: std.Io, path: []const u8) ?u32 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        testing.allocator,
+        .limited(64),
+    ) catch return null;
+    defer testing.allocator.free(bytes);
+    const text = std.mem.trim(u8, bytes, " \t\r\n");
+    return std.fmt.parseInt(u32, text, 10) catch null;
+}
+
+/// Whether `pid` is still there after waiting for it to go, at most
+/// `limit_ms`.
+fn waitForGone(io: std.Io, pid: u32, limit_ms: u64) bool {
+    var waited: u64 = 0;
+    while (waited < limit_ms) : (waited += 25) {
+        if (!pidRunning(pid)) return true;
+        std.Io.sleep(io, .fromMilliseconds(25), .awake) catch return false;
+    }
+    return !pidRunning(pid);
 }
 
 test "a child handed over after hurry gets no grace either" {

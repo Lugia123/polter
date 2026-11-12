@@ -40,6 +40,7 @@
 //!     before that process becomes the CLI. See `cli/launch.zig`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const internal_os = @import("../os/main.zig");
 const Allocator = std.mem.Allocator;
 
@@ -332,6 +333,13 @@ fn run(
     argv: []const []const u8,
     ms: u64,
 ) Allocator.Error!Ran {
+    // The adapter and anything it starts, as one thing to end (task 3237).
+    // Quitting walks the same list (`reap.Live`): an adapter's own thread
+    // dies with the process, and the `defer child.kill` below then never
+    // runs.
+    var tree: reap.Tree = .{};
+    tree.begin();
+
     internal_os.windows.lockSpawn(io);
     internal_os.windows.spawnTrace("agent_cli spawn", .begin, 0);
     const spawned = std.process.spawn(io, .{
@@ -341,13 +349,23 @@ fn run(
         // its own, which flashed on each launch (task 2034). The pipes
         // still deliver; see the same flag in Resident.zig.
         .create_no_window = true,
+        // As in `Resident`: a group of its own on POSIX so the whole tree
+        // can be ended; on Windows the job, adopted before it runs.
+        .pgid = if (builtin.os.tag == .windows) null else 0,
+        .start_suspended = tree.mustSuspend(),
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
     });
     internal_os.windows.spawnTrace("agent_cli spawn", .end, 0);
     internal_os.windows.unlockSpawn(io);
-    var child = spawned catch |err| return .{ .could_not = err };
+    var child = spawned catch |err| {
+        tree.close();
+        return .{ .could_not = err };
+    };
+    tree.adopt(&child);
+    _ = reap.Live.add(io, &tree);
+    defer reap.Live.forget(io, &tree);
 
     // Reaps, and closes what is still open. Last, after the reader is gone.
     defer child.kill(io);
@@ -374,6 +392,10 @@ fn run(
         // Not `child.kill`: on Windows that also closes the pipes, under
         // reads still in flight. Stop it, then end those reads from our
         // side, and only then let the reader wait for them to finish.
+        //
+        // The tree as well as the child (task 3237): an adapter that hung
+        // and started an interpreter of its own must not leave it behind.
+        tree.kill();
         if (child.id) |id| reap.kill(id) catch {};
         reap.sever(.{ .read = child.stdout.?.handle });
         reap.sever(.{ .read = child.stderr.?.handle });
