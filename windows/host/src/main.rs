@@ -164,6 +164,7 @@ mod worker_mentions;
 mod winnav;
 mod wintitle;
 mod search;
+mod search_counter;
 mod shell;
 mod shot;
 mod software_render;

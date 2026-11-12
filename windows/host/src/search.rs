@@ -12,7 +12,8 @@
 //!
 //! So the host never looks at the screen contents, never counts anything, and
 //! **cannot disagree with the core about how many matches there are** — the
-//! number it paints is the number the core sent.
+//! total it paints is the number the core sent, and the selected index is the
+//! core's plus one, as the other hosts paint it (`search_counter.rs`).
 //!
 //! **Why the input is a native `EDIT`.** Same reason as the command palette:
 //! a self-drawn field would need its own `ITextStoreACP`, because an IME
@@ -1001,19 +1002,21 @@ fn paint(hwnd: HWND) {
             let old_font = SelectObject(hdc, wins.font.into());
 
             // The counter. Three distinct states, and they must look
-            // different: not answered yet, answered zero, answered n.
-            let (label, colour) = match (st.total, st.selected) {
-                (None, _) => (String::new(), theme::for_window(hwnd).dim()),
-                (Some(0), _) => ("0/0".to_string(), col_none()),
-                (Some(t), Some(s)) => (format!("{}/{}", s, t), theme::for_window(hwnd).text()),
-                (Some(t), None) => (format!("-/{}", t), theme::for_window(hwnd).dim()),
+            // different: not answered yet, answered zero, answered n. The
+            // text and the state behind it live in `search_counter.rs`, so
+            // the rule that reads one-based can be tested off Windows.
+            let (text, tone) = crate::search_counter::counter_label(st.total, st.selected);
+            let colour = match tone {
+                crate::search_counter::Tone::Dim => theme::for_window(hwnd).dim(),
+                crate::search_counter::Tone::None => col_none(),
+                crate::search_counter::Tone::Text => theme::for_window(hwnd).text(),
             };
 
             let (prev_x, next_x, close_x) = buttons(rc.right, &sc);
 
-            if !label.is_empty() {
+            if !text.is_empty() {
                 SetTextColor(hdc, COLORREF(colour));
-                let mut wide: Vec<u16> = label.encode_utf16().collect();
+                let mut wide: Vec<u16> = text.encode_utf16().collect();
                 let mut tr = RECT {
                     left: prev_x - sc(70),
                     top: sc(PAD + 2),
