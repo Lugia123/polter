@@ -8889,8 +8889,48 @@ fn startRoleInAs(
         .typed_at = .now(global.io(), .boot),
     }) catch {};
     if (effective) |e| {
-        if (self.joinSeat(id, choice.key, e)) |err| self.sayJoinRefused(id, e, err);
+        if (self.joinSeat(id, choice.key, e)) |err| {
+            self.sayJoinRefused(id, e, err);
+        } else {
+            // **The seat's place in the group it reports in** (task 3280).
+            //
+            // The seat is granted when the launch line is typed, so the
+            // place must be too: the group used to be granted only when the
+            // agent was *heard*, and a launch whose CLI never connected (no
+            // free agent slot on the Polter socket, a CLI that died on a
+            // startup question) left a terminal that owned the task and was
+            // in no group -- `task_progress` worked, `group_post` was
+            // NotAMember, and the result had nowhere to go.
+            //
+            // **This is the terminal-appeared moment for the ones the
+            // request could not name** (`placed` split or stack on a host
+            // that makes it later, which is every Windows tab): the surface's
+            // `init` calls `claimPendingLaunch`, which is this call.
+            self.seatJoinsGroup(id, e.task);
+        }
     }
+}
+
+/// Put a terminal that has just taken `task`'s seat into the group the task
+/// talks in. The group is the task's, never the caller's choice: `rpc`'s
+/// `role_launch` has already refused a caller that does not supervise it.
+///
+/// **The same grant `rpc` makes from the request side** when the host names
+/// the terminal in its answer, and idempotent with it: `Chat.add` leaves a
+/// member it already has alone. Kept here as well because a host that
+/// answers `placed` split or stack may make the terminal after the request
+/// returns, and then this call is the only one that can see it.
+///
+/// A refusal is logged and not returned: the seat is on the panel by now,
+/// and a terminal in no group is better than one in no panel either.
+fn seatJoinsGroup(self: *App, id: poltergeistpkg.Bus.Id, task: poltergeistpkg.Tasks.Id) void {
+    const t = self.tasks.get(task) orelse return;
+    chatAdd(self, t.group, id, .all) catch |err| {
+        log.warn(
+            "poltergeist: terminal {x} took seat {d} but could not be put in {s} err={}",
+            .{ id, task, t.group, err },
+        );
+    };
 }
 
 /// A terminal started for a squad's seat takes it: the seat is `filled`,
@@ -10329,7 +10369,16 @@ pub fn launchPersonaSeat(
     // it is heard -- before its first request is answered (`arrived`), so
     // its first `group_read` is a member's. It used to be put in by the
     // supervisor's own `group_add`, after; until then every group call the
-    // worker made came back NotAMember.
+    // worker made came back NotAMember. **A squad seat does not wait for
+    // that** (task 3280): the place in its task's group is granted with the
+    // seat -- from `rpc`'s `role_launch` when the host names the terminal in
+    // its answer, and from `startRoleInAs` when the line is typed into a
+    // terminal the host made after that answer -- because a CLI that never
+    // connects must not leave the seat granted and the place not. What is
+    // left here is the launch line's own `--group=`, which is how a launch
+    // that is **not** a seat (a supervisor's plain `role_launch`) is joined;
+    // for a seat it finds the terminal already in the group and does
+    // nothing.
     const joining: LaunchGroup = if (group) |named| try self.launchGroupOf(alloc, by, named) else .{ .none = .not_asked };
     const line = try launchLineFor(alloc, choice, .{ .group = joining.name(), .session = null, .seat = seat_word });
     const join_note = joining.note();

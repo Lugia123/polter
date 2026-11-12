@@ -9542,7 +9542,14 @@ fn createSquadTask(
 
 /// What a seat of a squad is started as, or why it is not started.
 const SeatChoice = union(enum) {
-    go: struct { role: []const u8, seat: MemberSeat },
+    go: struct {
+        role: []const u8,
+        seat: MemberSeat,
+        /// The group the task talks in, which is where the seat is put
+        /// (task 3280). Not an `option`: a seat with none is a worker that
+        /// can report progress and nothing else, which is the bug.
+        group: []const u8,
+    },
     stop: wire.Response,
 };
 
@@ -9630,10 +9637,16 @@ fn seatFor(
         (if (sq.leadOf()) |l| std.mem.eql(u8, l.alias, member) else false)
     else
         std.mem.eql(u8, leadAlias(host, what), member);
-    return .{ .go = .{
-        .role = m.role,
-        .seat = .{ .task = task, .alias = member, .lead = lead, .over = sm.override, .mates = mates.items },
-    } };
+    return .{
+        .go = .{
+            .role = m.role,
+            .seat = .{ .task = task, .alias = member, .lead = lead, .over = sm.override, .mates = mates.items },
+            // The task's group, which `ownsGroup` above has already checked the
+            // caller supervises (task 3280): the name the launch joins is taken
+            // from the task, not from the caller's `group`.
+            .group = what.group,
+        },
+    };
 }
 
 fn supervisorNotAllowed() wire.Response {
@@ -10928,11 +10941,28 @@ fn dispatchOne(
             // it, and with them the role and what the squad changed in it.
             var key = p.key;
             var seat: ?MemberSeat = null;
+            // The group the launch is for: the caller's word, except that a
+            // seat has one and it is its task's (task 3280).
+            var group = p.group;
             if (p.task != 0 or p.member.len > 0) {
                 switch (try seatFor(alloc, bus, host, caller, p.task, p.member, p.key, p.in)) {
                     .go => |got| {
                         key = got.role;
                         seat = got.seat;
+                        // **A seat talks in its task's group, and only
+                        // there.** `seatFor` has already refused a caller
+                        // that does not supervise it, so this adds nothing
+                        // the launch was not already allowed to do. A
+                        // `group` that is not the task's is refused rather
+                        // than quietly replaced: two groups for one seat is
+                        // the cross-group reach the task channel exists to
+                        // keep apart.
+                        if (p.group.len > 0 and !std.mem.eql(u8, p.group, got.group)) return hostFailure(
+                            "BadParams",
+                            "a seat is in its task's group: leave `group` out and the task's own is used, " ++
+                                "or give that one. Nothing was opened.",
+                        );
+                        group = got.group;
                     },
                     .stop => |no| return no,
                 }
@@ -10995,7 +11025,7 @@ fn dispatchOne(
                 try titles.seatName(alloc, s.alias, s.task)
             else
                 host.personaName(key) orelse key;
-            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.start() else p.cwd, p.place, p.in, p.beside, p.group, seat, name) catch |err| return switch (err) {
+            const opened = host.personaLaunch(alloc, caller, key, p.cli, if (tree) |t| t.start() else p.cwd, p.place, p.in, p.beside, group, seat, name) catch |err| return switch (err) {
                 // Starting it in a terminal that is already open (`in`).
                 error.UnknownTerminal => hostFailure(
                     "UnknownTerminal",
@@ -11100,6 +11130,34 @@ fn dispatchOne(
             // the same pin `terminal_open` sends, under the seat's or the
             // role's name instead of a directory's.
             if (opened.id) |id| pinTitle(alloc, host, id, name);
+            // **A seat's place in its task's group, now** (task 3280).
+            //
+            // The seat is granted when the launch line is typed, but the
+            // place in the group used to be granted only when the agent was
+            // *heard*. A launch whose CLI never connected -- every agent
+            // slot on the Polter socket in use, a CLI that died on a
+            // startup question -- then left a terminal that owned the task
+            // and was in no group: `task_progress` worked, `group_post` was
+            // NotAMember, `group_add` itself was a supervisor's, and the
+            // work could only be reported to a screen nobody reads.
+            //
+            // The host's own add, the one `group_add` uses, so the group's
+            // rules (a project's one supervisor and the rest) are the same
+            // ones here. A terminal the launch could not name yet (`id`
+            // null: every split, and every Windows tab) is left to the line
+            // above, which is what joins that one when its agent arrives.
+            var group_note: ?[]const u8 = null;
+            if (seat != null) if (opened.id) |new| {
+                host.chatAdd(group, new, .all) catch |err| {
+                    group_note = try std.fmt.allocPrint(
+                        alloc,
+                        "0x{x:0>16} took its seat of task {d} but could not be put in \"{s}\" ({s}): " ++
+                            "every call it makes there will be NotAMember until the group is made and " ++
+                            "it is added (group_add).",
+                        .{ new, p.task, group, @errorName(err) },
+                    );
+                };
+            };
             return .{
                 .opened = .{
                     .id = opened.id,
@@ -11110,7 +11168,7 @@ fn dispatchOne(
                     .passed_over = opened.passed_over,
                     .worktree = if (tree) |t| t.answer else null,
                     .joins = opened.joins,
-                    .join_note = opened.join_note,
+                    .join_note = group_note orelse opened.join_note,
                     .limits = try launchLimits(bus, host, caller, p.limits, opened.id),
                     // Only a split beside a stack it would have joined: a
                     // `here` that fell back to a tab says so in `fallback`.
@@ -25073,6 +25131,73 @@ test "rpc: role_launch task+member 的有效角色 = resolve(role, override)，�
     // No key and no seat.
     const bare = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{} });
     try testing.expectEqualStrings("BadParams", bare.failed.code);
+}
+
+test "3280: seat 的群来自任务本身——交给 host 的是任务的群，别的群被拒，任务不归你就没有座位" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    // **The seat's group is the task's** (task 3280), and it is handed to
+    // the host even though the caller named none. Taking it from "the one
+    // group you supervise" put a seat in no group at all as soon as its
+    // supervisor supervised two -- the same NotAMember by another road.
+    const res = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "dev" } });
+    try testing.expect(res == .opened);
+    try testing.expectEqualStrings("build", fake.role_launched.?.group);
+
+    // **And the terminal is put in it now**, not when its agent is heard:
+    // the seat was granted when the launch line was typed, so the place is
+    // too. This is the half that a launch whose CLI never connects used to
+    // lose -- it owned the task and was in no group.
+    try testing.expect(fake.added != null);
+    try testing.expectEqualStrings("build", fake.added.?.group);
+    try testing.expect(res.opened.id != null);
+    try testing.expectEqual(res.opened.id.?, fake.added.?.id);
+    try testing.expectEqual(History.all, fake.added.?.history);
+
+    // Naming the task's own group is the same launch, said.
+    const same = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test", .group = "build" } });
+    try testing.expect(same == .opened);
+    try testing.expectEqualStrings("build", fake.role_launched.?.group);
+
+    // Another group is refused, before anything is opened: one seat in two
+    // groups is the cross-group reach the task's channel keeps apart.
+    fake.role_launched = null;
+    fake.added = null;
+    const elsewhere = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test", .group = "elsewhere" } });
+    try testing.expect(elsewhere == .failed);
+    try testing.expectEqualStrings("BadParams", elsewhere.failed.code);
+    try testing.expect(fake.role_launched == null);
+    try testing.expect(fake.added == null);
+
+    // **The lock is still on**: a caller that does not own the task's group
+    // opens no seat in it -- and so is put in no group by one.
+    fake.group_owner = worker;
+    const theirs = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(theirs == .failed);
+    try testing.expectEqualStrings("NotYours", theirs.failed.code);
+    try testing.expect(fake.role_launched == null);
+    try testing.expect(fake.added == null);
+
+    // A host that cannot put it in the group does not undo the launch, and
+    // says so where the supervisor reads it.
+    fake.group_owner = boss;
+    fake.refuse = true;
+    const no_group = try dispatch(alloc, &b, fake.host(), term(boss), .{ .role_launch = .{ .task = 1, .member = "test" } });
+    try testing.expect(no_group == .opened);
+    try testing.expect(no_group.opened.join_note != null);
+    try testing.expect(std.mem.indexOf(u8, no_group.opened.join_note.?, "could not be put in") != null);
 }
 
 test "rpc: role_launch 的牵头人与 task_assign 同一条规则：任务没点名模版的牵头座位时，第一个座位就是牵头人" {
