@@ -32,4 +32,4 @@
 5. **任务与隔离的 worktree**：
    用 `task_create` 建任务。squad 任务要指定 `squad` 和 `members`；单 worker 任务就用 `task_assign` 把 worker 派上去。记住 `feature` 和 `bug` 两类任务会自动规划一个**隔离的 git worktree**（`worktree: auto`），所以 worker 在隔离环境里改，不会污染主线。把完整指令用 `terminal_send` 发给它，或者 `group_post` 并在 `mention` 里点名那个 worker/席位。
 6. **审查、合并、收尾**：
-   用 `worktree_status(task)` 检查任务 worktree 里的成果。跑验证，把验过的补丁自己合进主线。最后调 `task_close`，它会自动拆掉已经合并、干净的 worktree。
+   用 `worktree_status(task)` 检查任务 worktree 里的成果。跑验证，把验过的补丁自己合进主线。最后调 `task_close`，它会拆掉改动已经落地的 worktree。**拆就是删目录：里面未提交的东西一起没，从没进过主线的东西也没** —— 有任何疑问，先看 `worktree_status`。
