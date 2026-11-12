@@ -61,6 +61,7 @@ use polter_projects::orders::{self, Have, Order, Step, Told};
 use polter_projects::page_rules::{self, SaveOver};
 use polter_projects::pages::{self, Live, PageId, Pages, Screen};
 use polter_projects::placement::{self, Place, Rect};
+use polter_projects::start::page_with_start_directories;
 use polter_projects::stated::{self, FailedWhy, Stated};
 
 use crate::project::{self, PaneColor, WriteKind};
@@ -671,7 +672,13 @@ pub fn open(frame: HWND, app: crate::ffi::App, hinst: windows::Win32::Foundation
         let was_open: Vec<TabId> = bound.iter().map(|(t, _)| *t).collect();
         let mut opened_here: Vec<TabId> = Vec::new();
         for page in missing {
-            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &page.tab.root, &snaps, tucked, !opening.takes_keyboard) {
+            // A pane whose record names no directory of its own starts
+            // somewhere the project names, never in the host process's own
+            // directory (task 2042): the page is rewritten once here, so the
+            // layout pipeline and the seed pane both see the same `cwd`
+            // without either of them deciding again.
+            let root = page_with_start_directories(&page.tab.root, file);
+            match crate::project_ui::open_page_in_new_tab(target, app, hinst, &root, &snaps, tucked, !opening.takes_keyboard) {
                 Ok(tab) => {
                     // The name somebody gave it, back as one (task 1722):
                     // pinned, so the shell's first title does not replace

@@ -1668,3 +1668,66 @@ fn two_supervisors_panes_save_as_one_seat() {
     assert_eq!(seats, 1);
     assert_eq!(polter_projectfile::leaves(&written.windows[0].tabs[0].root)[1].supervisor_seat, Some(true));
 }
+
+// ---------------------------------------------------------------------------
+// Where a pane of a restored page starts (task 2042)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_pane_with_no_directory_of_its_own_starts_where_its_page_does() {
+    use crate::start::page_with_start_directories;
+    use std::path::Path;
+
+    let page = split(leaf_of("", "", Agent::None), leaf_of("/work/notes", "", Agent::None), Axis::Horizontal);
+    let page = page_with_start_directories(&page, Path::new("/state/polter/projects/notes.json"));
+    let cwds: Vec<&str> = polter_projectfile::leaves(&page).iter().map(|l| l.cwd.as_str()).collect();
+    assert_eq!(cwds, vec!["/work/notes", "/work/notes"]);
+}
+
+#[test]
+fn a_pane_that_names_a_directory_keeps_it() {
+    use crate::start::page_with_start_directories;
+    use std::path::Path;
+
+    let page = split(leaf_of("/work/shop-web", "", Agent::None), leaf_of("", "", Agent::None), Axis::Horizontal);
+    let page = page_with_start_directories(&page, Path::new("/state/polter/projects/notes.json"));
+    let cwds: Vec<&str> = polter_projectfile::leaves(&page).iter().map(|l| l.cwd.as_str()).collect();
+    assert_eq!(cwds, vec!["/work/shop-web", "/work/shop-web"]);
+}
+
+/// The first directory is the one the file writes first: left before right,
+/// a stack's members in their order -- the same order
+/// `polter_projectfile::leaves` walks, and the order macOS uses.
+#[test]
+fn the_first_directory_is_the_one_the_file_writes_first() {
+    use crate::start::page_with_start_directories;
+    use std::path::Path;
+
+    let left_empty = split(leaf_of("", "", Agent::None), leaf_of("/work/notes", "", Agent::None), Axis::Horizontal);
+    let right_full = split(leaf_of("/work/other", "", Agent::None), leaf_of("/work/deeper", "", Agent::None), Axis::Horizontal);
+    let nested = split(left_empty, right_full, Axis::Vertical);
+    let page = page_with_start_directories(&nested, Path::new("/state/polter/projects/notes.json"));
+    let cwds: Vec<&str> = polter_projectfile::leaves(&page).iter().map(|l| l.cwd.as_str()).collect();
+    assert_eq!(cwds, vec!["/work/notes", "/work/notes", "/work/other", "/work/deeper"]);
+
+    let stack_page = SavedNode::Stack {
+        shown: 2,
+        members: vec![SavedLeaf::plain("", Agent::None), SavedLeaf::plain("/work/a", Agent::None), SavedLeaf::plain("/work/b", Agent::None)],
+    };
+    let stack_page = page_with_start_directories(&stack_page, Path::new("/state/polter/projects/notes.json"));
+    let cwds: Vec<&str> = polter_projectfile::leaves(&stack_page).iter().map(|l| l.cwd.as_str()).collect();
+    assert_eq!(cwds, vec!["/work/a", "/work/a", "/work/b"]);
+}
+
+/// A page that names no directory at all is in the directory its own
+/// project file is in -- still the project's answer, never the process's.
+#[test]
+fn a_page_that_names_no_directory_starts_in_its_projects_directory() {
+    use crate::start::page_with_start_directories;
+    use std::path::Path;
+
+    let page = split(leaf_of("", "", Agent::None), leaf_of("", "", Agent::None), Axis::Horizontal);
+    let page = page_with_start_directories(&page, Path::new("/state/polter/projects/notes.json"));
+    let cwds: Vec<&str> = polter_projectfile::leaves(&page).iter().map(|l| l.cwd.as_str()).collect();
+    assert_eq!(cwds, vec!["/state/polter/projects", "/state/polter/projects"]);
+}

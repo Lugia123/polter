@@ -527,7 +527,11 @@ final class ProjectStore {
         let location = ProjectScrollback.Location(
             directory: ProjectScrollback.directory(forProjectFile: entry.url),
             key: bindingKey(name: entry.name))
-        return tab.root.materializing(app, scrollback: location, area: area)
+        // `entry.url` is also what a pane whose record names no directory
+        // falls back to the directory of (`ProjectNode.startDirectory`), so a
+        // restored pane always starts somewhere the project names -- never
+        // wherever the app was launched from.
+        return tab.root.materializing(app, scrollback: location, area: area, projectFile: entry.url)
     }
 
     /// Put `name`'s previous generation back, keeping the current one as

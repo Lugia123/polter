@@ -1009,6 +1009,52 @@ extension ProjectNode.Direction {
     }
 }
 
+// MARK: - Where a restored pane starts
+
+extension ProjectNode {
+    /// The first directory this page names: a pane's saved `cwd`, in the
+    /// order the file writes the panes -- a split's left before its right,
+    /// a stack's members in their order. Nil when no pane here has one.
+    ///
+    /// This is the project's own directory as far as the file can say it:
+    /// the format has no directory of its own, only the ones its panes are
+    /// in (`Project.zig`'s module comment).
+    var firstCwd: String? {
+        switch self {
+        case .leaf(let cwd, _, _, _, _, _, _, _, _, _, _):
+            return cwd.isEmpty ? nil : cwd
+        case .stack(_, let members):
+            return members.lazy.compactMap(\.firstCwd).first
+        case .split(_, _, let left, let right):
+            return left.firstCwd ?? right.firstCwd
+        }
+    }
+
+    /// The directory a restored pane's shell starts in: what the pane's own
+    /// record says (`cwd`), and when it says nothing -- a save taken before
+    /// the shell had reported where it was, or a file from before every
+    /// leaf carried one -- what the rest of its page names, and failing that
+    /// the directory this project's own file is in.
+    ///
+    /// **Never the process's directory.** A record with no `cwd` used to be
+    /// left for the core's default, which is wherever Polter was launched
+    /// from -- an accident of how the app was started, not something the
+    /// project says (task 2042: a pane of "notes" came back in the
+    /// directory the demo happened to be in). "Where does this shell start"
+    /// has one answer from the project's own data in every case, and this
+    /// is it.
+    ///
+    /// Call on the page's root -- the tree `materializing` was handed, which
+    /// is where the fallback's other panes are -- not on a leaf: a leaf
+    /// asked alone can only answer what it already has. A missing directory
+    /// is still the core's to notice (`Exec.zig` falls back when it cannot
+    /// be opened); this is about a record that names none at all.
+    func startDirectory(forCwd cwd: String, projectFile: URL) -> String {
+        if !cwd.isEmpty { return cwd }
+        return firstCwd ?? projectFile.deletingLastPathComponent().path
+    }
+}
+
 // MARK: - Capture (live surfaces -> data)
 
 extension ProjectNode {
@@ -1189,10 +1235,16 @@ extension ProjectNode {
     /// restored at (#47). **No default**: nil is an answer -- "not known",
     /// and the terminals start at the core's placeholder -- and a caller
     /// has to give it.
+    ///
+    /// `projectFile` is the file this page was read from, which a pane whose
+    /// own record names no directory falls back to the directory of
+    /// (`startDirectory`). A property of the project rather than of any one
+    /// page's tree, so **no default** too.
     func materializing(
         _ app: ghostty_app_t,
         scrollback project: ProjectScrollback.Location?,
-        area: ProjectPageArea?
+        area: ProjectPageArea?,
+        projectFile: URL
     ) -> SplitTree<Ghostty.SurfaceView> {
         let sizes = area.map { area in
             ProjectPaneSizes.sizes(of: self, in: area.size, framed: area.framed).map { size in
@@ -1203,14 +1255,16 @@ extension ProjectNode {
         return building { node in
             defer { next += 1 }
             let size = sizes.flatMap { next < $0.count ? $0[next] : nil }
-            return node.surface(app, scrollback: project, pixelSize: size)
+            return node.surface(app, scrollback: project, pixelSize: size, page: self, projectFile: projectFile)
         }
     }
 
     private func surface(
         _ app: ghostty_app_t,
         scrollback project: ProjectScrollback.Location?,
-        pixelSize: (width: UInt32, height: UInt32)?
+        pixelSize: (width: UInt32, height: UInt32)?,
+        page: ProjectNode,
+        projectFile: URL
     ) -> Ghostty.SurfaceView {
         switch self {
         // Who was in the pane is not acted on here: a restored pane is a
@@ -1220,7 +1274,10 @@ extension ProjectNode {
             let cwd, let title, let titleChosen, let history, let scrollback, _, _, let color, let workersRefused,
             let shielded, _):
             var config = Ghostty.SurfaceConfiguration()
-            if !cwd.isEmpty { config.workingDirectory = cwd }
+            // Always one, from the project's own data (`startDirectory`):
+            // a record that names no directory is not left for the core's
+            // default, which is the process's directory.
+            config.workingDirectory = page.startDirectory(forCwd: cwd, projectFile: projectFile)
             // Passed through opaquely -- see `SurfaceConfiguration.historyRestore`.
             // The core decides what it means per shell once it knows which
             // shell this pane is running (`Exec.zig`, after shell detection).

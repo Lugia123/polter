@@ -10,6 +10,8 @@
 //!     never stop arriving do not put the write off for ever.
 //!   * `handback` -- what a pane restored from a project hands back to the
 //!     core, and why the core's first word on it is not believed.
+//!   * `start` -- where a pane of a restored page starts, from the page's
+//!     own data rather than from wherever the host process happens to be.
 //!
 //! **These are the macOS host's rules, case for case** (`ProjectPages.swift`,
 //! `ProjectPlacement`, `ProjectAutosave.swift`), and the tests here are its
@@ -30,6 +32,7 @@ pub mod orders;
 pub mod page_rules;
 pub mod pages;
 pub mod placement;
+pub mod start;
 pub mod stated;
 pub mod tone;
 

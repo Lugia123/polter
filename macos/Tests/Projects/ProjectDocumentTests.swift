@@ -428,3 +428,80 @@ struct ProjectChosenTitleFileTests {
         }
     }
 }
+
+// MARK: - Where a restored pane starts (task 2042)
+
+@Suite
+struct ProjectStartDirectoryTests {
+    /// The file a project of these tests is saved in. Its directory is what
+    /// a page that names no directory at all falls back to.
+    private static let file = URL(fileURLWithPath: "/state/polter/projects/notes.json")
+
+    private static func leaf(_ cwd: String) -> ProjectNode {
+        .leaf(cwd: cwd, title: "", titleChosen: false, history: "", scrollback: "", bySupervisor: false,
+              supervisorSeat: false, color: .none, workersRefused: false, shielded: false, agent: .none)
+    }
+
+    /// A pane's own record wins -- a page that names one directory does not
+    /// pull a pane that names another over to it.
+    @Test func aPaneStartsInItsOwnSavedDirectory() {
+        let page = ProjectNode.split(
+            direction: .horizontal, ratio: 0.5, left: Self.leaf(""), right: Self.leaf("/work/notes"))
+        #expect(page.startDirectory(forCwd: "/work/shop-web", projectFile: Self.file) == "/work/shop-web")
+    }
+
+    /// The reported case: a record that says nothing about this pane's
+    /// directory gets one the project names, not the process's directory.
+    @Test func aPaneWithNoDirectoryOfItsOwnStartsInItsPages() {
+        let page = ProjectNode.split(
+            direction: .horizontal, ratio: 0.5, left: Self.leaf(""), right: Self.leaf("/work/notes"))
+        #expect(page.firstCwd == "/work/notes")
+        #expect(page.startDirectory(forCwd: "", projectFile: Self.file) == "/work/notes")
+    }
+
+    /// Left before right, a stack's members in their order: the same order
+    /// the format writes the panes and `Project.zig`'s `leaves` walks them.
+    @Test func theFirstDirectoryIsTheOneTheFileWritesFirst() {
+        let leftEmpty = ProjectNode.split(
+            direction: .horizontal, ratio: 0.5, left: Self.leaf(""), right: Self.leaf("/work/notes"))
+        let rightFull = ProjectNode.split(
+            direction: .horizontal, ratio: 0.5, left: Self.leaf("/work/other"), right: Self.leaf("/work/deeper"))
+        let nested = ProjectNode.split(direction: .vertical, ratio: 0.5, left: leftEmpty, right: rightFull)
+        #expect(nested.firstCwd == "/work/notes")
+
+        let stack = ProjectNode.stack(shown: 0, members: [Self.leaf(""), Self.leaf("/work/a"), Self.leaf("/work/b")])
+        #expect(stack.firstCwd == "/work/a")
+        // The one in front is not asked first: members are in their order.
+        let showsLast = ProjectNode.stack(shown: 2, members: [Self.leaf(""), Self.leaf("/work/a"), Self.leaf("/work/b")])
+        #expect(showsLast.firstCwd == "/work/a")
+    }
+
+    /// A page that names no directory at all is in the directory its own
+    /// project file is in -- still the project's answer, never the process's.
+    @Test func aPageThatNamesNoDirectoryStartsInItsProjectsDirectory() {
+        let page = ProjectNode.split(
+            direction: .horizontal, ratio: 0.5, left: Self.leaf(""), right: Self.leaf(""))
+        #expect(page.firstCwd == nil)
+        #expect(page.startDirectory(forCwd: "", projectFile: Self.file) == "/state/polter/projects")
+    }
+
+    /// Old data: a format 1 leaf with no `cwd` at all decodes to "", exactly
+    /// as a format 3 one written before its shell reported does -- and both
+    /// restore to what the rest of their page names.
+    @Test func aFileThatNamesNoDirectoryForAPaneStillRestores() throws {
+        let json = #"""
+        {"name":"notes","saved_at":1,"root":{"kind":"split","direction":"horizontal","ratio":0.5,
+         "left":{"kind":"leaf","title":"bash"},
+         "right":{"kind":"leaf","cwd":"/work/notes"}}}
+        """#
+        let page = try #require(try ProjectFile.decode(from: Data(json.utf8)).firstTab)
+        #expect(page.startDirectory(forCwd: "", projectFile: Self.file) == "/work/notes")
+
+        // And a file whose every pane says nothing goes to the project's
+        // own directory rather than nowhere.
+        let silent = #"{"name":"notes","saved_at":1,"root":{"kind":"leaf","title":"bash"}}"#
+        let none = try #require(try ProjectFile.decode(from: Data(silent.utf8)).firstTab)
+        #expect(none.firstCwd == nil)
+        #expect(none.startDirectory(forCwd: "", projectFile: Self.file) == "/state/polter/projects")
+    }
+}
