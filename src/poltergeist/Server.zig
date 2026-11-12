@@ -69,6 +69,16 @@ pub const max_request_bytes = 64 * 1024;
 /// holds a 64 KiB read and a 16 KiB write buffer, and because the array is
 /// allocated once at startup: zero would refuse everything and a very large
 /// value would reserve memory for connections that will never arrive.
+///
+/// **512 (task 3282) is where the ceiling is now, and it was raised with a
+/// measurement rather than an adjective.** A full table is 512 connection
+/// threads (`std.Thread` reserves 16 MiB of address space each, and the two
+/// buffers touch 80 KiB of it), 512 socket descriptors, and a slot array of
+/// 1,110,016 bytes (`@sizeOf(Slot) = 2168`, measured on this tree). The
+/// readings and the limits they were taken against are in
+/// `Config.@"poltergeist-max-agents"`. The shutdown path's
+/// `[limit_max_connections]?std.Thread` on the stack grows from 4 KiB to
+/// 8 KiB, which is why that array is still allowed to be a local.
 pub const default_max_connections: usize = limit_max_connections;
 
 /// Room for a slot's sighting: every adapter's names and their values,
@@ -77,7 +87,7 @@ const max_sighting = 2048;
 /// Most variables a sighting carries, across all adapters.
 const max_sighting_env = 16;
 pub const min_max_connections = 1;
-pub const limit_max_connections = 256;
+pub const limit_max_connections = 512;
 
 /// How many connections `init` makes room for when asked for
 /// `max_connections` (`poltergeist-max-agents`): clamped rather than

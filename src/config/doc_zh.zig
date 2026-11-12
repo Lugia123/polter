@@ -2104,7 +2104,7 @@ pub const entries = [_]Entry{
         \\anything that can reach the socket could otherwise spawn threads until
         \\the process ran out.
         \\
-        \\# Why 256, and how 64 was wrong for seven weeks with nothing going red
+        \\# Why 512, and how 64 was wrong for seven weeks with nothing going red
         \\
         \\64 was chosen on 2026-09-10 (`7e97932b1`), when one agent terminal still
         \\held one connection: it had been measured full at 16, on an ordinary
@@ -2117,11 +2117,29 @@ pub const entries = [_]Entry{
         \\bursts for two hours, every agent started in that window having no tools
         \\for its whole life.
         \\
-        \\**256 is the ceiling itself** (`Server.limit_max_connections`), not a
+        \\**512 is the ceiling itself** (`Server.limit_max_connections`), not a
         \\number with room above it. The slot array is allocated once at startup
         \\and the server clamps what is written here, so a larger value is
         \\accepted, clamped, and quietly does not take effect -- raising the
         \\ceiling is a change to that constant and to the build.
+        \\
+        \\# What 512 costs, measured (task 3282)
+        \\
+        \\**The ceiling was doubled only after the price was measured.** A full
+        \\table of 512 is 512 connection threads; `std.Thread` reserves 16 MiB of
+        \\address space per thread (`SpawnConfig.default_stack_size`). A probe that
+        \\spawns 512 threads with this exact frame (64 KiB read, 16 KiB write) grew
+        \\virtual size by 8,413,696 KiB -- 512 × 16 MiB plus thread metadata -- and
+        \\held 513 threads. Only the 80 KiB the two buffers touch is resident,
+        \\about 40 MiB across 512. It is 512 socket descriptors plus the listener;
+        \\a desktop app starts with a soft limit of 256 under launchd, and
+        \\`global.zig` raises it at startup (`fixMaxFiles`) until the kernel
+        \\refuses (`ulimit -n` here is 1,048,576 and the kernel's per-process cap is
+        \\122,880), so 513 is not the binding constraint. The slot array is
+        \\1,110,016 bytes on the heap, and shutdown copies one `?std.Thread` per
+        \\slot onto the stack: 8,192 bytes at 512, against an 8 MiB stack. Threads
+        \\are the number to watch on a bigger raise: the kernel's thread table here
+        \\holds 40,960.
         \\
         \\# What it does not fix
         \\
@@ -2130,10 +2148,10 @@ pub const entries = [_]Entry{
         \\the alert the person sees, (iii) one log line a minute with how many were
         \\turned away. "Finished the work and cannot hand in the result" is **not**
         \\solved for a table that stays full -- the wall has only moved, from 38
-        \\terminals to 128 at `M = 0` (64 at two upstreams each), where
-        \\`K * (2 + M) = 256`.
+        \\terminals to 256 at `M = 0` (128 at two upstreams each), where
+        \\`K * (2 + M) = 512`.
         \\
-        \\Valid range is 1 to 256.
+        \\Valid range is 1 to 512.
         ,
         .full_zh =
         \\同时最多允许多少条连接占用该 socket。
@@ -2142,17 +2160,21 @@ pub const entries = [_]Entry{
         \\
         \\之所以有这个上限，是因为每条连接是一个线程，栈帧上放着 64 KiB 读缓冲和 16 KiB 写缓冲；也因为任何能连上 socket 的东西，否则都可能不停地开线程，直到进程耗尽资源。
         \\
-        \\# 为什么是 256，以及 64 怎么错了七周而没有任何东西变红
+        \\# 为什么是 512，以及 64 怎么错了七周而没有任何东西变红
         \\
         \\64 是 2026-09-10（`7e97932b1`）定的，那时一个 agent 终端还只占一条连接 —— 它在 16 上被实测用满过：一个普通工作日、十五个活着的 agent CLI、每个都有在运行的父进程，所以没有泄漏。**七天后** notifier 的第二条连接落地（`2f74fb4a1`，2026-09-17），**没有人重算这个数** —— 从那时起 64 就悄悄只等于 32 个终端，一直错到 2026-11-12 再量：24 个 `+mcp` 侧车、同一个 socket 上 49 条已接受连接，而 38 个终端的舰队在两个小时里被成批拒接，那个窗口里起来的每一个 agent 一辈子都没有工具。
         \\
-        \\**256 就是天花板本身**（`Server.limit_max_connections`），上面没有余量。槽位数组在启动时分配一次，服务端会把这里写的值夹到上限，所以写更大的值会被接受、被夹掉，然后悄悄不生效 —— 抬天花板是改那个常量、重新编译的事。
+        \\**512 就是天花板本身**（`Server.limit_max_connections`），上面没有余量。槽位数组在启动时分配一次，服务端会把这里写的值夹到上限，所以写更大的值会被接受、被夹掉，然后悄悄不生效 —— 抬天花板是改那个常量、重新编译的事。
+        \\
+        \\# 512 的代价，实测（任务 3282）
+        \\
+        \\**天花板是在量过代价之后才翻倍的。** 装满的 512 张表就是 512 条连接线程；`std.Thread` 给每个线程预留 16 MiB 地址空间（`SpawnConfig.default_stack_size`）。一个探针用与这里完全相同的栈帧（64 KiB 读、16 KiB 写）起了 512 个线程，虚拟空间涨了 8,413,696 KiB —— 512 × 16 MiB 加上线程元数据 —— 持有 513 个线程。真正驻留的只有两个缓冲碰到的 80 KiB，512 条合计约 40 MiB。它是 512 个 socket 描述符加上监听那一个；桌面应用在 launchd 下的软上限是 256，而 `global.zig` 在启动时（`fixMaxFiles`）一路抬到内核拒绝为止（这里 `ulimit -n` 是 1,048,576，内核对单进程的上限是 122,880），所以 513 不是那个卡点。槽位数组在堆上是 1,110,016 字节，关闭时会把每个槽位的 `?std.Thread` 拷到栈上：512 个是 8,192 字节，对照 8 MiB 的栈。再往上抬时该盯的是线程数：这里内核的线程表能放 40,960 个。
         \\
         \\# 它没有修好什么
         \\
-        \\表满了 agent 依然没有工具。满的时候只剩（i）`+mcp` 在 20 秒内退避重试握手，（ii）用户看到的 alert，（iii）日志里一分钟一行、写着被拒了多少次。表**持续**满时，「干完活交不了结果」没有解决 —— 只是把墙挪了位置：从 38 个终端挪到 `M = 0` 时的 128 个（每个带两个上游时是 64 个），也就是 `K * (2 + M) = 256`。
+        \\表满了 agent 依然没有工具。满的时候只剩（i）`+mcp` 在 20 秒内退避重试握手，（ii）用户看到的 alert，（iii）日志里一分钟一行、写着被拒了多少次。表**持续**满时，「干完活交不了结果」没有解决 —— 只是把墙挪了位置：从 38 个终端挪到 `M = 0` 时的 256 个（每个带两个上游时是 128 个），也就是 `K * (2 + M) = 512`。
         \\
-        \\有效范围是 1 到 256。
+        \\有效范围是 1 到 512。
         ,
     },
     .{

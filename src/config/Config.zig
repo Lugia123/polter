@@ -1320,7 +1320,7 @@ command: ?Command = null,
 /// anything that can reach the socket could otherwise spawn threads until
 /// the process ran out.
 ///
-/// # Why 256, and how 64 was wrong for seven weeks with nothing going red
+/// # Why 512, and how 64 was wrong for seven weeks with nothing going red
 ///
 /// 64 was chosen on 2026-09-10 (`7e97932b1`), when one agent terminal still
 /// held one connection: it had been measured full at 16, on an ordinary
@@ -1333,11 +1333,29 @@ command: ?Command = null,
 /// bursts for two hours, every agent started in that window having no tools
 /// for its whole life.
 ///
-/// **256 is the ceiling itself** (`Server.limit_max_connections`), not a
+/// **512 is the ceiling itself** (`Server.limit_max_connections`), not a
 /// number with room above it. The slot array is allocated once at startup
 /// and the server clamps what is written here, so a larger value is
 /// accepted, clamped, and quietly does not take effect -- raising the
 /// ceiling is a change to that constant and to the build.
+///
+/// # What 512 costs, measured (task 3282)
+///
+/// **The ceiling was doubled only after the price was measured.** A full
+/// table of 512 is 512 connection threads; `std.Thread` reserves 16 MiB of
+/// address space per thread (`SpawnConfig.default_stack_size`). A probe that
+/// spawns 512 threads with this exact frame (64 KiB read, 16 KiB write) grew
+/// virtual size by 8,413,696 KiB -- 512 × 16 MiB plus thread metadata -- and
+/// held 513 threads. Only the 80 KiB the two buffers touch is resident,
+/// about 40 MiB across 512. It is 512 socket descriptors plus the listener;
+/// a desktop app starts with a soft limit of 256 under launchd, and
+/// `global.zig` raises it at startup (`fixMaxFiles`) until the kernel
+/// refuses (`ulimit -n` here is 1,048,576 and the kernel's per-process cap is
+/// 122,880), so 513 is not the binding constraint. The slot array is
+/// 1,110,016 bytes on the heap, and shutdown copies one `?std.Thread` per
+/// slot onto the stack: 8,192 bytes at 512, against an 8 MiB stack. Threads
+/// are the number to watch on a bigger raise: the kernel's thread table here
+/// holds 40,960.
 ///
 /// # What it does not fix
 ///
@@ -1346,11 +1364,11 @@ command: ?Command = null,
 /// the alert the person sees, (iii) one log line a minute with how many were
 /// turned away. "Finished the work and cannot hand in the result" is **not**
 /// solved for a table that stays full -- the wall has only moved, from 38
-/// terminals to 128 at `M = 0` (64 at two upstreams each), where
-/// `K * (2 + M) = 256`.
+/// terminals to 256 at `M = 0` (128 at two upstreams each), where
+/// `K * (2 + M) = 512`.
 ///
-/// Valid range is 1 to 256.
-@"poltergeist-max-agents": u16 = 256,
+/// Valid range is 1 to 512.
+@"poltergeist-max-agents": u16 = 512,
 
 /// Lower the renderer mailbox's capacity, so that a full mailbox can be
 /// reached deliberately. **Zero, the default, means the built-in bound.**

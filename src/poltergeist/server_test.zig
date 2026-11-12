@@ -1005,3 +1005,30 @@ test "3281: the default slot count holds a fleet, not a count of terminals" {
     // can already do better than.
     try testing.expectEqual(Server.limit_max_connections, Server.default_max_connections);
 }
+
+test "3282: the ceiling is 512, the default follows it, and the clamp stays a range" {
+    // `poltergeist-max-agents` is clamped by `slotCount` before anything is
+    // allocated, so the three numbers have to stay one ordered range: the
+    // floor is still "refuse nothing" (1), the ceiling is what the build can
+    // hold, and the default is the ceiling itself. The literal 512 is
+    // deliberate -- this test is what says the raise happened, rather than
+    // deriving it from whatever constant happens to be there.
+    try testing.expectEqual(@as(usize, 512), Server.limit_max_connections);
+    try testing.expectEqual(Server.limit_max_connections, Server.default_max_connections);
+    try testing.expectEqual(@as(usize, 1), Server.min_max_connections);
+    try testing.expect(Server.min_max_connections <= Server.default_max_connections);
+    try testing.expect(Server.default_max_connections <= Server.limit_max_connections);
+
+    // Idempotent at the ceiling, clamped just above it, and the largest
+    // value the `u16` setting can carry (65535) still lands on the ceiling.
+    try testing.expectEqual(@as(usize, 512), Server.slotCount(512));
+    try testing.expectEqual(Server.limit_max_connections, Server.slotCount(513));
+    try testing.expectEqual(Server.limit_max_connections, Server.slotCount(std.math.maxInt(u16)));
+    try testing.expectEqual(Server.min_max_connections, Server.slotCount(0));
+
+    // The shutdown path (`stopConnections`) copies one `?std.Thread` per
+    // slot onto the stack. That is the one place the ceiling is paid for on
+    // a stack rather than the heap, so keep it small next to a thread's own
+    // stack -- measured `@sizeOf(?std.Thread) = 16`, so 512 slots is 8 KiB.
+    try testing.expect(@sizeOf(?std.Thread) * Server.limit_max_connections <= 16 * 1024);
+}
