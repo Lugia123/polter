@@ -70,6 +70,7 @@ pub const rpc = @import("rpc.zig");
 pub const Sampler = @import("Sampler.zig");
 pub const Server = @import("Server.zig");
 pub const Plugin = @import("Plugin.zig");
+pub const UnrunnableSaid = @import("UnrunnableSaid.zig");
 pub const agent_cli = @import("agent_cli.zig");
 pub const Identities = @import("Identities.zig");
 pub const TakeOver = @import("TakeOver.zig");
@@ -196,6 +197,7 @@ test {
     _ = squad;
     _ = SquadStore;
     _ = Plugin;
+    _ = UnrunnableSaid;
     _ = agent_cli;
     _ = Identities;
     _ = TakeOver;

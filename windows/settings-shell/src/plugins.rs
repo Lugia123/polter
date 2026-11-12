@@ -162,6 +162,24 @@ pub fn restart_pending(runtime: Option<&Runtime>) -> bool {
     runtime.is_some_and(|r| r.running && r.restart_pending)
 }
 
+/// Whether the dots are worth asking the core about again.
+///
+/// **The five-second timer is for a person looking at the dots, and a window
+/// in the back is not being looked at.** Each poll is a `plugin_list`, and
+/// that makes the core walk both plugin directories, read every manifest and
+/// every settings file, and (before task 3241) write the same
+/// cannot-run-here line into the log every time. A settings window that
+/// comes forward refreshes then -- the window's `WM_ACTIVATE` calls
+/// `refresh_catalog` -- so polling it while it is behind buys no answer
+/// anyone reads.
+///
+/// Two facts, because they are not one: `visible` is a window that can be
+/// seen at all, `front` is the window being looked at. A minimized window is
+/// visible in the window list and is neither brought forward nor read.
+pub fn dots_worth_polling(visible: bool, front: bool) -> bool {
+    visible && front
+}
+
 /// The required parameters still empty, by title, in the manifest's order.
 /// `params` is `(name, title, required)`.
 pub fn missing_required(params: &[(String, String, bool)], values: &[(String, String)]) -> Vec<String> {
@@ -746,6 +764,22 @@ mod tests {
 
     fn rt(running: bool, failures: u32, note: &str) -> Option<Runtime> {
         Some(Runtime { running, failures, restart_pending: false, note: note.into(), note_say: None })
+    }
+
+    /// Task 3241: after the settings window had once visited Plugins, its
+    /// five-second timer went on asking the core for `plugin_list` -- and the
+    /// core went on walking the plugin directories -- while the window sat in
+    /// the back, where nobody reads a dot. The tick is worth the walk only
+    /// while the window is both on screen and in front.
+    #[test]
+    fn dots_are_polled_only_while_the_settings_window_is_in_front() {
+        assert!(dots_worth_polling(true, true), "in front: the dots are being looked at");
+        assert!(!dots_worth_polling(true, false), "visible but behind: nobody is reading them");
+        assert!(!dots_worth_polling(false, false), "hidden or closed: there is nothing to refresh");
+        // Not `visible || front`: a hidden window is never the front one, so
+        // an `||` would pass the two rows above one way round and still poll
+        // a window nobody can see.
+        assert!(!dots_worth_polling(false, true), "a window that is not visible cannot be what is looked at");
     }
 
     /// **The table the macOS side's `SettingsRules` tests too** (settings.md

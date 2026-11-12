@@ -6862,6 +6862,13 @@ pub const TaskQuery = struct {
 pub const TaskWindow = struct {
     rows: []const TaskView,
     more: bool = false,
+
+    /// How many tasks in the group a worker has said `done` and no
+    /// supervisor has closed -- **the whole group, not the page**. It
+    /// rides along with every `task_list` answer so the one number that
+    /// says "work is waiting on you" is there even when the caller narrowed
+    /// the rows to open work or to one title. See `Tasks.countDoneUnclosed`.
+    done_unclosed: usize = 0,
 };
 
 pub const TaskView = struct {
@@ -12357,7 +12364,11 @@ fn dispatchOne(
                 .owner = p.owner,
                 .match = p.match,
             }) catch |err| return taskFailure(err);
-            return .{ .tasks = .{ .rows = win.rows, .more = win.more } };
+            return .{ .tasks = .{
+                .rows = win.rows,
+                .more = win.more,
+                .done_unclosed = win.done_unclosed,
+            } };
         },
 
         .task_history => |p| {
@@ -15470,7 +15481,11 @@ const FakeHost = struct {
             .progress = @tagName(t.progress),
             .seats = try seatViews(alloc, t, self, seatHeld),
         };
-        return .{ .rows = out, .more = win.more };
+        return .{
+            .rows = out,
+            .more = win.more,
+            .done_unclosed = panel.countDoneUnclosed(group),
+        };
     }
 
     fn taskHistory(
@@ -19445,6 +19460,156 @@ test "a worker sees its own open work and nothing else" {
         } });
         try testing.expectEqual(@as(usize, 3), res.tasks.rows.len);
     }
+}
+
+/// Three tasks in `build` for the one-filter-per-test group below: two open
+/// -- one held by each terminal -- and one closed. `task_list` is asked by
+/// the supervisor, which is the whole-panel view, because that is the view
+/// whose filters were the ones dropped.
+fn taskFilterPanel(panel: *Tasks) !void {
+    const a = try panel.create("build", "the parser is slow", .bug);
+    const b = try panel.create("build", "the parser is wrong", .bug);
+    const c = try panel.create("build", "something else", .feature);
+    try panel.assign(a, worker);
+    try panel.assign(b, other);
+    try panel.close(c);
+}
+
+test "task_list: limit is a page, and says there is more" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+
+    var i: usize = 0;
+    while (i < 12) : (i += 1) _ = try panel.create("build", "a line", .other);
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .limit = 5 },
+    });
+    try testing.expectEqual(@as(usize, 5), res.tasks.rows.len);
+    try testing.expect(res.tasks.more);
+}
+
+test "task_list: before walks from just before that task" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+
+    var i: usize = 0;
+    while (i < 6) : (i += 1) _ = try panel.create("build", "a line", .other);
+
+    const first = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .limit = 2 },
+    });
+    try testing.expectEqual(@as(usize, 2), first.tasks.rows.len);
+
+    // The cursor is the last row this page handed over, and the next page
+    // starts one older than it -- not at it again.
+    const cursor = first.tasks.rows[1].id;
+    const second = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .limit = 2, .before = cursor },
+    });
+    try testing.expectEqual(@as(usize, 2), second.tasks.rows.len);
+    try testing.expect(second.tasks.rows[0].id < cursor);
+    try testing.expectEqual(@as(u64, 4), second.tasks.rows[0].id);
+}
+
+test "task_list: state keeps only the state that was asked for" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    try taskFilterPanel(&panel);
+
+    const closed = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .state = "closed" },
+    });
+    try testing.expectEqual(@as(usize, 1), closed.tasks.rows.len);
+    try testing.expectEqualStrings("something else", closed.tasks.rows[0].title);
+
+    const open = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .state = "open" },
+    });
+    try testing.expectEqual(@as(usize, 2), open.tasks.rows.len);
+    for (open.tasks.rows) |row| try testing.expectEqualStrings("open", row.state);
+}
+
+test "task_list: owner keeps only that terminal's work" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    try taskFilterPanel(&panel);
+
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .owner = worker },
+    });
+    try testing.expectEqual(@as(usize, 1), res.tasks.rows.len);
+    try testing.expectEqualStrings("the parser is slow", res.tasks.rows[0].title);
+}
+
+test "task_list: match keeps the titles that hold the substring" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+    try taskFilterPanel(&panel);
+
+    // ASCII case ignored, as the panel's own filter does.
+    const res = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .match = "PARSER" },
+    });
+    try testing.expectEqual(@as(usize, 2), res.tasks.rows.len);
+}
+
+test "task_list: done_unclosed counts the group and ignores the filters" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var fake = panelFixture(&panel);
+
+    const finished = try panel.create("build", "finished, waiting on you", .bug);
+    try panel.assign(finished, worker);
+    try panel.setProgress(finished, worker, .done);
+
+    const closed = try panel.create("build", "finished and closed", .bug);
+    try panel.assign(closed, worker);
+    try panel.setProgress(closed, worker, .done);
+    try panel.close(closed);
+
+    // The count is the same on every question, including the ones that
+    // return none of it: a supervisor narrowing to `closed` must still
+    // learn that a finished task is waiting to be closed.
+    const plain = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build" },
+    });
+    try testing.expectEqual(@as(usize, 1), plain.tasks.done_unclosed);
+
+    const narrowed = try dispatch(arena.allocator(), &b, fake.host(), term(boss), .{
+        .task_list = .{ .group = "build", .state = "closed", .match = "nothing matches this" },
+    });
+    try testing.expectEqual(@as(usize, 0), narrowed.tasks.rows.len);
+    try testing.expectEqual(@as(usize, 1), narrowed.tasks.done_unclosed);
 }
 
 test "the conversations view is not paged, and an agent is" {

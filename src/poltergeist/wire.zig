@@ -628,9 +628,31 @@ pub fn parseRequestLeaky(aa: Allocator, bytes: []const u8) ParseError!rpc.Reques
             .progress = try requireString(aa, params, "progress"),
         } },
 
-        .task_list => .{ .task_list = .{
-            .group = try requireString(aa, params, "group"),
-        } },
+        // **Every filter is carried, and dropping one here is not a
+        // narrower answer -- it is the whole panel.** Until 2026-11-12
+        // this arm read `group` and nothing else, so `limit`, `before`,
+        // `state`, `owner` and `match` were accepted by
+        // `rejectUnknownParams` (they are fields of the payload) and then
+        // thrown away one line later. `task_list` answered every question
+        // with everything it had, and nothing anywhere said so: the caller
+        // asked for five rows of open work and got the panel.
+        .task_list => .{
+            .task_list = .{
+                .group = try requireString(aa, params, "group"),
+                .limit = try optionalU64(params, "limit", 0),
+                .before = try optionalU64(params, "before", 0),
+                // The word is the host's to judge: `state` names the panel's
+                // enum, and only the host knows those names. Carried as written
+                // so a misspelling is a refusal (`BadState`) rather than a
+                // silent "no filter at all".
+                .state = (try optionalString(aa, params, "state")) orelse "",
+                // Same id forms every other terminal id takes -- a number or
+                // the `0x…` string -- and absent or null is nobody (`0`), which
+                // is what "every owner" means to the panel.
+                .owner = (try optionalIdParam(params, "owner")) orelse 0,
+                .match = (try optionalString(aa, params, "match")) orelse "",
+            },
+        },
 
         // A number past `u32` is still a number of minutes, and too many:
         // it is held at one past the limit so that the answer says so.
@@ -1530,6 +1552,12 @@ pub const Response = union(enum) {
         /// same reason: a page cut short by a limit is otherwise
         /// indistinguishable from the end of the panel.
         more: bool = false,
+
+        /// Work a worker says it finished and nobody has closed, counted
+        /// over the whole group. **Always written, and never narrowed by
+        /// `state`/`match`/`before`**, because the number is the one thing
+        /// a supervisor acts on and a page is not allowed to hide it.
+        done_unclosed: usize = 0,
     },
 
     /// What happened to a panel, answering `task_history`.
@@ -1943,6 +1971,13 @@ pub fn writeResponse(writer: *std.Io.Writer, res: Response) std.Io.Writer.Error!
             try s.write(true);
             try s.objectField("more");
             try s.write(page.more);
+
+            // Before the rows, and never filtered: a reader checks it
+            // first and then reads. Zero is written rather than left out
+            // -- an absent field would have to be read as "none" by
+            // guessing, and that is the same shape as `seats: []`.
+            try s.objectField("done_unclosed");
+            try s.write(page.done_unclosed);
             try s.objectField("tasks");
             try s.beginArray();
             for (page.rows) |t| {
@@ -4166,4 +4201,111 @@ test "squad: task_list 的每一行都写 seats，座位的字段齐全；没有
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\"seats\":[]"));
     try testing.expect(std.mem.indexOf(u8, out, "\"alias\":\"dev\",\"role\":\"worker-dev\",\"slot\":\"filled\",\"terminal\":\"0x0000000000000011\",\"session\":\"claude abcd1234\",\"lead\":true,\"held\":true") != null);
     try testing.expect(std.mem.indexOf(u8, out, "\"slot\":\"empty\",\"terminal\":\"0x0000000000000000\"") != null);
+}
+
+test "wire: task_list carries its limit -- a page, not the whole panel" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build","limit":5}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("build", p.value.task_list.group);
+    try testing.expectEqual(@as(u64, 5), p.value.task_list.limit);
+}
+
+test "wire: task_list carries its before cursor" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build","before":3200}}
+    );
+    defer p.deinit();
+    try testing.expectEqual(@as(u64, 3200), p.value.task_list.before);
+}
+
+test "wire: task_list carries the state it was asked for" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build","state":"closed"}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("closed", p.value.task_list.state);
+
+    // A word the panel does not have is not the wire's to judge: it is
+    // carried through and refused by the host, which is the only side that
+    // knows the names. Dropping it here would answer a narrower question
+    // with the whole panel.
+    var bad = try parse(
+        \\{"method":"task_list","params":{"group":"build","state":"closd"}}
+    );
+    defer bad.deinit();
+    try testing.expectEqualStrings("closd", bad.value.task_list.state);
+}
+
+test "wire: task_list carries its owner" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build","owner":"0x0000000000002222"}}
+    );
+    defer p.deinit();
+    try testing.expectEqual(@as(Bus.Id, 0x2222), p.value.task_list.owner);
+
+    var num = try parse(
+        \\{"method":"task_list","params":{"group":"build","owner":8738}}
+    );
+    defer num.deinit();
+    try testing.expectEqual(@as(Bus.Id, 8738), num.value.task_list.owner);
+}
+
+test "wire: task_list carries its match substring" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build","match":"3162"}}
+    );
+    defer p.deinit();
+    try testing.expectEqualStrings("3162", p.value.task_list.match);
+}
+
+test "wire: task_list with no filters is what it always was" {
+    var p = try parse(
+        \\{"method":"task_list","params":{"group":"build"}}
+    );
+    defer p.deinit();
+    const q = p.value.task_list;
+    try testing.expectEqual(@as(u64, 0), q.limit);
+    try testing.expectEqual(@as(u64, 0), q.before);
+    try testing.expectEqualStrings("", q.state);
+    try testing.expectEqual(@as(Bus.Id, 0), q.owner);
+    try testing.expectEqualStrings("", q.match);
+}
+
+test "wire: a filter of the wrong shape is refused, not dropped" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"task_list","params":{"group":"build","limit":"five"}}
+    ));
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"task_list","params":{"group":"build","state":5}}
+    ));
+    try testing.expectError(error.BadParams, parseRequestLeaky(arena.allocator(),
+        \\{"method":"task_list","params":{"group":"build","before":-1}}
+    ));
+}
+
+test "wire: a task_list answer always writes done_unclosed, zero included" {
+    const rows = [_]rpc.TaskView{
+        .{ .id = 1, .title = "open", .owner = 0, .state = "open", .progress = "open", .kind = "bug", .seats = &.{} },
+    };
+
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeResponse(&w, .{ .tasks = .{ .rows = &rows, .done_unclosed = 3 } });
+    const out = w.buffered();
+    // Written before the rows, and as a number rather than left out --
+    // "none" and "the field was dropped" must not read the same.
+    const done_at = std.mem.indexOf(u8, out, "\"done_unclosed\":3");
+    const rows_at = std.mem.indexOf(u8, out, "\"tasks\":");
+    try testing.expect(done_at != null and rows_at != null);
+    try testing.expect(done_at.? < rows_at.?);
+
+    var buf2: [2048]u8 = undefined;
+    var w2: std.Io.Writer = .fixed(&buf2);
+    try writeResponse(&w2, .{ .tasks = .{ .rows = &rows } });
+    try testing.expect(std.mem.indexOf(u8, w2.buffered(), "\"done_unclosed\":0") != null);
 }

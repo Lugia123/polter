@@ -290,6 +290,24 @@ fn refresh_runtimes() {
     }
 }
 
+/// Whether the timer's tick is worth a `plugin_list` (task 3241).
+///
+/// **The answer the core gives is not free**: it walks both plugin
+/// directories and reads every manifest and settings file. That is the right
+/// price to keep a dot current for somebody looking at it, and the wrong
+/// price while the settings window sits in the back, where the same answer
+/// is read by nobody. `WM_ACTIVATE` refreshes the catalog when the window
+/// comes forward, so nothing goes stale unread.
+fn dots_worth_polling(win: HWND) -> bool {
+    unsafe {
+        let root = GetAncestor(win, GA_ROOT);
+        rules::dots_worth_polling(
+            IsWindowVisible(root).as_bool(),
+            GetForegroundWindow() == root,
+        )
+    }
+}
+
 fn set_runtimes(r: Option<BTreeMap<String, rules::Runtime>>) {
     ST.with(|c| c.borrow_mut().runtimes = r);
 }
@@ -1541,9 +1559,18 @@ unsafe extern "system" fn section_proc(win: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 LRESULT(0)
             }
             WM_TIMER if wp.0 == TIMER_RUNTIMES => {
-                refresh_runtimes();
-                crate::settings_win::crumb_changed();
-                let _ = InvalidateRect(Some(win), None, false);
+                // **The tick is not the place to find out whether anything
+                // changed** (task 3241): it is the place to redraw a dot
+                // somebody is looking at. A window in the back is refreshed
+                // by `WM_ACTIVATE` when it comes forward, so asking the core
+                // -- and making it walk the plugin directories -- while it is
+                // behind was work with no reader. It ran for the rest of the
+                // settings window's life after Plugins had once been shown.
+                if dots_worth_polling(win) {
+                    refresh_runtimes();
+                    crate::settings_win::crumb_changed();
+                    let _ = InvalidateRect(Some(win), None, false);
+                }
                 LRESULT(0)
             }
             WM_SIZE => {

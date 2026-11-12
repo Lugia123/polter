@@ -1000,6 +1000,26 @@ pub fn page(
     return self.walk(alloc, group, nobody, false, p);
 }
 
+/// How many of `group`'s tasks a worker has reported `done` and no
+/// supervisor has closed yet.
+///
+/// **Counted over the whole group, never through a `Page`.** `task_list`
+/// narrows what the caller reads, and this one number says "there is work
+/// waiting on you" -- so it must not go to zero the moment the caller
+/// narrows to `state=open` or a `match`, which is exactly when it is worth
+/// knowing. A page is a way of looking at the panel; this is a fact about
+/// it.
+pub fn countDoneUnclosed(self: *const Tasks, group: []const u8) usize {
+    var n: usize = 0;
+    for (self.list.items) |t| {
+        if (!std.mem.eql(u8, t.group, group)) continue;
+        if (t.state != .open) continue;
+        if (t.progress != .done) continue;
+        n += 1;
+    }
+    return n;
+}
+
 /// The worker's view, paged. Still only its own, still only open.
 pub fn pageForWorker(
     self: *const Tasks,
@@ -1429,6 +1449,39 @@ test "a page filtered by state, by owner, and by substring" {
     defer testing.allocator.free(both.tasks);
     try testing.expectEqual(@as(usize, 1), both.tasks.len);
     try testing.expectEqual(b, both.tasks[0].id);
+}
+
+test "done-and-unclosed is counted over the group, never through a page" {
+    var t = testTasks();
+    defer t.deinit();
+
+    const finished = try t.create("build", "finished and waiting", .bug);
+    try t.assign(finished, worker_a);
+    try t.setProgress(finished, worker_a, .done);
+
+    // A closed one is closed: its worker is done, and so is the task.
+    const closed = try t.create("build", "finished and checked off", .bug);
+    try t.assign(closed, worker_a);
+    try t.setProgress(closed, worker_a, .done);
+    try t.close(closed);
+
+    // A cancelled one is not waiting on anybody either.
+    const cancelled = try t.create("build", "called off", .feature);
+    try t.assign(cancelled, worker_a);
+    try t.setProgress(cancelled, worker_a, .done);
+    try t.cancel(cancelled);
+
+    // Still working: not waiting on the supervisor yet.
+    _ = try t.create("build", "still going", .other);
+
+    // Another group's finished work is not this group's to report.
+    const elsewhere = try t.create("test", "theirs", .bug);
+    try t.assign(elsewhere, worker_b);
+    try t.setProgress(elsewhere, worker_b, .done);
+
+    try testing.expectEqual(@as(usize, 1), t.countDoneUnclosed("build"));
+    try testing.expectEqual(@as(usize, 1), t.countDoneUnclosed("test"));
+    try testing.expectEqual(@as(usize, 0), t.countDoneUnclosed("nothing-here"));
 }
 
 test "a worker's page is still only its own open work" {

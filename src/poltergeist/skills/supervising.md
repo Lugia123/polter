@@ -46,7 +46,10 @@ Execute the following 5-stage setup sequence before any implementation:
      - Workers develop and test locally, never touching `git commit` or `git merge`.
      - When work is done, inspect changes with `worktree_status(task)` and verify.
      - Merge validated work into the mainline yourself.
-     - `task_close` tears down merged, clean worktrees automatically.
+     - `task_close` takes down a worktree whose work has landed, on its own.
+       **That is a permanent delete: anything uncommitted in the directory
+       goes with it, and so does anything that never reached the mainline.**
+       `worktree_status(task)` says whether the work has landed.
 
 ## Squads: one task, one set of workers
 

@@ -440,6 +440,14 @@ poltergeist_says: []const poltergeistpkg.Plugin.Manifest = &.{},
 /// line on every reload or listing would only repeat it.
 poltergeist_strays_said: bool = false,
 
+/// The plugins whose "cannot run on this system" line has been said (task
+/// 3241), keyed by plugin key. **Per plugin and not one flag for the
+/// process**: two plugins with nothing to run here are two facts, and a
+/// single flag would report the first and hide the second. Unlike
+/// `poltergeist_strays_said`, this is not one-shot mode for the process: a
+/// plugin that can run again drops its key, so a later inability is news.
+poltergeist_unrunnable_said: poltergeistpkg.UnrunnableSaid = .{},
+
 /// Where last night's arrangement is written down. Null until the state
 /// directory is known. Owned.
 poltergeist_session_path: ?[]const u8 = null,
@@ -1039,6 +1047,7 @@ pub fn deinit(self: *App) void {
     if (self.poltergeist_log_problem) |p| self.alloc.free(p);
     self.poltergeist_recall.deinit(self.alloc);
     if (self.poltergeist_plugin_arena) |*a| a.deinit();
+    self.poltergeist_unrunnable_said.deinit(self.alloc);
     if (self.poltergeist_own_arena) |*a| a.deinit();
     for (self.poltergeist_own_retired.items) |*a| a.deinit();
     self.poltergeist_own_retired.deinit(self.alloc);
@@ -6012,30 +6021,56 @@ fn scanPlugins(
 
             // **Nothing to run here is not a failure, and it is known now.**
             // A plugin that declares only a `.sh` cannot start on Windows;
-            // said here, once, it costs a line. Left to the spawn it becomes
-            // `error.InvalidExe`, a back-off, a restart and the same failure
-            // again -- a loop that from the plugin's side is indistinguishable
-            // from idling. See `Plugin.Manifest.runnable`.
+            // said once per plugin, it costs a line. Left to the spawn it
+            // becomes `error.InvalidExe`, a back-off, a restart and the same
+            // failure again -- a loop that from the plugin's side is
+            // indistinguishable from idling. See `Plugin.Manifest.runnable`.
+            //
+            // **Once per plugin per process, not once per scan** (task 3241).
+            // This function is not the startup walk: `plugin_list` reads the
+            // directories afresh on every call, and the Windows settings
+            // window asks it every five seconds while it is open. Without
+            // `UnrunnableSaid` the same unchanged fact was written on every
+            // one of those, which is a log that never stops saying it. A
+            // plugin that can run again forgets its key, so a later release
+            // that takes the ability away is news again.
             //
             // **A page plugin is not one of these, and asking it first is the
             // whole point** (task 2644). It has no `exec` at all, so
             // `runnable` is false -- and the sentence below would be a lie
-            // about it: "declares nothing this system can run" is not "it is
-            // a page the host loads when somebody opens a `.md`". Two facts
-            // that arrive as one `false` is exactly the split
-            // `Plugin.Manifest.shape` exists for.
+            // about it: "cannot run on this system" is not "it is a page the
+            // host loads when somebody opens a `.md`". Two facts that arrive
+            // as one `false` is exactly the split `Plugin.Manifest.shape`
+            // exists for.
             //
             // Only for plugins that are switched on: an unsupported plugin
-            // nobody enabled has nothing to say.
+            // nobody switched on has nothing to say.
             switch (manifest.shape()) {
                 .page => {},
                 .resident => if (!manifest.runnable) {
-                    log.info(
-                        "poltergeist: plugin {s} declares nothing this system can run " ++
-                            "({s}); installed and enabled, but not started",
-                        .{ manifest.key, manifest.exec.? },
-                    );
+                    // The wording is the framework's own (`Report` for a
+                    // person, `cli/launch.zig` for an agent CLI's adapter):
+                    // "installed and switched on", "cannot run on this
+                    // system", and "no way to start a … file here". The old
+                    // line said "enabled", which this repository no longer
+                    // says about a plugin, and blamed the manifest
+                    // ("declares nothing") rather than the file it names.
+                    if (self.poltergeist_unrunnable_said.first(self.alloc, manifest.key)) {
+                        log.info(
+                            "poltergeist: plugin {s} is installed and switched on, but " ++
+                                "{s} cannot run on this system: Polter has no way to " ++
+                                "start a {s} file here, so it is not started",
+                            .{
+                                manifest.key,
+                                manifest.exec.?,
+                                poltergeistpkg.Plugin.extensionOf(manifest.exec.?),
+                            },
+                        );
+                    }
                     continue;
+                } else {
+                    // It can run here now: the next time it cannot, say so.
+                    self.poltergeist_unrunnable_said.forget(self.alloc, manifest.key);
                 },
             }
 
@@ -11732,6 +11767,17 @@ test "a plugin configure: only the person may write a cmd: reference" {
     try pluginValueAllowed(.user, "cmd:op read x");
 }
 
+test "3241: the plugin scan's cannot-run line is compiled by a filtered build" {
+    // **Compiled, not just read.** A filtered test build analyses only what
+    // it reaches, and nothing else in the suite calls `scanPlugins` -- so
+    // the sentence this task changed, and the state bit that keeps it to
+    // once per plugin, would be source text no build ever checked. Taking
+    // the function's address is what makes the format string's arguments,
+    // the new field and the `extensionOf` call a compile error when they
+    // are wrong. What the once means is tested in `UnrunnableSaid`.
+    _ = &scanPlugins;
+}
+
 /// The settings window's save (settings.md §5.2): `json` is a
 /// `Plugin.Settings.Change`, and it goes through `configurePlugin` as the
 /// user. Returns how the resident copy stands afterwards.
@@ -16072,7 +16118,14 @@ fn taskList(
         .kind = @tagName(t.kind),
         .seats = try poltergeistpkg.rpc.seatViews(alloc, t, self, seatHolderAlive),
     };
-    return .{ .rows = out, .more = win.more };
+    return .{
+        .rows = out,
+        .more = win.more,
+        // The whole group, not the page: this is the one number a
+        // supervisor should act on, and narrowing the rows must not make
+        // it disappear. See `Tasks.countDoneUnclosed`.
+        .done_unclosed = self.tasks.countDoneUnclosed(group),
+    };
 }
 
 /// What happened to a group's panel, out of the record on disk.

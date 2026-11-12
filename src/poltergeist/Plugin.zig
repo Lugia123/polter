@@ -431,7 +431,7 @@ pub const default_preview_max_bytes: u64 = 4 * 1024 * 1024;
 /// Windows) and "it names no file, on purpose" (a preview plugin, which is a
 /// page the host loads and not a process at all) both arrive as
 /// `runnable == false`, and the sentence the host says about the first --
-/// *declares nothing this system can run* -- is false of the second. That is
+/// *cannot run on this system* -- is false of the second. That is
 /// the split `CLAUDE.md` asks for by name: a flag must not answer "I do not
 /// know" and "I know, and the answer is none" at once.
 pub const Shape = enum {
@@ -834,7 +834,12 @@ fn sideMatches(declared: []const u8, actual: []const u8) bool {
 /// The shapes that have no extension, all of them checked against
 /// `NSString.pathExtension`: no dot at all (`notes`), a dotfile
 /// (`.gitignore`), a trailing dot (`notes.`), and an empty path.
-fn extensionOf(path: []const u8) []const u8 {
+///
+/// Public because the log line for a plugin that cannot run here names the
+/// kind of file it cannot start -- *Polter has no way to start a `.py` file
+/// here* -- and a second copy of this rule is a second answer to "what is
+/// this file's extension" (task 3241).
+pub fn extensionOf(path: []const u8) []const u8 {
     var name = path;
     if (std.mem.lastIndexOfAny(u8, name, "/\\")) |i| name = name[i + 1 ..];
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";

@@ -24,10 +24,15 @@
 //! And one of its own: **nothing here deletes a tree whose work has not
 //! landed** (`landed`), and nothing deletes one at all unless asked
 //! (`remove`) or a task is closed (`closeout`). A tree's work is *landed*
-//! when every path it changed holds, on the mainline's HEAD, exactly what the
-//! tree holds -- not "the branch has no commits the mainline lacks", which in
-//! this repository's own workflow (workers do not commit; the supervisor
-//! applies their patch on the main tree) is always true and says nothing.
+//! when the mainline has held every path it changed exactly as the tree holds
+//! it -- at the mainline's HEAD, or in a commit since this tree was made.
+//! Not "the branch has no commits the mainline lacks", which in this
+//! repository's own workflow (workers do not commit; the supervisor applies
+//! their patch on the main tree) is always true and says nothing. And not
+//! "the file equals the mainline's file today", which is false for every tree
+//! the mainline has moved past since the patch was applied: the two are
+//! different for reasons that are not the worker's, and a tree kept for that
+//! reason is a directory nobody ever takes down (task 3278).
 //! `--force` appears in this file **once**: in `removeIndex`, after `landed`
 //! is true and has been checked a second time. A tree with work in it is
 //! "dirty" to git, so without it git would refuse; with it, nothing but a
@@ -1754,6 +1759,13 @@ pub fn writeStatus(w: *std.json.Stringify, s: Status) std.Io.Writer.Error!void {
 /// looking: better to keep a tree than to spend minutes proving a big one.
 pub const max_landed_paths = 2000;
 
+/// How many changed paths get the history look (`historyHeld`) in one
+/// answer. Each is one `git log`; past this the paths stay as they are --
+/// which keeps the tree, since a tree with that many paths that do not match
+/// the mainline has work in it either way -- and the close does not spend
+/// minutes on a tree it was going to keep.
+pub const max_history_paths = 256;
+
 /// How many unlanded paths an answer lists; the rest are only counted.
 pub const max_listed = 20;
 
@@ -1799,14 +1811,18 @@ pub const Landed = struct {
 };
 
 /// Whether the work in a tree is already on the mainline: **every path the
-/// tree changed or added holds, on the mainline's `HEAD`, exactly what the
-/// tree holds** (content and mode), and every path it deleted is gone there
-/// too. Read-only, and safe off the app thread.
+/// tree changed or added is on the mainline -- what the mainline's `HEAD`
+/// holds there, or what a commit since the tree was made held, or a change
+/// the mainline's own file already contains** (content and mode) -- and every
+/// path it deleted is gone from the mainline's `HEAD` too. Read-only, and
+/// safe off the app thread.
 ///
 /// Not "merged": in this repository's workflow a worker never commits -- the
 /// supervisor applies the patch on the main tree and commits there -- so
 /// `ahead` is always 0 and the branch looks merged from the first minute, and
-/// the tree is always dirty to git. Neither says whether the work is in.
+/// the tree is always dirty to git. Neither says whether the work is in. And
+/// not "the file matches the mainline's file today", which the mainline makes
+/// false for every tree it moves past after the patch is applied (task 3278).
 pub fn landed(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Landed {
     return landedOf(git, arena, entry) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -1816,6 +1832,39 @@ pub fn landed(git: Git, arena: Allocator, entry: Entry) Allocator.Error!Landed {
             .reason = try std.fmt.allocPrint(arena, "git could not answer ({t})", .{err}),
         },
     };
+}
+
+/// One line of the tree's `git status --porcelain -z`: a path it changed.
+/// `deleted` and `odd` are what the two status columns said.
+const Changed = struct { path: []const u8, deleted: bool, odd: bool };
+
+/// What one commit's tree holds at a path: the mode (`100644`, `100755`,
+/// `120000` for a link, `160000` for a submodule) and the blob.
+const TreeEntry = struct { mode: []const u8, oid: []const u8 };
+
+/// `path -> TreeEntry` for `rev`'s tree, for just `items`, in batches so no
+/// command line is long on any platform.
+fn treeAt(git: Git, arena: Allocator, dir: []const u8, rev: []const u8, items: []const Changed) !std.StringHashMapUnmanaged(TreeEntry) {
+    var out: std.StringHashMapUnmanaged(TreeEntry) = .empty;
+    var at: usize = 0;
+    while (at < items.len) : (at += path_batch) {
+        const end = @min(items.len, at + path_batch);
+        var args: std.ArrayList([]const u8) = .empty;
+        try args.appendSlice(arena, &.{ "--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--" });
+        for (items[at..end]) |it| try args.append(arena, it.path);
+        const r = try git.run(arena, dir, args.items);
+        if (!r.ok) return error.LsTreeFailed;
+        var rows = std.mem.splitScalar(u8, r.raw, 0);
+        while (rows.next()) |row| {
+            const tab = std.mem.indexOfScalar(u8, row, '\t') orelse continue;
+            var f = std.mem.tokenizeScalar(u8, row[0..tab], ' ');
+            const mode = f.next() orelse continue;
+            _ = f.next() orelse continue;
+            const oid = f.next() orelse continue;
+            try out.put(arena, row[tab + 1 ..], .{ .mode = mode, .oid = oid });
+        }
+    }
+    return out;
 }
 
 fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
@@ -1850,13 +1899,20 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
         ),
     };
 
+    // Where the tree parted from the mainline, and what the mainline did
+    // since. Both counts above were zero, so the tree's HEAD is an ancestor
+    // of the mainline's: it is the commit the tree was made at, and
+    // `main_head` has everything the mainline has done afterwards.
+    const base = try git.run(arena, entry.path, &.{ "rev-parse", "--verify", "HEAD" });
+    if (!base.ok) return error.NoTreeHead;
+    const since = try std.fmt.allocPrint(arena, "{s}..{s}", .{ base.out, main_head.out });
+
     // Renames are split into "deleted" and "added", directories into files,
     // and `-z` keeps a path with a space, a newline or a quote whole.
     const st = try git.run(arena, entry.path, &.{ "status", "--porcelain=v1", "-z", "--no-renames", "-uall" });
     if (!st.ok) return error.StatusFailed;
 
-    const Item = struct { path: []const u8, deleted: bool, odd: bool };
-    var items: std.ArrayList(Item) = .empty;
+    var items: std.ArrayList(Changed) = .empty;
     var recs = std.mem.splitScalar(u8, st.raw, 0);
     while (recs.next()) |rec| {
         if (rec.len < 4) continue;
@@ -1879,27 +1935,10 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
         ),
     };
 
-    // What the mainline holds at each of those paths.
-    const Head = struct { mode: []const u8, oid: []const u8 };
-    var head: std.StringHashMapUnmanaged(Head) = .empty;
-    var at: usize = 0;
-    while (at < items.items.len) : (at += path_batch) {
-        const end = @min(items.items.len, at + path_batch);
-        var args: std.ArrayList([]const u8) = .empty;
-        try args.appendSlice(arena, &.{ "--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--" });
-        for (items.items[at..end]) |it| try args.append(arena, it.path);
-        const r = try git.run(arena, entry.repo, args.items);
-        if (!r.ok) return error.LsTreeFailed;
-        var rows = std.mem.splitScalar(u8, r.raw, 0);
-        while (rows.next()) |row| {
-            const tab = std.mem.indexOfScalar(u8, row, '\t') orelse continue;
-            var f = std.mem.tokenizeScalar(u8, row[0..tab], ' ');
-            const mode = f.next() orelse continue;
-            _ = f.next() orelse continue;
-            const oid = f.next() orelse continue;
-            try head.put(arena, row[tab + 1 ..], .{ .mode = mode, .oid = oid });
-        }
-    }
+    // What the mainline holds at each of those paths now, and what it held
+    // where this tree parted from it.
+    const head = try treeAt(git, arena, entry.repo, "HEAD", items.items);
+    const base_tree = try treeAt(git, arena, entry.path, base.out, items.items);
 
     // `null` is "matches".
     const verdict = try arena.alloc(?Why, items.items.len);
@@ -1907,6 +1946,12 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
     const work_exec = try arena.alloc(bool, items.items.len);
     @memset(work_exec, false);
     var to_hash: std.ArrayList(usize) = .empty;
+
+    // A path that does not match the mainline's HEAD and may still have
+    // been landed: the commits between, and a merge into the mainline's own
+    // file, are asked about it below.
+    const Candidate = struct { i: usize, oid: []const u8, mode: []const u8, base: ?TreeEntry, head: ?TreeEntry };
+    var candidates: std.ArrayList(Candidate) = .empty;
 
     for (items.items, 0..) |it, i| {
         if (it.odd) {
@@ -1924,7 +1969,29 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
             continue;
         };
         const hh = h orelse {
-            verdict[i] = if (stat.kind == .file or stat.kind == .sym_link) .extra else .cannot_tell;
+            if (stat.kind != .file and stat.kind != .sym_link) {
+                verdict[i] = .cannot_tell;
+                continue;
+            }
+            // Not on the mainline's HEAD. It may have been there and dropped:
+            // a regular file's content is hashed with all the others below,
+            // a link's target is read here because `hash-object` follows it.
+            verdict[i] = .extra;
+            if (stat.kind == .file) {
+                work_exec[i] = Io.File.Permissions.has_executable_bit and
+                    (stat.permissions.toMode() & 0o111) != 0;
+                try to_hash.append(arena, i);
+            } else {
+                var buf: [4096]u8 = undefined;
+                const n = Io.Dir.cwd().readLink(git.io, abs, &buf) catch continue;
+                try candidates.append(arena, .{
+                    .i = i,
+                    .oid = try blobOid(arena, main_head.out.len, buf[0..n]),
+                    .mode = "120000",
+                    .base = base_tree.get(it.path),
+                    .head = null,
+                });
+            }
             continue;
         };
         if (std.mem.eql(u8, hh.mode, "160000")) {
@@ -1948,7 +2015,16 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
                     continue;
                 };
                 const oid = try blobOid(arena, hh.oid.len, buf[0..n]);
-                if (!std.mem.eql(u8, oid, hh.oid)) verdict[i] = .differs;
+                if (!std.mem.eql(u8, oid, hh.oid)) {
+                    verdict[i] = .differs;
+                    try candidates.append(arena, .{
+                        .i = i,
+                        .oid = oid,
+                        .mode = "120000",
+                        .base = base_tree.get(it.path),
+                        .head = hh,
+                    });
+                }
             },
             else => verdict[i] = .cannot_tell,
         }
@@ -1956,7 +2032,7 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
 
     // A regular file is hashed by git in the tree, so the tree's own
     // filters (line endings, attributes) apply as `git add` would apply them.
-    at = 0;
+    var at: usize = 0;
     while (at < to_hash.items.len) : (at += path_batch) {
         const chunk = to_hash.items[at..@min(to_hash.items.len, at + path_batch)];
         var args: std.ArrayList([]const u8) = .empty;
@@ -1967,9 +2043,27 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
         var lines = std.mem.splitScalar(u8, r.out, '\n');
         for (chunk) |i| {
             const oid = std.mem.trim(u8, lines.next() orelse return error.HashFailed, " \t\r");
-            const hh = head.get(items.items[i].path).?;
+            const mode: []const u8 = if (work_exec[i]) "100755" else "100644";
+            const hh = head.get(items.items[i].path) orelse {
+                verdict[i] = .extra;
+                try candidates.append(arena, .{
+                    .i = i,
+                    .oid = oid,
+                    .mode = mode,
+                    .base = base_tree.get(items.items[i].path),
+                    .head = null,
+                });
+                continue;
+            };
             if (!std.mem.eql(u8, oid, hh.oid)) {
                 verdict[i] = .differs;
+                try candidates.append(arena, .{
+                    .i = i,
+                    .oid = oid,
+                    .mode = mode,
+                    .base = base_tree.get(items.items[i].path),
+                    .head = hh,
+                });
                 continue;
             }
             // Same content. The mode is the other half of "the same": a
@@ -1977,6 +2071,36 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
             if (Io.File.Permissions.has_executable_bit) {
                 const want_exec = std.mem.eql(u8, hh.mode, "100755");
                 if (work_exec[i] != want_exec) verdict[i] = .mode;
+            }
+        }
+    }
+
+    // The mainline's HEAD is not the only place the work can be, and "the
+    // file differs" is not the same as "the work is not there": a supervisor
+    // applies the patch at some commit and the mainline keeps going from
+    // there, so for every landed tree it has since moved past, those files
+    // differ from the tree's for reasons that are not the worker's. Two
+    // questions, cheapest first -- did the mainline ever hold this file
+    // whole, and does its own file already contain this change -- and a path
+    // either of them answers in the affirmative is landed (task 3278: it was
+    // told the work had not landed for years' worth of trees, and 77G of them
+    // piled up).
+    if (candidates.items.len <= max_history_paths) {
+        const scratch = try scratchDir(git, arena, entry);
+        for (candidates.items) |c| {
+            const path = items.items[c.i].path;
+            if (try historyHeld(git, arena, entry, since, path, c.oid, c.mode)) {
+                verdict[c.i] = null;
+                continue;
+            }
+            // A link's "content" is its target, which `merge-file` has no
+            // business with; and a file the mainline does not have at all has
+            // nothing to merge into.
+            if (c.head) |h| {
+                if (!std.mem.eql(u8, c.mode, "120000")) {
+                    if (try changeOnMainline(git, arena, entry, scratch, path, if (c.base) |b| b.oid else null, h, c.mode))
+                        verdict[c.i] = null;
+                }
             }
         }
     }
@@ -1993,6 +2117,143 @@ fn landedOf(git: Git, arena: Allocator, entry: Entry) !Landed {
         .ignored_extra = ignored.items,
         .ignored_more = ignored.more,
     };
+}
+
+/// Whether a commit on the mainline once held exactly `oid`, at `path` and
+/// with `mode` -- asking `since`, the range from where this tree parted from
+/// the mainline to its HEAD.
+///
+/// **The question this answers is the one the task asks**, "is what this tree
+/// changed already on the mainline in some form", and not "is the file the
+/// same on both sides today". A worker does not commit: it edits and reports,
+/// and the supervisor applies the patch on the mainline and commits it there.
+/// From then on the mainline keeps moving, so a landed tree's file and the
+/// mainline's file are different for the ordinary reason that the mainline
+/// went on without it -- and telling the supervisor "6 of 6 changed paths are
+/// not on the mainline as they are in the tree" for that is how 31 worktrees
+/// and 77G came to be left behind (task 3278).
+///
+/// One `git log --raw` on the path, for the whole range, read from the two
+/// oid columns: a raw entry whose new side is `oid` (or whose old side is,
+/// when a later commit took it away) says the mainline held exactly this file
+/// at that commit, whatever it did to it afterwards.
+///
+/// `false` when git could not answer. A tree is kept rather than taken down
+/// on a maybe.
+///
+/// One case this reads the same as landed: a tree whose work is a *revert* of
+/// a commit the mainline made after the tree was cut. The file is in the
+/// mainline's history either way, and its bytes are in the object store, not
+/// only in the tree -- but the intent to undo is not, and nothing here can
+/// tell it from work that landed and was edited again.
+fn historyHeld(
+    git: Git,
+    arena: Allocator,
+    entry: Entry,
+    since: []const u8,
+    path: []const u8,
+    oid: []const u8,
+    mode: []const u8,
+) Allocator.Error!bool {
+    const r = git.run(arena, entry.repo, &.{ "log", "--no-abbrev", "--format=", "--raw", since, "--", path }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    if (!r.ok) return false;
+    var lines = std.mem.splitScalar(u8, r.out, '\n');
+    while (lines.next()) |line| {
+        // `:oldmode newmode oldoid newoid status<TAB>path`. The path is not
+        // read: the call asked git about this one already, and a path with a
+        // quote in it comes back quoted.
+        if (line.len == 0 or line[0] != ':') continue;
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        var f = std.mem.tokenizeScalar(u8, line[1..tab], ' ');
+        const old_mode = f.next() orelse continue;
+        const new_mode = f.next() orelse continue;
+        const old_oid = f.next() orelse continue;
+        const new_oid = f.next() orelse continue;
+        if (std.mem.eql(u8, new_oid, oid) and std.mem.eql(u8, new_mode, mode)) return true;
+        if (std.mem.eql(u8, old_oid, oid) and std.mem.eql(u8, old_mode, mode)) return true;
+    }
+    return false;
+}
+
+/// Whether the mainline's own file at `path` already holds everything this
+/// tree changed there, when the tree's whole version of the file never stood
+/// on the mainline as a state of its own.
+///
+/// **Why a merge and not a comparison.** A supervisor applies a patch to a
+/// mainline that has itself moved on: the work lands, and the file it landed
+/// in is the tree's version plus whatever else was already in it or came
+/// after. So no commit holds the tree's exact bytes, and asking the mainline
+/// for them says "not landed" about work that is. `git merge-file` asks the
+/// question that does not need them: with the mainline's file as "ours", what
+/// the path held where the tree parted as the ancestor and the tree's file as
+/// "theirs", a merge that comes out exactly as the mainline's file says the
+/// tree adds nothing the mainline does not already have. Anything else -- a
+/// conflict, a file git treats as binary, one too big to read -- is not
+/// proved, and a tree is kept rather than taken down on a maybe.
+///
+/// The two files `git merge-file` needs on disk are written inside the
+/// tree's git directory, where nothing git reports will see them, and removed
+/// again.
+fn changeOnMainline(
+    git: Git,
+    arena: Allocator,
+    entry: Entry,
+    scratch: []const u8,
+    path: []const u8,
+    ancestor: ?[]const u8,
+    mainline: TreeEntry,
+    theirs_mode: []const u8,
+) Allocator.Error!bool {
+    // A file the tree added has no ancestor, and a merge against nothing
+    // proves nothing about where the work came from.
+    const base_oid = ancestor orelse return false;
+    if (scratch.len == 0) return false;
+    // The executable bit is part of "the same file", as it is for content.
+    if (Io.File.Permissions.has_executable_bit and !std.mem.eql(u8, theirs_mode, mainline.mode)) return false;
+
+    const ours = git.run(arena, entry.repo, &.{ "cat-file", "blob", mainline.oid }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    if (!ours.ok) return false;
+    const base = git.run(arena, entry.path, &.{ "cat-file", "blob", base_oid }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    if (!base.ok) return false;
+
+    var raw: [8]u8 = undefined;
+    git.io.random(&raw);
+    const tag = try std.fmt.allocPrint(arena, "polter-landed-{x}", .{&raw});
+    const ours_path = try std.fs.path.join(arena, &.{ scratch, try std.fmt.allocPrint(arena, "{s}-ours", .{tag}) });
+    const base_path = try std.fs.path.join(arena, &.{ scratch, try std.fmt.allocPrint(arena, "{s}-base", .{tag}) });
+    defer Io.Dir.cwd().deleteFile(git.io, ours_path) catch {};
+    defer Io.Dir.cwd().deleteFile(git.io, base_path) catch {};
+    Io.Dir.cwd().writeFile(git.io, .{ .sub_path = ours_path, .data = ours.raw }) catch return false;
+    Io.Dir.cwd().writeFile(git.io, .{ .sub_path = base_path, .data = base.raw }) catch return false;
+
+    const abs = try std.fs.path.join(arena, &.{ entry.path, path });
+    const r = git.run(arena, entry.path, &.{ "merge-file", "-p", "--quiet", ours_path, base_path, abs }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    if (!r.ok) return false;
+    return std.mem.eql(u8, r.raw, ours.raw);
+}
+
+/// The tree's git directory, where `changeOnMainline` puts its two scratch
+/// files -- never in the tree itself, where a file appearing would change the
+/// very status being read. Empty when git will not say, and then no merge is
+/// tried.
+fn scratchDir(git: Git, arena: Allocator, entry: Entry) Allocator.Error![]const u8 {
+    const r = git.run(arena, entry.path, &.{ "rev-parse", "--path-format=absolute", "--git-dir" }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return "",
+    };
+    return if (r.ok) r.out else "";
 }
 
 /// Ignored paths in the tree that are not `build_debris` (nor inside one).
@@ -2189,11 +2450,11 @@ fn notLanded(arena: Allocator, entry: Entry, l: Landed) Allocator.Error!Refusal 
     const why: []const u8 = if (l.reason) |r|
         r
     else
-        try std.fmt.allocPrint(arena, "{d} of {d} changed path{s} {s} not on the mainline as they are here: {s}", .{
+        try std.fmt.allocPrint(arena, "{d} of {d} changed path{s} hold{s} work the mainline has never had, at its HEAD or in any commit since the tree was made: {s}", .{
             l.unlanded_count,
             l.checked,
             if (l.checked == 1) "" else "s",
-            if (l.unlanded_count == 1) "is" else "are",
+            if (l.unlanded_count == 1) "s" else "",
             try unlandedList(arena, l),
         });
     return .{
@@ -2324,7 +2585,8 @@ pub const Outcome = enum {
     kept_standing,
     /// Landed, but the lease is held or a build is running.
     kept_busy,
-    /// Work in it is not on the mainline.
+    /// Work in it is not on the mainline: not at its HEAD, and not in any
+    /// commit since the tree was made.
     kept_unlanded,
     /// The branch has commits the mainline lacks.
     kept_ahead,
@@ -2472,7 +2734,7 @@ fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
         .forgotten => try w.print("Task {d} {s}. Its worktree {s} was already gone; Polter no longer lists it.", .{ c.task, verb, c.path }),
         .removed => {
             try w.print(
-                "Task {d} {s}. Its worktree {s} was taken down: everything changed in it is already on the mainline.",
+                "Task {d} {s}. Its worktree {s} was taken down: everything changed in it is already on the mainline, at its HEAD or in a commit since the tree was made.",
                 .{ c.task, verb, c.path },
             );
             if (c.branch_kept) |why| try w.print(" Its branch {s} was kept: {s}", .{ c.branch, why });
@@ -2507,11 +2769,11 @@ fn renderInto(w: *std.Io.Writer, c: Closeout) !void {
                     try w.writeAll(r);
                     try w.writeAll(".");
                 } else {
-                    try w.print("{d} of {d} changed path{s} {s} not on the mainline as they are in the tree:", .{
+                    try w.print("{d} of {d} changed path{s} hold{s} work the mainline has never had -- not at its HEAD, not in any commit since the tree was made:", .{
                         l.unlanded_count,
                         l.checked,
                         if (l.checked == 1) "" else "s",
-                        if (l.unlanded_count == 1) "is" else "are",
+                        if (l.unlanded_count == 1) "s" else "",
                     });
                     const n = @min(l.unlanded.len, max_listed);
                     for (l.unlanded[0..n]) |u| try w.print(" {s} ({t});", .{ u.path, u.why });
@@ -3547,7 +3809,7 @@ test "worktree: 树里多一个未跟踪的源文件 → 不 landed，保留，u
     try testing.expect(std.mem.indexOf(u8, c.note, "c.zig (extra)") != null);
 }
 
-test "worktree: 主线后来又改过同一个文件 → 不 landed，保留，unlanded 点名该路径（differs）" {
+test "worktree: 补丁落地后主线又改过同一个文件 → 仍 landed，closeout 删树（task 3278）" {
     var fx: Fixture = undefined;
     try fx.init();
     defer fx.deinit();
@@ -3557,19 +3819,129 @@ test "worktree: 主线后来又改过同一个文件 → 不 landed，保留，u
     const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
     try workerWork(&fx, e.path);
     try landOnMain(&fx);
-    // Main moved on: somebody changed a.txt again.
+    // Main moved on: somebody changed a.txt again after the patch landed.
+    try fx.write(fx.repo, "a.txt", "three\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "later" });
+
+    // a.txt is not what the mainline holds now. It is what the mainline held
+    // at the commit that landed this tree's patch, and that is landed: the
+    // difference is the mainline's own later work, not this tree's.
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(l.landed);
+    try testing.expectEqual(@as(usize, 2), l.checked);
+    try testing.expectEqual(@as(usize, 0), l.unlanded_count);
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, c.outcome);
+    try testing.expect(!exists(testing.io, e.path));
+    try testing.expectEqual(@as(usize, 0), ledger.entries.items.len);
+}
+
+test "worktree: 补丁叠在主线的其他改动上落地（整份文件从没相等）→ landed，删树" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    // The base a.txt is "one\n"; the worker appends a line.
+    try fx.write(e.path, "a.txt", "one\ntwo\n");
+
+    // The mainline takes another task's change to the same file first ...
+    try fx.write(fx.repo, "a.txt", "zero\none\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "before" });
+    // ... and the supervisor applies this tree's patch on top of it. The
+    // mainline's file is now a state the tree never held: neither equality
+    // nor the history can tell, and the merge is what does.
+    try fx.write(fx.repo, "a.txt", "zero\none\ntwo\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "land" });
+
+    const l = try landed(fx.git(), fx.al(), e);
+    try testing.expect(l.landed);
+    try testing.expectEqual(@as(usize, 1), l.checked);
+    try testing.expectEqual(@as(usize, 0), l.unlanded_count);
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, c.outcome);
+    try testing.expect(!exists(testing.io, e.path));
+}
+
+test "worktree: 主线走过同一条路径，但树里的内容主线从没有过 → 不 landed，保留（differs / extra）" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    const e = try taskTreeOf(&fx, &ledger, "polter", 2435);
+    // The worker's work, never landed: a.txt becomes two, b.txt is new.
+    try workerWork(&fx, e.path);
+    // The mainline goes its own way on the same path -- one to three, never
+    // two -- and never has b.txt. A commit touching the path is not the
+    // check: what it held is.
     try fx.write(fx.repo, "a.txt", "three\n");
     try fx.must(fx.repo, &.{ "commit", "-q", "-am", "later" });
 
     const l = try landed(fx.git(), fx.al(), e);
     try testing.expect(!l.landed);
-    try testing.expectEqual(@as(usize, 1), l.unlanded_count);
+    try testing.expectEqual(@as(usize, 2), l.unlanded_count);
     try testing.expectEqual(@as(?Why, .differs), whyOf(l, "a.txt"));
+    try testing.expectEqual(@as(?Why, .extra), whyOf(l, "b.txt"));
 
     const c = try closeout(fx.git(), fx.al(), &ledger, 2435, .{ .mode = .closed });
     try testing.expectEqual(Outcome.kept_unlanded, c.outcome);
     try testing.expect(exists(testing.io, e.path));
     try testing.expect(std.mem.indexOf(u8, c.note, "a.txt (differs)") != null);
+}
+
+test "worktree: 关单判据分得开四种树 -- 未落地的改动、干净的旧树、独占提交、已落地而主线前进" {
+    var fx: Fixture = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var ledger = try Ledger.init(testing.allocator, null);
+    defer ledger.deinit();
+
+    // (a) Uncommitted work the mainline never had, HEAD on the mainline.
+    const dirty = try taskTreeOf(&fx, &ledger, "polter", 2431);
+    try fx.write(dirty.path, "a.txt", "dirty\n");
+    try fx.write(dirty.path, "d.txt", "dirty new\n");
+
+    // (b) Nothing changed; its HEAD is a mainline commit the mainline has
+    // since moved past.
+    const clean = try taskTreeOf(&fx, &ledger, "polter", 2432);
+
+    // (c) A commit on the tree's own HEAD that the mainline does not have.
+    const ahead = try taskTreeOf(&fx, &ledger, "polter", 2433);
+    try fx.write(ahead.path, "own.txt", "own\n");
+    try fx.must(ahead.path, &.{ "add", "own.txt" });
+    try fx.must(ahead.path, &.{ "commit", "-q", "-m", "own commit" });
+
+    // (d) The work landed, and the mainline went further afterwards.
+    const went = try taskTreeOf(&fx, &ledger, "polter", 2434);
+    try workerWork(&fx, went.path);
+    try landOnMain(&fx);
+    try fx.write(fx.repo, "a.txt", "three\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "later" });
+
+    const a = try closeout(fx.git(), fx.al(), &ledger, 2431, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_unlanded, a.outcome);
+    try testing.expect(exists(testing.io, dirty.path));
+
+    const b = try closeout(fx.git(), fx.al(), &ledger, 2432, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, b.outcome);
+    try testing.expect(!exists(testing.io, clean.path));
+
+    const c = try closeout(fx.git(), fx.al(), &ledger, 2433, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.kept_ahead, c.outcome);
+    try testing.expect(exists(testing.io, ahead.path));
+
+    const d = try closeout(fx.git(), fx.al(), &ledger, 2434, .{ .mode = .closed });
+    try testing.expectEqual(Outcome.removed, d.outcome);
+    try testing.expect(!exists(testing.io, went.path));
+
+    // (a) and (c) are still on the ledger; (b) and (d) are gone.
+    try testing.expectEqual(@as(usize, 2), ledger.entries.items.len);
 }
 
 test "worktree: 树里删了文件且主线也没有 → landed；树里删了而主线还有 → 不 landed（main_still_has）" {
@@ -3650,13 +4022,26 @@ test "worktree: 路径含空格、中文、引号时判据仍正确" {
     try testing.expect(l.landed);
     try testing.expectEqual(@as(usize, 3), l.checked);
 
-    // And one of them different on main is named, whole.
-    try fx.write(fx.repo, "中文.txt", "other\n");
-    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "diverge" });
+    // One of them landed and the mainline edited it again: the space in the
+    // path survives the history look, and the tree is still landed.
+    try fx.write(fx.repo, "sp ace.txt", "landed\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "land space" });
+    try fx.write(e.path, "sp ace.txt", "landed\n");
+    try fx.write(fx.repo, "sp ace.txt", "after\n");
+    try fx.must(fx.repo, &.{ "commit", "-q", "-am", "after" });
+    const h = try landed(fx.git(), fx.al(), e);
+    try testing.expect(h.landed);
+
+    // And one of them holding something the mainline never had is named,
+    // whole -- the path with a quote in it goes through the same history
+    // look, whose output quotes it.
+    try fx.write(e.path, "中文.txt", "tree only\n");
+    try fx.write(e.path, "q\"uote.txt", "tree only too\n");
     const d = try landed(fx.git(), fx.al(), e);
     try testing.expect(!d.landed);
     try testing.expectEqual(@as(?Why, .differs), whyOf(d, "中文.txt"));
-    try testing.expectEqual(@as(usize, 1), d.unlanded_count);
+    try testing.expectEqual(@as(?Why, .differs), whyOf(d, "q\"uote.txt"));
+    try testing.expectEqual(@as(usize, 2), d.unlanded_count);
 }
 
 test "worktree: 重命名按\"删旧+加新\"处理" {
