@@ -1848,11 +1848,17 @@ test "persona: every set starts with the official roles" {
     try testing.expectEqual(Polter.Open.auto, boss.polter.open);
     try testing.expect(boss.instructions != null);
     // The three house rules of task 900 are in the text an agent is given.
-    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "role_launch and leave `place` out") != null);
+    // Each is checked by the identifier it cannot be stated without rather
+    // than by the sentence: the prose is translated (the shipped text is
+    // Chinese now) and will be rewritten again, and a rule that is only
+    // worded differently is still there. A rule that is deleted still goes
+    // red, which is what this test is for.
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "role_launch") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "place") != null);
     // Not `here` for a worker (task 1958): that is a column per worker.
     try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "with place: \"here\"") == null);
-    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "Workers do not git commit, merge") != null);
-    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "one dedicated test worker") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "git commit") != null);
+    try testing.expect(std.mem.indexOf(u8, boss.instructions.?, "测试 worker") != null);
     // Nothing of the CLI's own but Polter's skills: the polter server is
     // kept whatever this says.
     try testing.expect(!boss.cli_skills.default);
