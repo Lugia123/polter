@@ -111,6 +111,7 @@ mod control_room_source;
 mod ctxmenu;
 mod divider;
 mod elsewhere_frame;
+mod exit_tabs;
 mod dnd;
 mod ffi;
 mod keybinds;
@@ -5186,9 +5187,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
             WM_DESTROY => {
                 // The count, and whether that count means the process is
-                // finished, on one line. Today the answer is always "quit",
-                // because there is one window; B1-e is the change that makes
-                // the two facts able to disagree.
+                // finished, on one line. **The two can disagree now**: a
+                // second terminal window, or the settings window, keeps the
+                // process up -- and `window_finished` says which of them it
+                // was.
                 // Same point as the other three. Windows has already torn the
                 // window down by the time this arrives, so the record is made
                 // here rather than earlier -- and `destroyed` is idempotent,
@@ -8461,14 +8463,25 @@ fn main() {
     //
     // **Printed after the message loop, which is the only place that means
     // "really exiting".** A line printed next to `PostQuitMessage` would be
-    // printed by every path that asks to quit, including the ones B1-e is
-    // about to make not quit.
-    let open_tabs = tabs::count(hwnd);
+    // printed by every path that asks to quit, including a close the person
+    // then declines.
+    //
+    // **The tab count cannot be read here (task 3242).** By the time the loop
+    // ends the window that ended the process has been destroyed, and on the
+    // window-X route its tabs were closed before even that -- so
+    // `tabs::count(hwnd)` here answered 0 on every run. The number is
+    // recorded by the steps that take a window away, while the tabs are still
+    // there; see `exit_tabs`.
+    let open_tabs = exit_tabs::AT_EXIT.count();
     session::flush_if_dirty(hwnd);
     core_quitting("the main loop ended");
-    // process-wide: the process is leaving; by this point no window is left
-    // for the line to be about
-    plogf!("[main] exiting: session flushed, {} tabs were open", open_tabs);
+    // process-wide: the process is leaving; the count is about the window
+    // that went last, because by now no window is left for the line to be
+    // about
+    plogf!(
+        "[main] exiting: session flushed, {} tabs were open when the last window went",
+        open_tabs
+    );
     // **The counters, so an absence becomes a reading.**
     //
     // `swallowed=0` means nothing on its own -- it is also what a probe that

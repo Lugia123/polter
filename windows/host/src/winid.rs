@@ -384,6 +384,12 @@ pub fn close_window_now(frame: HWND) {
     // is where the open projects are written while their tabs are there.
     crate::project_session::save_all();
     crate::wlogf!(frame, "[win] closing -> DestroyWindow");
+    // **The exit line's count, taken before the frame goes** (task 3242).
+    // Every route that destroys a frame without its `WM_CLOSE` comes through
+    // here, and the tab model still holds this window until `WM_DESTROY` --
+    // so this is the last moment the number is about this window. A window
+    // whose last tab was just closed records 0, which is what it had left.
+    crate::exit_tabs::AT_EXIT.remember(crate::tabs::count(frame));
     unsafe {
         // The result is logged rather than dropped: a `DestroyWindow` that
         // fails leaves the window on screen, which is exactly the E6 symptom,

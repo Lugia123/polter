@@ -4336,6 +4336,12 @@ fn close_pane(frame: HWND, id: PaneId) -> bool {
 /// under the loop.
 pub fn close_all_tabs_of(frame: HWND) {
     let n = count(frame);
+    // **Before the tabs go, not after** (task 3242): this is the one route
+    // that empties the tab model before the frame is destroyed (the window's
+    // X), and the exit line has nowhere else to learn how many tabs were open
+    // when the window was asked to go. Recorded even when it is 0 -- the
+    // window going away is the event, and 0 is its answer.
+    crate::exit_tabs::AT_EXIT.remember(n);
     if n == 0 {
         return;
     }
