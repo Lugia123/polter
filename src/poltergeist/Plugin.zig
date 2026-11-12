@@ -5754,7 +5754,23 @@ test "1787: agy's trust question broken over two rows in a narrow split is still
         \\ect?
         \\> Yes, I trust this folder
     ));
-    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict("Do  you trust   the contents of this\r\n project?\n"));
+    // Spaces doubled, a CRLF between the rows, and a leading space. The
+    // option row is here because a box is what makes it a question and not
+    // a line of prose (task 3170): the two cases above have one, this one
+    // was written without and only went unnoticed while no filter compiled
+    // it.
+    try testing.expectEqual(StartupSays.Verdict.blocked, says.verdict(
+        "Do  you trust   the contents of this\r\n project?\n> Yes, I trust this folder\n",
+    ));
+
+    // The question's whole wording with no option row under it is prose,
+    // not a box (task 3170). Nothing else here has that shape, so the
+    // guard that decides it was measured by nothing until CI failed on the
+    // case above -- which was written without an option row and expected
+    // `blocked`.
+    try testing.expectEqual(StartupSays.Verdict.neither, says.verdict(
+        "Do you trust the contents of this project?\n",
+    ));
 
     // Not the question: half of it, its words scattered, or talk about it.
     try testing.expectEqual(StartupSays.Verdict.neither, says.verdict(
