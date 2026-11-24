@@ -5328,6 +5328,70 @@ test "2148: the alarm's rule for a group's supervisor is this file's rule, case 
     try testing.expectEqual(@as(?Id, null), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "plain"));
 }
 
+test "3473: a supervisor in no window is not the group's for the reminder either" {
+    // **The case the 2148 test above did not have, and the one that made
+    // the two rules part.** Task 2682 put `!unhoused` into
+    // `ControlRoom.minds` (through `Bus.supervising`) but not into
+    // `Alarms.supervisorOfGroup` / `Alarms.observeGroup`, which kept the
+    // narrower `isSupervisor` and not `agentHasLeft`.
+    //
+    // What that cost was measured on 2026-11-13 at 01:16: a supervisor
+    // whose terminal the host said was in no window or tab -- `me` saying
+    // `role: supervisor`, `shown: false`, `left: null` -- had every
+    // supervisor's tool refused by one rule while the other went on
+    // reminding it, every fifteen minutes and into a terminal nobody could
+    // see, that nobody had reported. `alarm_set` was refused by the same
+    // gate, so the reminder could not be silenced. One rule, asked twice;
+    // this asserts they answer the same for the state that parted them.
+    var w: World = .init();
+    defer w.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const after = 15 * min;
+    var fake: PresenceFake = .{};
+
+    try w.steward(0xa1, "boss", 0x21, "web-app");
+    try w.hook(0xa1, .turn_started, null, 100);
+    w.bus.noteAgentHere(0xa1, true, .{ .pid = 9, .started = 1 }, 200);
+
+    // Housed: the group's, and the reminder is owed once the quiet is long
+    // enough. This is the state the rest is compared against.
+    const t = 60 * min;
+    var found = w.alarms.observeGroup(a, &w.bus, &w.chat, "web-app", t, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 1), found.minding.len);
+    try testing.expect(remindsAt(&w.alarms, found, 0xa1, t + after, true, after));
+
+    // The host says its tab is gone, and its agent stays connected: a
+    // supervisor by role, out of every window, whose agent has not left.
+    try testing.expect(w.bus.noteUnhoused(0xa1, true));
+    try testing.expect(w.bus.isSupervisor(0xa1));
+    try testing.expect(!w.bus.agentHasLeft(0xa1));
+
+    // The control room already refuses to name it (task 2682)...
+    try testing.expectEqual(
+        @as(?Id, null),
+        stewardAmong(&w.bus, &w.chat, "web-app", try w.chat.membersOf(a, "web-app")),
+    );
+    // ...and the alarm's rule says the same, or it is the one thing left
+    // treating it as the group's.
+    try testing.expectEqual(@as(?Id, null), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "web-app"));
+    found = w.alarms.observeGroup(a, &w.bus, &w.chat, "web-app", t + after, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 0), found.minding.len);
+    try testing.expect(!remindsAt(&w.alarms, found, 0xa1, t + 2 * after, true, after));
+
+    // Back into a tab (the undo): the group's again. Nothing was given up --
+    // the role was always its own.
+    try testing.expect(w.bus.noteUnhoused(0xa1, false));
+    try testing.expect(w.bus.supervising(0xa1));
+    try testing.expectEqual(@as(?Id, 0xa1), Alarms.supervisorOfGroup(a, &w.bus, &w.chat, "web-app"));
+    found = w.alarms.observeGroup(a, &w.bus, &w.chat, "web-app", t + 3 * after, fake.presence()) orelse
+        return error.TestExpectedMinding;
+    try testing.expectEqual(@as(usize, 1), found.minding.len);
+}
+
 /// Who has an agent here, for `Alarms.observeGroup` (task 2411): everyone
 /// does unless named in `absent`.
 const PresenceFake = struct {
