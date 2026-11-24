@@ -2902,6 +2902,23 @@ fn aloneNote(
     ) catch null;
 }
 
+/// The clause that explains why `id`, which **is** a supervisor by role, is
+/// not acting as one (task 3473). Null for a terminal that is not a
+/// supervisor, and for one whose standing is in force.
+///
+/// **The two reasons are different news.** "Its agent has left" is about
+/// the agent; "it is in no window or tab" is about the window. Folding both
+/// into `NotPermitted`'s one sentence -- "only a supervisor may do this" --
+/// told a supervisor it was not one, and the only call that reads like the
+/// way back answered about the role instead. That combination is what made
+/// a terminal closed into no window a dead end that lasted until Polter was
+/// restarted.
+fn notInForce(bus: *const Bus, id: Bus.Id) ?[]const u8 {
+    if (!bus.isSupervisor(id) or bus.supervising(id)) return null;
+    if (bus.agentHasLeft(id)) return "the note that its agent has left still stands";
+    return "it is in no window or tab";
+}
+
 fn isOpenTerminal(alloc: std.mem.Allocator, host: Host, id: Bus.Id) bool {
     const places = host.openTerminals(alloc) catch return true;
     defer alloc.free(places);
@@ -10307,6 +10324,24 @@ fn dispatchOne(
             .code = @errorName(err),
             .message = try std.fmt.allocPrint(alloc, "0x{x:0>16}: {s}", .{ id, errorMessage(err) }),
         } };
+        // **A supervisor told it is not one** (task 3473). "Only a
+        // supervisor may do this" was false for the terminal whose `me`
+        // says `role: supervisor` and whose standing is merely not in
+        // force, and an agent reading it goes looking for a mistake it
+        // did not make. The code stays `NotPermitted` -- callers branch on
+        // it -- and the sentence says which of the two it is.
+        if (err == error.NotPermitted) if (who.terminalId()) |id| if (notInForce(bus, id)) |why|
+            return .{ .failed = .{
+                .code = @errorName(err),
+                .message = try std.fmt.allocPrint(
+                    alloc,
+                    "not permitted: this terminal is a supervisor, but {s}, so the standing is " ++
+                        "not in force. The role is still yours and a call cannot put it back: " ++
+                        "the person brings the terminal back into a window (undo the close), " ++
+                        "or a supervisor is started for the group from the control room.",
+                    .{why},
+                ),
+            } };
         return failure(err);
     };
 
@@ -11880,7 +11915,27 @@ fn dispatchOne(
         .become_supervisor => return switch (bus.roleOf(caller)) {
             // Already the job. Said plainly rather than refused: an agent
             // told "not permitted" would go looking for what it did wrong.
-            .supervisor => wire.Response{ .text = "you are already a supervisor" },
+            //
+            // **Unless the standing is not in force** (task 3473). "You are
+            // already a supervisor" was true about the role and false
+            // about everything the agent then tried: every supervisor's
+            // tool refuses, and the one call that reads like the way back
+            // says there is nothing to do. That is what made a terminal
+            // closed into no window a whole night's dead end -- the only
+            // way out was restarting Polter. Say which of the two it is
+            // and whose move it is.
+            .supervisor => if (bus.supervising(caller))
+                wire.Response{ .text = "you are already a supervisor" }
+            else
+                wire.Response{ .text = try std.fmt.allocPrint(
+                    alloc,
+                    "you are a supervisor by role, but {s}, so the standing is not in force " ++
+                        "and every supervisor's tool will refuse you. Nothing a terminal can " ++
+                        "call puts it back: the person brings this terminal back into a window " ++
+                        "(undo the close), or a supervisor is started for the group from the " ++
+                        "control room. Until then, say so with group_post.",
+                    .{notInForce(bus, caller) orelse "its standing is not in force"},
+                ) },
 
             // The hard one. Its supervisor is not consulted and would
             // never learn of it, and a watched terminal is the likeliest
@@ -23795,6 +23850,79 @@ test "may-authorise off in the configuration: a supervisor's answer to a prompt,
     // Opened for this one terminal by the person: allowed there.
     try b.setMayAuthorise(worker, true, .user);
     try authorize(&b, term(boss), .{ .terminal_answer_prompt = .{ .id = worker, .choice = 1 } });
+}
+
+test "3473: a supervisor in no window is told which of the two it is, by the refusal and by the way back" {
+    // The state measured on 2026-11-13 at 01:16: `me` says
+    // `role: supervisor`, `shown: false`, `left: null`, `agent_present:
+    // true`; every supervisor's tool answers "not permitted: only a
+    // supervisor may do this", which is false about the terminal reading
+    // it; and `become_supervisor` -- the one call that reads like the way
+    // back -- answers "you are already a supervisor". Between the two there
+    // was nothing left to call, and the only way out was restarting Polter.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    try testing.expect(b.supervising(boss));
+    try testing.expect(b.noteUnhoused(boss, true));
+    try testing.expect(b.isSupervisor(boss));
+    try testing.expect(!b.agentHasLeft(boss));
+    try testing.expect(!b.supervising(boss));
+
+    // The gate refuses, exactly as task 2682 says it must -- and the
+    // sentence names the window rather than denying the role.
+    try testing.expectError(error.NotPermitted, authorize(&b, term(boss), .notices));
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .notices);
+    if (refused != .failed) return error.RefusalReportedAsDone;
+    try testing.expectEqualStrings("NotPermitted", refused.failed.code);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "this terminal is a supervisor") != null);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "in no window or tab") != null);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "only a supervisor may do this") == null);
+
+    // The way back says why there is none, rather than that there is
+    // nothing to do.
+    const back = try dispatch(alloc, &b, fake.host(), term(boss), .become_supervisor);
+    if (back != .text) return error.NoWords;
+    try testing.expect(std.mem.indexOf(u8, back.text, "in no window or tab") != null);
+    try testing.expect(std.mem.indexOf(u8, back.text, "you are already a supervisor") == null);
+
+    // Back into a window (the undo): the standing is in force again, and
+    // the answer is the old one because it is true again.
+    try testing.expect(b.noteUnhoused(boss, false));
+    try testing.expect(b.supervising(boss));
+    try authorize(&b, term(boss), .notices);
+    const again = try dispatch(alloc, &b, fake.host(), term(boss), .become_supervisor);
+    try testing.expectEqualStrings("you are already a supervisor", again.text);
+}
+
+test "3473: the refusal names the agent, not the window, when that is the reason" {
+    // The other way the standing is out of force, and the other sentence:
+    // a note that the agent has left is still standing. The two are
+    // different news -- one is somebody's window, the other is this
+    // terminal's own agent -- and a walkable sentence has to say which.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake: FakeHost = .{};
+
+    b.noteLeft(boss, .failed, 1_000);
+    try testing.expect(!b.supervising(boss));
+    try testing.expect(b.agentHasLeft(boss));
+
+    const refused = try dispatch(alloc, &b, fake.host(), term(boss), .notices);
+    if (refused != .failed) return error.RefusalReportedAsDone;
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "agent has left") != null);
+    try testing.expect(std.mem.indexOf(u8, refused.failed.message, "in no window or tab") == null);
+
+    const back = try dispatch(alloc, &b, fake.host(), term(boss), .become_supervisor);
+    if (back != .text) return error.NoWords;
+    try testing.expect(std.mem.indexOf(u8, back.text, "agent has left") != null);
 }
 
 test "ControlRoom resume: me is the one answer that carries where the terminal stands with the groups" {

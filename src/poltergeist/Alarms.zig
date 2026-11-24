@@ -324,8 +324,9 @@ pub const Minding = struct {
 /// agent is here (task 2411): a minding supervisor whose agent is here is
 /// observed at `now_ms`, so its quiet starts from when it was first seen
 /// here; one whose agent is not here is forgotten, so that when it arrives
-/// the quiet starts again. A supervisor whose agent has left is not minding
-/// and is left alone, as before. Null when the group cannot be read.
+/// the quiet starts again. A supervisor that is not `supervising` -- its
+/// agent has left, or its terminal is in no window or tab -- is not minding
+/// and is left alone. Null when the group cannot be read.
 ///
 /// `App.quietIn` calls this, and `App.notePoltergeistAgentsHere` writes the
 /// arrival moment itself (`noteHeard`), because a connection can come and go
@@ -344,9 +345,17 @@ pub fn observeGroup(
     for (members) |id| {
         if (id == Chat.user_id) continue;
         if (!bus.isSupervisor(id)) continue;
-        // One whose agent has left is not minding, and its quiet goes with
-        // it: when its next agent comes, the quiet starts from that moment.
-        if (bus.agentHasLeft(id)) {
+        // **`Bus.supervising`, not `isSupervisor` minus `agentHasLeft`**
+        // (task 3473). The control room names a group's supervisor with
+        // `ControlRoom.minds`, which is `supervising`: a supervisor whose
+        // agent has left *or whose terminal is in no window or tab* is not
+        // the group's. Reading the narrower rule here made the reminder
+        // disagree with the very gate that refuses `alarm_set` -- a
+        // supervisor whose tab was closed was reminded every fifteen
+        // minutes, into a terminal nobody could see, and could not set an
+        // alarm to silence it. Its quiet goes with it either way: when it
+        // is minding again, the quiet starts from that moment.
+        if (!bus.supervising(id)) {
             self.forget(id);
             continue;
         }
@@ -384,10 +393,11 @@ pub const Quiet = struct {
     created_by: Id,
     /// The group's members, in any order (`Chat.membersOf`).
     members: []const Id,
-    /// Those of the members that mind the group: `Bus.isSupervisor` and not
-    /// `Bus.agentHasLeft`. A supervisor whose agent has gone holds a
-    /// terminal nobody is listening in, and a line typed there reaches
-    /// nobody (`ControlRoom.minds`).
+    /// Those of the members that mind the group: exactly `Bus.supervising`,
+    /// which is what `ControlRoom.minds` asks. A supervisor whose agent has
+    /// gone holds a terminal nobody is listening in, and one whose terminal
+    /// is in no window or tab sits where a line reaches nobody; both reach
+    /// nobody, and both must leave this list (task 3473).
     minding: []const Id,
     /// Tasks on the group's panel that are not closed or cancelled. `done`
     /// counts: the supervisor has to check a task before closing it, and
@@ -480,7 +490,12 @@ pub fn supervisorOfGroup(
     var minding: std.ArrayListUnmanaged(Id) = .empty;
     for (members) |id| {
         if (id == Chat.user_id) continue;
-        if (bus.isSupervisor(id) and !bus.agentHasLeft(id)) {
+        // The control room's rule, whole (task 3473): `ControlRoom.minds`
+        // is `Bus.supervising`, so a supervisor in no window or tab minds
+        // nothing here either. The narrower reading is what used to make a
+        // closed tab's supervisor look like the group's to the alarm and
+        // the reminder while every tool refused it as one.
+        if (bus.supervising(id)) {
             minding.append(arena, id) catch return null;
         }
     }
