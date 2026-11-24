@@ -9113,6 +9113,12 @@ fn closeTask(
 
     // The seats as they are now, copied: leaving them changes the panel's.
     const before = host.taskOwner(p.task) catch |err| return taskFailure(err);
+
+    // **The group's task, or nobody's to close** (task 2419): closing gives
+    // up the seats, closes the idle terminals the caller opened and takes
+    // the worktree down, and none of that is a stranger's to do.
+    if (!host.ownsGroup(before.group, caller)) return failure(error.NotYours);
+
     const seats = try alloc.dupe(Tasks.Member, before.members);
 
     host.taskClose(p.task) catch |err| return taskFailure(err);
@@ -12310,6 +12316,11 @@ fn dispatchOne(
                 "nothing to change: give a title, a kind, or both.",
             );
 
+            // The same rule as the rest of the panel (task 2419): a task on
+            // another group's panel is not this supervisor's to change.
+            const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
+            if (!host.ownsGroup(what.group, caller)) return failure(error.NotYours);
+
             host.taskEdit(p.task, title, kind) catch |err| return taskFailure(err);
             return .ok;
         },
@@ -12354,6 +12365,19 @@ fn dispatchOne(
             // that pretended to carry it would be worse than none.
             const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
 
+            // **The task's group, or not the caller's to hand out** (task
+            // 2419). A task belongs to a group (`Tasks` says so at the top),
+            // and every other panel write -- `task_create`, the seat tools,
+            // `task_edit` / `task_close` / `task_cancel` -- already asks the
+            // same question through `ownsGroup`. This path did not, and the
+            // cost was measured: on 2026-10-28 a supervisor of one group
+            // guessed a task number wrong and handed another group's tasks
+            // to its own worker, and the server took it. **One call, not a
+            // second copy of the rule** -- the seat path checks it in
+            // `assignSeat` and this is the same `ownsGroup`, so the two
+            // cannot drift apart.
+            if (!host.ownsGroup(what.group, caller)) return failure(error.NotYours);
+
             // Asked before anything is said. `assign` refuses a task that
             // is closed or cancelled, and a refusal arriving after the
             // worker has been told the work is theirs would leave exactly
@@ -12389,6 +12413,13 @@ fn dispatchOne(
             // putting the sequence here is what makes "told first" a thing
             // a test can hold onto rather than a comment somebody keeps.
             const what = host.taskOwner(p.task) catch |err| return taskFailure(err);
+
+            // **The group's task, or nobody's to call off** (task 2419).
+            // `task_cancel` types into other terminals, so a caller that is
+            // not the group's supervisor would be reaching across groups
+            // with Polter's own sentence.
+            if (!host.ownsGroup(what.group, caller)) return failure(error.NotYours);
+
             if (what.members.len > 0) return cancelSquad(alloc, host, p.task, what) catch return error.OutOfMemory;
 
             var told: []const u8 = " Nobody was on it, so there was nobody to tell.";
@@ -20087,6 +20118,117 @@ test "work cannot be put on a group somebody else made" {
         .kind = "bug",
     } });
     try testing.expectEqualStrings("NotYours", res.failed.code);
+}
+
+test "2419: another group's supervisor cannot assign this group's task" {
+    // The report this is written against: on 2026-10-28 a supervisor of one
+    // group guessed a task number wrong, `task_assign` handed another
+    // group's tasks to its own worker, and the server took it. The seat
+    // path had the check from the start; this is the ordinary one.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    // A second supervisor, and not the one that made `build`.
+    try b.addSupervisor(other);
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one", .bug);
+    try panel.assign(id, worker);
+
+    // Handing it to a terminal.
+    fake.sent = null;
+    const ordinary = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+    } });
+    try testing.expectEqualStrings("NotYours", ordinary.failed.code);
+    try testing.expect(fake.sent == null);
+
+    // The same write with a clear in front of it.
+    const cleared_first = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_assign = .{
+        .task = id,
+        .id = worker,
+        .fresh = true,
+    } });
+    try testing.expectEqualStrings("NotYours", cleared_first.failed.code);
+    try testing.expect(fake.sent == null);
+
+    // Taking it off somebody is still a write on this group's panel.
+    const taken_off = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_assign = .{
+        .task = id,
+        .id = 0,
+    } });
+    try testing.expectEqualStrings("NotYours", taken_off.failed.code);
+
+    // Nothing moved on any of the three.
+    try testing.expectEqual(worker, panel.get(id).?.owner);
+    try testing.expectEqual(Tasks.State.open, panel.get(id).?.state);
+}
+
+test "2419: the other panel writes ask the same question" {
+    // `task_assign` was the one reported, but it was not the only write on
+    // a panel. These three take a bare task number and had the same gap:
+    // close gives up seats and shuts terminals, cancel types into them.
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+
+    const id = try panel.create("build", "one", .bug);
+    try panel.assign(id, worker);
+
+    const edited = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_edit = .{
+        .task = id,
+        .title = "mine now",
+    } });
+    try testing.expectEqualStrings("NotYours", edited.failed.code);
+    try testing.expectEqualStrings("one", panel.get(id).?.title);
+
+    const closed = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_close = .{ .task = id } });
+    try testing.expectEqualStrings("NotYours", closed.failed.code);
+    try testing.expectEqual(Tasks.State.open, panel.get(id).?.state);
+
+    fake.sent = null;
+    const cancelled = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_cancel = .{ .task = id } });
+    try testing.expectEqualStrings("NotYours", cancelled.failed.code);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.State.open, panel.get(id).?.state);
+}
+
+test "2419: a seat of another group's squad is not another supervisor's to fill" {
+    var b = try testBus(testing.allocator);
+    defer b.deinit();
+    try b.addSupervisor(other);
+    var panel: Tasks = .init(testing.allocator, .{});
+    defer panel.deinit();
+    var rig: SquadRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fake = panelFixture(&panel);
+    rig.wire(&fake);
+    _ = try createTrio(alloc, &b, &fake, &.{ "dev", "test" });
+
+    fake.sent = null;
+    const res = try dispatch(alloc, &b, fake.host(), term(other), .{ .task_assign = .{
+        .task = 1,
+        .id = worker,
+        .alias = "dev",
+    } });
+    try testing.expectEqualStrings("NotYours", res.failed.code);
+    try testing.expect(fake.sent == null);
+    try testing.expectEqual(Tasks.Slot.empty, panel.get(1).?.members[0].slot);
 }
 
 test "a task handed to an id nobody has is refused" {
