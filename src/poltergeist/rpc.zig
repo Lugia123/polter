@@ -10538,8 +10538,20 @@ fn dispatchOne(
             // Sorted so that repeated calls read the same way; a hash map's
             // order is not stable and an agent comparing two listings would
             // see phantom movement.
+            //
+            // **`sortUnstable`, never `std.mem.sort`** (task 3479). Those two
+            // are different algorithms: `std.mem.sort` is `std.sort.block`,
+            // which puts `var cache: [512]T` on the stack -- with this
+            // element that is 512 × 3,280 = 1,679,360 bytes, and the Windows
+            // host's main thread has 2 MiB with a ~600 KiB `dispatch` frame
+            // already under it, so every `terminal_list` there overflowed the
+            // stack inside `__chkstk` and killed the process. `sortUnstable`
+            // is pdq: the same sort of this same element reserves 0x698 =
+            // 1,688 bytes, measured in the Windows build. Stability buys
+            // nothing here: `lessById` orders by terminal id, which no two
+            // terminals share.
             const owned = try list.toOwnedSlice(alloc);
-            std.mem.sort(wire.TerminalInfo, owned, {}, lessById);
+            std.mem.sortUnstable(wire.TerminalInfo, owned, {}, lessById);
             return .{ .terminals = owned };
         },
 
